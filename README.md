@@ -86,26 +86,27 @@ oxlint が該当ルールを実装したら oxlint.json 側へ移す。
 ### セットアップ
 
 ```console
-$ direnv allow          # devenv 経由で nodejs_22 + pnpm が入る
+$ direnv allow          # flake.nix の devShell で nodejs_22 + corepack が入る
 $ pnpm install
 ```
 
-devenv を使わない場合は Node.js 22 以上と pnpm 9.15.0（`corepack` 推奨）を用意する。
+Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0（`corepack` 推奨）を用意する。
 
 ```console
 $ corepack enable
 $ corepack prepare pnpm@9.15.0 --activate
 ```
 
-> **注意**: `devenv.lock` はコミットされていない。生成には `devenv` の実行が必要なため、
-> 初回に devenv を動かした人がコミットすること。
+> **注意**: ツールチェーンは `devenv.nix` から `flake.nix` + `flake.lock` に移行済みである。
+> `flake.lock` はコミットされているので、`nix develop`（`.envrc` は `use flake`）は
+> 誰の手元でも同じ nixpkgs に解決される。`devenv.nix` / `devenv.lock` はもう存在しない。
 
 ### コマンド
 
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json` と `tsconfig.test.json` の両方を型検査 |
-| `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない） |
+| `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | `pnpm lint:fix` | oxlint の自動修正 |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:watch` | vitest watch |
@@ -123,6 +124,9 @@ $ corepack prepare pnpm@9.15.0 --activate
   mc-kernel が公開された瞬間に両ファイルとも消え、import 文 1 本に置き換わる。
   `domain/piston.ts` の `BlockCapabilityLookup` も同時に kernel の能力アクセサへ差し替わる
   （[docs/versioning.md](./docs/versioning.md) §6）。
+  **この 2 ファイルは `index.ts` から re-export していない。** 所有していない語彙（`StageId` /
+  `DeltaTimeSecs` / `StageRegistration`）を公開 API に載せると、上記の削除が
+  すべての消費者にとっての破壊的変更になるためである。
 - **`redstone:effects` stage の `run` は `Effect.void`。** ピストン伸縮・ランプ点灯・ディスペンサ発射・
   ホッパー移送・オブザーバのパルスは、すべて mc-sim / mc-worldgen への書き込みであり、
   書き込み先がまだ存在しない。
@@ -139,7 +143,7 @@ $ corepack prepare pnpm@9.15.0 --activate
 - **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
   （`vitest.config.ts` にコメントとして置いてある）。
 
-`pnpm verify` は green（typecheck エラーなし / oxlint 13 ファイル 0 件 / check:deps OK 13 ファイル / vitest 5 ファイル 68 テスト）。
+`pnpm verify` は green（typecheck エラーなし / oxlint 13 ファイル 0 件 / check:deps OK 13 ファイル / vitest 5 ファイル 70 テスト）。
 
 ## ドキュメント
 

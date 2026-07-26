@@ -10,7 +10,7 @@ plan.md §3.12 は本リポジトリの公開 API を 1 行で書いている。
 「`ReadonlyArray<StageRegistration>` を返す Effect が 1 つある」ことだけ**であり、
 `CircuitBoard` も `PowerMap` も `planPush` も、他リポジトリから名前で参照してはならない。
 
-`index.ts` はそれらを再エクスポートしている（`index.ts:30-35`）。矛盾ではない。
+`index.ts` はそれらを再エクスポートしている（`index.ts:30-33`）。矛盾ではない。
 理由は `index.ts:17-23` に書いてある:
 
 > `domain/power-graph.ts` and `domain/piston.ts` are re-exported below because this
@@ -147,25 +147,38 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 
 **契約** = 他リポジトリが依存してよい。**内部（可視）** = このリポジトリのテストとプレビューのためだけに見えている。
 
-> **`test/public-api.test.ts` の 2 つのリストとは粒度が違う。**
+> **`test/public-api.test.ts` のリストとは粒度が違う。**
 > あちらの 1 つ目のリストは「stage 登録まわりのエクスポート」を落とさないための固定であって、
 > 各名前が契約であるという主張ではない（`redstoneStages` / `makeRedstoneFrameState` /
 > `UPSTREAM_STAGE_IDS` は下表では内部扱いである）。
 > どれが契約かの権威は本表であり、`index.ts:22-23` と `test/public-api.test.ts:13-14` の
 > 両方がそう書いている。
+>
+> 同ファイルには**不在**を固定するテストもある。
+> `REGRESSION: does not republish mc-kernel’s vocabulary as its own` は
+> `StageId` と `DeltaTimeSecs` がバレルに**現れない**ことを assert する。
+> 「見えるが契約ではない」の管理はドキュメントでできるが、
+> 「所有していないものを公開する」はドキュメントでは止められない——消えるのが約束だからである。
 
-### `domain/frame-contract.ts` — kernel から借用中
+### `domain/frame-contract.ts` — kernel から借用中。**バレルには載せない**
+
+`index.ts` はこのファイルを `export *` **しない**。末尾のコメントが存在と削除予定を記すだけである。
 
 | エクスポート | 区分 | 備考 |
 | --- | --- | --- |
-| `StageId`（型 + `Brand.refined`） | 契約 | kernel 公開時に kernel のものへ差し替え |
-| `DeltaTimeSecs`（型 + `Brand.refined`） | 契約 | 同上 |
-| `FrameServices` | 契約 | 現在 `never`。意図的な乖離（`frame-contract.ts:65-80`） |
-| `StageRegistration` | 契約 | plan.md §4.1 の字面どおり |
+| `StageId`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | kernel 公開時に kernel のものへ差し替え |
+| `DeltaTimeSecs`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | 同上 |
+| `FrameServices` | **非公開**（所有者は kernel） | 現在 `never`。意図的な乖離（`frame-contract.ts:65-80`） |
+| `StageRegistration` | **非公開**（所有者は kernel） | plan.md §4.1 の字面どおり。`makeRedstoneStages` の**戻り値の形**としてだけ観測される |
 
 これらは「mx-redstone の契約」ではなく「mc-kernel の契約を mx-redstone が仮置きしているもの」である。
-ファイルごと削除される予定であり、削除時に他リポジトリが困らないのは
-誰もここから import していないから（未公開なので構造的に不可能）。
+
+**だから re-export しない。** バレルに載せると `StageId` / `DeltaTimeSecs` / `StageRegistration` が
+**所有していないパッケージの公開 API** になり、ヘッダが約束している
+「kernel publish 時にファイルごと削除」がすべての消費者にとっての破壊的変更に化ける。
+消費者はこの語彙を kernel から取る。型は構造的に同一なので、
+kernel から import した消費者は `makeRedstoneStages` の戻り値に対してそのまま型検査を通る。
+mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしており、mx-gameplay / mx-ui も同じである。
 
 ### `stages/registration.ts`
 
@@ -203,11 +216,12 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 `BlockCapabilityLookup` は kernel 公開時に kernel の能力アクセサへ差し替わる
 （[design-notes.md](./design-notes.md) DN-RS-1、[versioning.md](./versioning.md) §6）。
 
-### `domain/position-key.ts` — 内部（可視）
+### `domain/position-key.ts` — **バレルには載せない**
 
 `PositionKey`（= `string`）。ブランドを**付けていない**のは意図的で、
 ブランドを付けると本リポジトリが座標概念の所有者を騙ることになるためである（`domain/position-key.ts:11-15`）。
-kernel 公開時に削除。
+kernel 公開時に削除。`frame-contract.ts` と同じ理由で `index.ts` から re-export していない
+——座標語彙も所有していないものだからである。
 
 ## 6. `GameModule` はまだ実装していない
 

@@ -29,12 +29,26 @@ describe('public API surface', () => {
         'makeRedstoneFrameState',
         'REDSTONE_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
-        'StageId',
-        'DeltaTimeSecs',
       ]
 
       for (const name of contract) {
         expect(Object.keys(redstone)).toContain(name)
+      }
+    }),
+  )
+
+  // REGRESSION: `domain/frame-contract.ts` and `domain/position-key.ts` are
+  // stand-ins for @nerima-games/mc-kernel with a deletion date written into
+  // their headers. The barrel used to `export *` from both, which published
+  // `StageId` and `DeltaTimeSecs` as API of a package that does not own them —
+  // and therefore turned the promised deletion into a breaking change for every
+  // consumer. mc-sim, mc-render and mc-playground-kit mention their mirrors in
+  // an `index.ts` comment and re-export nothing; this repository now matches.
+  it.effect('REGRESSION: does not republish mc-kernel’s vocabulary as its own', () =>
+    Effect.sync(() => {
+      const kernelsToOwn = ['StageId', 'DeltaTimeSecs']
+      for (const name of kernelsToOwn) {
+        expect(Object.keys(redstone)).not.toContain(name)
       }
     }),
   )

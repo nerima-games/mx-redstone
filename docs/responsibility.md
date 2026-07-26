@@ -87,6 +87,14 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | `@nerima-games/mc-kernel` | `dependencies`（普遍） | 共有語彙。許可リストに書かずに import 可、ただし `package.json` への記載は必要 |
 | `@nerima-games/mc-playground-kit` | **`devDependencies` のみ** | 回路盤プレビューの起動ハーネス |
 
+> **現状**: この表は**意図された最終形**であって、現在の `package.json` の内容ではない。
+> `dependencies` は `effect` のみで、`@nerima-games/*` は 1 つも宣言されていない
+> （どれもまだ publish されていないため。plan.md §6 Step 3 の bottom-up publish-then-pin）。
+> `mc-playground-kit` を `devDependencies` に書くのは、kit が publish され、
+> かつ `apps/preview-circuit-board/` を作るときである（現在プレビューは存在しない）。
+> 依存グラフの権威は `package.json` ではなく
+> `scripts/check-dependency-whitelist.ts` の roster であり、そちらは今日から実在する。
+
 親が 2 つ（+ kernel）しかないことは
 `test/check-dependency-whitelist.test.ts` の
 `declares exactly the parents plan.md §3.12 gives it: sim and worldgen` が固定している。

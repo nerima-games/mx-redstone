@@ -242,3 +242,37 @@ describe('stage behaviour', () => {
     }),
   )
 })
+
+describe('the mirrored DeltaTimeSecs brand is kernel’s', () => {
+  /*
+   * REGRESSION. `domain/frame-contract.ts` restates kernel's `DeltaTimeSecs`
+   * (`mc-kernel/domain/quantities.ts:37-42`), and a brand is keyed by its
+   * STRING: `Brand.Brand<'DeltaTimeSecs'>` here and in kernel are ONE TYPE to
+   * TypeScript, however differently the two constructors validate. So a mirror
+   * that refined differently would be a false guarantee the compiler could
+   * never contradict — which is exactly what mc-physics had, refining to the
+   * frame-loop clamp [0.001, 0.05] while kernel refines to "finite and
+   * non-negative". A kernel-built `DeltaTimeSecs(30)` satisfied its parameter
+   * types while breaking the invariant its comments claimed.
+   *
+   * Kernel's is the agreed refinement and it is deliberately LOOSE: a zero
+   * delta is legal, because a frame may be scheduled twice inside one clock
+   * tick, and the clamp of plan.md §3.4 is a frame-loop concern applied at the
+   * boundary by whoever PRODUCES the delta — mc-sim's `frame-timing.ts`,
+   * mc-physics' `clampDeltaTime` — never a property of the quantity itself.
+   * A stage receives whatever the loop produced and must cope.
+   */
+  it.effect('accepts zero and any finite non-negative delta, and rejects nothing else', () =>
+    Effect.sync(() => {
+      expect(DeltaTimeSecs(0)).toBe(0)
+      expect(DeltaTimeSecs(0.0001)).toBe(0.0001)
+      // Out of the integrator's safe range, and still a valid quantity: this is
+      // what a tab that was backgrounded for thirty seconds produces.
+      expect(DeltaTimeSecs(30)).toBe(30)
+
+      expect(() => DeltaTimeSecs(-0.000_001)).toThrow()
+      expect(() => DeltaTimeSecs(Number.NaN)).toThrow()
+      expect(() => DeltaTimeSecs(Number.POSITIVE_INFINITY)).toThrow()
+    }),
+  )
+})

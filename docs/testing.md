@@ -23,9 +23,9 @@ $ pnpm verify        # typecheck && lint && check:deps && test。CI と同じ内
 | ゲート | 何を捕まえるか | 実測（2026-07-26） |
 | --- | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json` と `tsconfig.test.json` の両方で型エラー | エラーなし |
-| `pnpm lint` | oxlint。**このリポジトリ唯一の lint / format 設定**（prettier も biome も `.editorconfig` も置かない） | `Found 0 warnings and 0 errors`（13 ファイル / 97 ルール） |
+| `pnpm lint` | oxlint。**このリポジトリ唯一の lint / format 設定**（prettier も biome も `.editorconfig` も置かない） | `Found 0 warnings and 0 errors`（13 ファイル / 97 ルール）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | `pnpm check:deps` | 未許可 import / 推移閉包違反 / kit の実行時依存 / 循環 / 壁時計直読み | `OK — 13 file(s) scanned, allowed direct dependencies: @nerima-games/mc-sim, @nerima-games/mc-worldgen (plus @nerima-games/mc-kernel …)` |
-| `pnpm test` | vitest | 5 ファイル / **68 テスト** pass |
+| `pnpm test` | vitest | 5 ファイル / **70 テスト** pass |
 
 `pnpm check:deps` が捕まえるものは 5 種類あり、typecheck と lint のどちらにも見えないものばかりである。
 特に「stage の `after` に兄弟モジュールを書く」違反は check:deps にも見えず、
@@ -36,15 +36,15 @@ CI（`.github/workflows/ci.yaml`）は同じ 4 つを個別ステップとして
 
 ## 3. 現在のテストスイート
 
-5 ファイル / 68 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
+5 ファイル / 70 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
 
 | ファイル | テスト数 | 対象 |
 | --- | ---: | --- |
 | `test/power-graph.test.ts` | 21 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター / 退化した盤面 / 収束と発振 / `sourcesOf`） |
 | `test/check-dependency-whitelist.test.ts` | 18 | 依存ポリシー、体験モジュール間ゼロエッジ、推移閉包、kit の dev 専用、壁時計禁止、**他リポジトリの席から読んだ roster** |
-| `test/stage-registration.test.ts` | 15 | §2.3-1 / §2.3-3 の回帰、固定レート tick、stage 挙動 |
+| `test/stage-registration.test.ts` | 16 | §2.3-1 / §2.3-3 の回帰、固定レート tick、stage 挙動、ミラーした `DeltaTimeSecs` ブランドが kernel と一致すること |
 | `test/piston.test.ts` | 9 | 能力フラグの構造的検査、押し出し計画 |
-| `test/public-api.test.ts` | 5 | バレル（`index.ts`）の再エクスポートを名前で固定。契約と内部の区別を台帳化 |
+| `test/public-api.test.ts` | 6 | バレル（`index.ts`）の再エクスポートを名前で固定。契約と内部の区別を台帳化 |
 
 ### 3-0. `test/public-api.test.ts` がバレルを固定する理由
 
@@ -53,17 +53,19 @@ CI（`.github/workflows/ci.yaml`）は同じ 4 つを個別ステップとして
 落ちるのは `index.ts` しか見ない唯一の消費者、mc-compose だけである。
 `test/public-api.test.ts:4-7` がその状況をそのまま書いている。
 
-このファイルは 2 つの肯定リスト（契約 / 内部だが可視）と 2 つの否定リストを持つ。
+このファイルは 2 つの肯定リスト（契約 / 内部だが可視）と 3 つの否定リストを持つ。
 否定リストのほうが面白い:
 
 | テスト名 | 主張 |
 | --- | --- |
 | `REGRESSION: exports no block roster — the immovable set belongs to mc-kernel` | `PISTON_IMMOVABLE_BLOCKS` / `BLOCK_TYPES` / `blockTypeToIndex` が**エクスポートに現れない**（DN-RS-1） |
 | `REGRESSION: exports nothing that would let a consumer resolve a total stage order` | `sortStages` / `totalOrder` / `framePipeline` / `runFrame` が現れない（§2.3-3、DN-RS-7） |
+| `REGRESSION: does not republish mc-kernel’s vocabulary as its own` | `StageId` / `DeltaTimeSecs` が現れない。バレルは以前 `domain/frame-contract.ts` と `domain/position-key.ts` を `export *` しており、**所有していない語彙**を公開していた（[public-api.md](./public-api.md) §5） |
 
-「無いことをテストする」形になっているのは、**この 2 つが生えてくるのは自然な流れだから**である。
-ピストンを実装すればブロック名簿が欲しくなり、プレビューを書けば順序解決器が欲しくなる。
-どちらも公開してはならない。
+「無いことをテストする」形になっているのは、**この 3 つが生えてくるのは自然な流れだから**である。
+ピストンを実装すればブロック名簿が欲しくなり、プレビューを書けば順序解決器が欲しくなり、
+`export *` を 1 行足すのは仮置きファイルを可視化する最も自然な方法に見える。
+どれも公開してはならない。3 つ目については、公開が**約束済みの削除を破壊的変更に変える**という点で最も静かに効く。
 
 ### 3-1. fixture 回路という形
 
