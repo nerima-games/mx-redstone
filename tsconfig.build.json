@@ -1,0 +1,21 @@
+{
+  // Shipped source only: `index.ts`, the power-graph domain, and the stage
+  // registrations. `types: []` (inherited) is deliberate — the redstone
+  // simulation is pure and must stay runnable in a Node scenario test, a worker
+  // and a browser alike, so a Node type leaking into it fails this project.
+  //
+  // `test/` and `scripts/` are excluded here and only here. That is what makes
+  // "mc-playground-kit is a devDependency" mean something: the circuit-board
+  // preview may reach for kit, the shipped simulation may not (plan.md §2.3-2).
+  "extends": "./tsconfig.base.json",
+  "include": ["index.ts", "domain/**/*.ts", "stages/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "coverage",
+    "dist",
+    "test/**",
+    "scripts/**",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
+}

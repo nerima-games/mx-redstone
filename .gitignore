@@ -1,0 +1,58 @@
+.claude/
+
+# Tool caches
+.serena/
+.sisyphus/
+
+# devenv / direnv
+.devenv/
+.devenv.flake.nix
+.direnv/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs (none yet — the build pipeline is added at completion)
+dist/
+build/
+out/
+
+# TypeScript
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# Vitest
+test-results/
+vitest.workspace.*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# System files
+.DS_Store
+Thumbs.db

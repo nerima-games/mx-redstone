@@ -1,0 +1,18 @@
+{
+  // Tests and repo tooling. Node types are available here and only here.
+  // Unlike the reference repository this project does NOT relax any strictness
+  // flag for tests: test code is code, and a skeleton has no legacy to grandfather.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": [
+    "index.ts",
+    "domain/**/*.ts",
+    "stages/**/*.ts",
+    "test/**/*.ts",
+    "scripts/**/*.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": ["node_modules", "coverage", "dist"]
+}

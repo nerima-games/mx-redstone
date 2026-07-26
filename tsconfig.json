@@ -1,0 +1,19 @@
+{
+  // Editor / language-server default project: everything in the repository.
+  // CI gates use tsconfig.build.json (shipped source) and tsconfig.test.json
+  // (tests + tooling); this file exists so that opening any file in an editor
+  // resolves against the same options.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": [
+    "index.ts",
+    "domain/**/*.ts",
+    "stages/**/*.ts",
+    "test/**/*.ts",
+    "scripts/**/*.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": ["node_modules", "coverage", "dist"]
+}

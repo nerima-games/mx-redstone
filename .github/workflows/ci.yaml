@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # Hard gate. Unlike the reference repository's check-package-dag.ts this
+      # script exits non-zero on any violation: unlisted cross-repo import,
+      # undeclared dependency, transitive-closure import, a runtime dependency
+      # on mc-playground-kit, or a raw wall-clock read (Date.now()).
+      - name: Dependency whitelist / time-source ban
+        run: pnpm check:deps
+
+      - name: Test
+        run: pnpm test
+
+      # Coverage is reported but not yet thresholded — see vitest.config.ts.
+      # The 99% gate is added when this repository reaches its completion criteria.
+      - name: Coverage
+        run: pnpm test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
