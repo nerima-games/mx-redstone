@@ -67,7 +67,10 @@ describe('public API surface', () => {
         'sourcesOf',
         'propagateTick',
         'settle',
-        'SETTLE_TICK_LIMIT',
+        // Replaced the `SETTLE_TICK_LIMIT` constant: the bound is a property of
+        // a board (one tick per delay element, +2), and no single number can
+        // stand for every board. See domain/power-graph.ts.
+        'settleTickLimitFor',
         'isLit',
         // pistons — the capability lookup is a parameter, never a local set
         'PISTON_PUSH_LIMIT',

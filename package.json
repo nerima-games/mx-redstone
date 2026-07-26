@@ -43,9 +43,10 @@
     "redstone"
   ],
   "scripts": {
-    "typecheck": "tsc -p tsconfig.build.json --pretty false && tsc -p tsconfig.test.json --pretty false",
-    "lint": "oxlint --deny-warnings index.ts domain stages scripts test",
-    "lint:fix": "oxlint --fix index.ts domain stages scripts test",
+    "typecheck": "tsc -p tsconfig.build.json --pretty false && tsc -p tsconfig.test.json --pretty false && tsc -p tsconfig.preview.json --pretty false",
+    "lint": "oxlint --deny-warnings index.ts domain stages scripts test apps",
+    "lint:fix": "oxlint --fix index.ts domain stages scripts test apps",
+    "preview": "tsx apps/preview-circuit-board/main.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

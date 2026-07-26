@@ -203,7 +203,7 @@ mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしてお�
 ### `domain/power-graph.ts` — すべて内部（可視）
 
 `MAX_POWER_LEVEL` / `PowerLevel` / `ComponentKind` / `Component` / `CircuitBoard` / `PowerMap` /
-`emptyPowerMap` / `powerAt` / `sourcesOf` / `propagateTick` / `SETTLE_TICK_LIMIT` / `SettleResult` /
+`emptyPowerMap` / `powerAt` / `sourcesOf` / `propagateTick` / `settleTickLimitFor` / `SettleResult` /
 `settle` / `isLit`
 
 1 つも契約ではない（§2）。

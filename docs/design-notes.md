@@ -1,7 +1,7 @@
 # 設計ノート
 
 plan.md §3.12 の「設計注意」は 1 行しかない。しかし参照実装のレッドストーンには、
-1 行では書ききれない量の実測知見が残っている。本書はそれを `DN-RS-1` 〜 `DN-RS-11` として番号づけし、
+1 行では書ききれない量の実測知見が残っている。本書はそれを `DN-RS-1` 〜 `DN-RS-12` として番号づけし、
 **それぞれを「名前のついた回帰テスト」に対応させる**。
 
 回帰テストになっていない設計注意は、いずれ「たぶん間違いだろう」と直される。
@@ -245,7 +245,7 @@ plan.md §3.4 は deltaTime を `min(max(0.001, raw), 0.05)` にクランプす�
 不動点探索には必ず上限が要る。そして上限に当たったときは**ハングではなく文書化された答え**を返す。
 
 ```typescript
-export const SETTLE_TICK_LIMIT = MAX_POWER_LEVEL + 2
+export const settleTickLimitFor = (board: CircuitBoard): number => /* … */ delayed + 2
 export type SettleResult = {
   readonly power: PowerMap
   readonly ticks: number
@@ -261,20 +261,54 @@ export type SettleResult = {
 「回路が安定するまで回す」は自然な API だが、**クロック回路は定義上決して安定しない**。
 安定しないことがクロックの目的である。上限のない `settle` はプレビューの「安定まで進む」ボタンを押した瞬間にフリーズする。
 
-上限値が `MAX_POWER_LEVEL + 2 = 17` なのは、非循環回路なら最長のワイヤ走行（15 マス）より 2 tick 多ければ必ず落ち着くからである。
-
 `oscillating: true` は**エラーではなく答え**である。呼び出し側（プレビュー、テスト）は
 「この回路は発振している」と表示できる。例外や `undefined` ではこの区別ができない。
 
 なお、フレーム stage は `settle` を呼ばない。ゲームは 1 redstone tick ずつ進む——
-途中経過こそがプレイヤーの見ているものだからである（`domain/power-graph.ts:263-269`）。
+途中経過こそがプレイヤーの見ているものだからである。
+
+### 上限を決めるのは減衰距離ではなく直列の遅延素子数である
+
+**この節は一度間違っていた。** 上限は定数 `SETTLE_TICK_LIMIT = MAX_POWER_LEVEL + 2 = 17` であり、
+根拠は「非循環回路なら最長のワイヤ走行（15 マス）より 2 tick 多ければ必ず落ち着く」と書かれていた。
+**この文は間違った量を測っている。**
+
+ワイヤ走行は何マスあっても **1 tick で解決する**。`propagateTick` は盤面全体に対する BFS であり、
+減衰は tick を 1 つも消費しない。tick を消費するのは `previous` を読むことだけで、
+それをするのはトーチとリピーターの 2 つだけである。
+
+したがって定数は 15 素子までは「間違った理由で正しく」、16 素子から単に間違っていた。
+リピーター 16 個の直列はワイヤ 0 本・ループ無しで 18 tick 必要であり、
+`settle` は**完全に安定した回路に `oscillating: true` を返していた**（20 素子 → 22 tick、24 → 26）。
+フラグを信じる呼び出し側——「あなたの装置はクロックです」という警告、
+安定した領域の tick を止めるスケジューラ——は、実在するあらゆるリピーターチェーンで誤答を受け取る。
+
+正しい上限は `settleTickLimitFor(board)` である。
+
+- **直列の遅延素子 1 つにつき 1 tick。** 素子は入力が確定する前に確定できないので、
+  深さ *d* の素子は tick *d+1* で確定する。直列の最長鎖は盤面上の遅延素子数を超えられないので、
+  **数えるだけで健全な過大評価**になる。「最長鎖」と違って O(components) で済み、
+  遅延グラフに閉路がある盤面でも定義され続ける。
+- **+1** は最終マップを生成する tick。
+- **+1** は「変わらなかった」ことを観測する tick。不動点は、何も変えない tick を 1 つ回して初めて分かる。
+
+遅延素子が 0 個の盤面は 2 になる。これはちょうど正しい（1 tick で全ワイヤが点き、1 tick で確認）。
+**この上限は tight であって余裕を持たせていない。** 余裕は、モデルに 3 つ目の遅延素子が増えて
+`DELAYED_KINDS` への追加を忘れた日を隠してしまう。
+
+定数を残さず**名前ごと関数に置き換えた**のは、「1 つの数で全盤面を束ねられる」という主張自体が
+defect だったからである。`SETTLE_TICK_LIMIT` を覚えていた人は、間違った数字ではなくコンパイルエラーを受け取る。
+
+これは本プロジェクトで一度直した地形定数と同じ形である。**値が変わるかどうかは二の次で、
+根拠が実際に上限を決めている量と一致していることが要件である。**
 
 **回帰テスト**: `test/power-graph.test.ts` `describe('settling and oscillation')`
 
 | テスト名 | 主張 |
 | --- | --- |
-| `REGRESSION: a torch clock never settles, and \`settle\` says so instead of hanging` | 自分自身を反転する最小クロックで `oscillating === true` かつ `ticks === SETTLE_TICK_LIMIT` |
-| `an acyclic circuit settles well inside the tick limit` | 非循環回路は上限のはるか手前で落ち着く。上限が実質無効なほど大きくないことの確認 |
+| `REGRESSION: a torch clock never settles, and \`settle\` says so instead of hanging` | 自分自身を反転する最小クロックで `oscillating === true` かつ `ticks === settleTickLimitFor(board)` |
+| `REGRESSION: the settle bound counts DELAY ELEMENTS, not wire cells, so no acyclic circuit is called a clock` | 長さ 2 / 15 / 16 / 24 のリピーター鎖で、既定の答えと `limit: 4096` の答えが**一致する**。数字ではなく性質を assert している——陳腐化したのは数字のほうだからである |
+| `the bound is one tick per delay element plus two, and wire length does not enter it` | ワイヤ 40 本の盤面で上限が 2。トーチとリピーターは等しく 1 ずつ数えられ、ランプとレバーは数えられない |
 | `settle can resume from a given power map, which is what the preview step button needs` | 途中の電力マップから再開できる |
 | `a resumed map that disagrees with the board is RECOMPUTED, not trusted` | `from` に嘘の電力レベル（`w0: 99`）を渡しても、1 tick 目で訂正され、不動点と誤認されない |
 
@@ -303,21 +337,40 @@ const CONDUCTS_POWER: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
 初心者が必ず一度やるバグであり、参照実装の `canConduct`（`redstone-simulation.ts:24-34`）も
 Lamp を導通側に入れていない。
 
-派生として、ランプの点灯判定は**自分のセルの電力ではなく隣接セルの電力**で行う。
+派生として、ランプの点灯判定は自分のセルの電力ではなく**自分に給電しているセル**の電力で行う。
 
 ```typescript
 export const isLit = (board: CircuitBoard, power: PowerMap, key: PositionKey): boolean =>
   board.components.get(key)?.kind === 'lamp' &&
-  neighboursOf(board, key).some((neighbour) => powerAt(power, neighbour) > 0)
+  neighboursOf(board, key).some(
+    (neighbour) => powerAt(power, neighbour) > 0 && conductsInto(board, neighbour).includes(key),
+  )
 ```
 
-`domain/power-graph.ts:288-291`。ランプ自身のマップ上の値は減衰済みの値であって点灯判定には使えない
-（`:189-190`）。参照実装も同じ結論で、`redstone-lamp-world-effects.ts:77-78` に
+参照実装も同じ結論で、`redstone-lamp-world-effects.ts:77-78` に
 
 > Vanilla: a lamp lights from an adjacent powered cell, not from power at its own
 > (non-conducting) position — which the sim always reports as 0.
 
 と書かれている。
+
+### 5-1. この判定は一度「隣接セル」だけを見ていて、ランプ 1 個ぶん漏れていた
+
+以前の実装は `neighboursOf(...).some((n) => powerAt(power, n) > 0)` だった。
+`propagateTick` の側は**一貫して正しかった**——ランプは `CONDUCTS_POWER` に無いので、
+2 つ目のランプの電力は 0 である。漏れていたのは accessor のほうで、
+理由は**ランプが `RECEIVES_POWER` に入っている**ことにある。
+点いたランプは自分の減衰済みレベルを持つので、`isLit` から見れば「電力を持つ隣接セル」であり、
+**点灯だけが電力より 1 マス余分に伝わった**。ランプ 2 個が並ぶと 2 個とも点き、3 個目は点かない。
+
+DN-RS-5 冒頭が警告している「2 つの独立した回路が黙って溶接される」という失敗の、
+sweep ではなく accessor で起きた版である。同じ規則を 2 か所に書けば必ず片方だけ直る。
+だから `isLit` は `conductsInto` を sweep と**共有**しており、両者が食い違えなくなっている。
+リピーターの側面に置いたランプが暗いのも、電力が来ないのと同じ 1 つの理由による。
+
+**「自分のレベル > 0」ではない。** そのほうが短く、上の 3 ランプ試験も通る。しかし
+ワイヤ走行の末端で誤る: レベル 1 のワイヤは渡せるものが残っていない（`outgoing` が 0）ので
+隣のランプの電力は 0 になるが、バニラではそのランプは**点く**。
 
 **回帰テスト**: `test/power-graph.test.ts` `describe('wire propagation')`
 
@@ -325,6 +378,8 @@ export const isLit = (board: CircuitBoard, power: PowerMap, key: PositionKey): b
 | --- | --- |
 | `REGRESSION: a lamp receives power but does not conduct it, so circuits do not join through one` | ランプは点灯する（`isLit === true`）が、その向こう側のワイヤは `0` のまま |
 | `isLit is false for a component that is not a lamp, however much power it carries` | 電力を持つワイヤは「点灯」しない。`isLit` が電力の言い換えになっていないことの確認 |
+| `REGRESSION: a lit lamp does not light the lamp behind it — litness stops where power stops` | ランプ 3 個で、点くのは 1 個目だけ。2 個ではなく 3 個並べているのは、「2 個目が暗い」は「何も点かない規則」でも成立するからである |
+| `a lamp beside the LAST wire of a run is lit, though its own power entry is 0` | 「自分のレベル > 0」という短絡を塞ぐ。レベル 1 のワイヤの隣のランプは点く |
 
 ---
 
@@ -556,3 +611,96 @@ oxlint の `default-case` は `oxlint.json` で `restriction` カテゴリの一
 
 **回帰テストは無い。** 到達不能な分岐が存在しないことは、実行では確かめられない。
 確かめる手段はカバレッジレポートそのものであり、それが 6 節の閾値が最終的に果たす役割である。
+
+---
+
+## DN-RS-12 セルを「読む」部品は、そのセルを「駆動」してはならない
+
+### 規則
+
+隣接（`CircuitBoard.adjacency`）は無向である。**ワイヤについてはそれが全部だが、
+セルを読む 2 つの部品についてはそうではない。**
+
+- **リピーターはダイオードである。** 背面から入り、正面から出る。側面からは何も出ない。
+- **トーチは取り付け先のブロックに給電しない。**
+
+```typescript
+const conductsInto = (board: CircuitBoard, key: PositionKey): ReadonlyArray<PositionKey> => {
+  const component = board.components.get(key)
+  if (component === undefined || !CONDUCTS_POWER.has(component.kind)) {
+    return []
+  }
+  const neighbours = neighboursOf(board, key)
+  if (component.kind === 'repeater') {
+    return neighbours.filter((neighbour) => neighbour === component.outputTo)
+  }
+  if (component.kind === 'torch') {
+    return neighbours.filter((neighbour) => neighbour !== component.invertedBy)
+  }
+  return neighbours
+}
+```
+
+### 破れたときに起きること
+
+初期の版は、ソースの電力を**全隣接セル**に流していた。結果は 2 つとも**ラッチ**である。
+
+1. **リピーターが自分をラッチして二度と落ちない。** リピーターは自分の入力セル（`inputFrom`）を
+   自分の出力で 12 → 14 に持ち上げ、次 tick に `sourcesOf` が「入力に電力がある」と見て
+   **自分自身から再点火する**。レバーを切っても、盤面上に電源が 1 つも無くても、出力は 14 のままである。
+   **リピーターを含むあらゆる回路が二度と OFF にできない。**
+2. **リピーターが側面にも給電する。** リピーターの側面に触れただけの独立回路が 14 になる。
+   DN-RS-5 が「ランプに導通を許すと 2 つの独立回路が黙って溶接される」と警告しているのと同じ失敗が、
+   **プレイヤーが回路を分離するために置く部品**で起きていた。
+3. **トーチが 2 tick 周期で点滅する。** トーチは自分が反転しているワイヤを 14 に駆動し、
+   次 tick にそれを読んで消え、その次に戻る。NOT ゲートが 5 Hz の発振器になっていた。
+   [testing.md](./testing.md) §7 は「トーチは支持セルを電源にしない」を、
+   参照実装が既に決着させた規則として挙げている——新しい意見ではなく、**グラフに書かれていなかった規則**である。
+
+**既存の 21 本の電力グラフテストが 1 本も捕まえていない。** 理由は形にある:
+テストは**最終状態**を assert し、レバーが ON のときの最終状態は期待どおりだった。
+壊れていたのは「電源を外したあと」と「隣に何があるか」であり、どちらも誰も尋ねていなかった。
+
+### 形の変更であって述語の調整ではない
+
+`CONDUCTS_POWER` は `ComponentKind` の集合であり、**向きを表現できない**。
+向きは kind の性質ではなく**設置の性質**だからである。したがって `Component` に出力側の名前が要る。
+
+```typescript
+readonly inputFrom?: PositionKey   // リピーター: 読むセル（既存）
+readonly outputTo?: PositionKey    // リピーター: 駆動する唯一のセル（新規）
+```
+
+決めたことが 3 つある。
+
+| 判断 | なぜ |
+| --- | --- |
+| **`outputTo` 未指定 = 何も駆動しない**（全隣接ではない） | 正面に何も無いまま置かれたリピーターの状態。防ぐ失敗（2 回路の無言の溶接）は不可視で、招く失敗（何もしないリピーター）は次の tick に画面に出る。`inputFrom` 未指定を「電源にしない」とした DN-RS-2 の非対称と同じ向きである |
+| **`neighboursOf` を filter する**（`[outputTo]` を直接返さない） | `adjacency` が**グラフそのもの**である。`outputTo` は自分の辺を 1 本**選ぶ**のであって、新しい辺を**作らない**。さもなければ呼び出し側は遠いセルを名指しして電力をテレポートでき、出力セルを削除された盤面のリピーターは存在しない座標に給電し続ける |
+| **トーチは `invertedBy` を除外**（`outputTo` を持たない） | トーチはバニラでも無指向（隣接する全ダストを点ける）。制約は「支持ブロックを除く」という 1 点だけなので、除外で足りる。リピーターに同じ形（`inputFrom` だけ除外）を使うと側面が残る |
+
+### 遅延は形の問題ではないので、ここでは直っていない
+
+`Component.delayTicks` は**削除した**。受け取って保存して一度も読まれない
+フィールドは、無いフィールドより悪い。バニラの 1–4 tick 遅延を実装するには
+「N tick 前の入力」が要り、`propagateTick` は設計上 (board, previous power map) の純関数——
+すなわち履歴 1 tick ぶんしか持たない。これは**tick の状態の形**の変更であって
+部品レコードの変更ではないので、フィールドは機構と一緒に戻ってくる。
+
+同じ理由でボタンのパルスもここには無い（DN-RS-4 の隣、`sourcesOf` のコメントに全文がある）。
+**残り時間は状態である。** 電力マップに置く場所が無く、盤面はこのモジュールが書き換えてよい入力ではない。
+`active` は世界の所有者の申告であり、レバーのそれはプレイヤーが、ボタンのそれは**時間**が下ろす。
+レッドストーン時間が進んでいることを知っているのは `stages/registration.ts` である。
+
+**回帰テスト**: `test/power-graph.test.ts`
+`describe('repeaters — a diode, which means both ends are named')` ほか
+
+| テスト名 | 主張 |
+| --- | --- |
+| `REGRESSION: switch the lever OFF and a repeater lets go — it does not latch itself on forever` | ON で 4 tick 回してから電源を切り、2 tick で出力が 0、さらに 20 tick 回して**電力マップが空**になる |
+| `REGRESSION: a repeater does not power its own input cell — the wire behind it stays the lever’s level` | ラッチの機構そのもの。入力ワイヤはレバーから 2 歩なので 13 であり、14（リピーター自身の出力の戻り）ではない |
+| `REGRESSION: a repeater powers nothing on its flanks, so it cannot weld two circuits together` | 側面のワイヤが 0。側面のランプが `isLit === false` |
+| `a repeater with no output named drives nothing — an unwired repeater is inert in both directions` | 既定値の選択そのもの |
+| `a named output that is not a declared edge drives nothing — adjacency is still the graph` | 隣接に無いセルを名指しても何も駆動しない |
+| `REGRESSION: a torch does not power the cell it inverts, so an inverter is steady rather than a 2-tick blinker` | レバー OFF で 20 tick、トーチは 15 のまま、支持セルは 0 のまま |
+| `REGRESSION: \`Component\` carries no delay field, and every repeater costs exactly one tick` | `@ts-expect-error` による**コンパイル時**の不在確認と、直列 N 個が N tick である実測 |

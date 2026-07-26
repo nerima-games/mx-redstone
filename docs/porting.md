@@ -155,7 +155,8 @@ plan.md §8 のリスク表も同じことを別角度から言っている。
 | 参照実装のもの | 理由 |
 | --- | --- |
 | `canConduct` が Lamp を除外していること（`redstone-simulation.ts:24-34`） | DN-RS-5。既に `CONDUCTS_POWER` に反映済み |
-| 「ランプは隣接セルの電力で点く」（`redstone-lamp-world-effects.ts:77-78`） | 同上。`isLit` に反映済み |
+| 「ランプは隣接セルの電力で点く」（`redstone-lamp-world-effects.ts:77-78`） | 同上。`isLit` に反映済み（**給電しているセル**に限定、DN-RS-5 §5-1） |
+| 「トーチは支持セルを電源にしない」「リピーターはダイオード」 | DN-RS-12。`conductsInto` に反映済み。どちらも移植し忘れていて、プレビューが見つけた |
 | 「トーチは自分の支持セルを電源にしない」（`redstone-simulation.ts:57-60`） | 孤立トーチの自己発振を防ぐ。本リポジトリはまだ幾何を持たないので未反映 |
 | リピーターが前 tick を読むこと（`redstone-service.ts:56-58`） | DN-RS-2 |
 | `MAX_REDSTONE_POWER = 15`（`redstone.config.ts:3`） | `MAX_POWER_LEVEL` として反映済み |

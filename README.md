@@ -105,14 +105,15 @@ $ corepack prepare pnpm@9.15.0 --activate
 
 | コマンド | 内容 |
 | --- | --- |
-| `pnpm typecheck` | `tsconfig.build.json` と `tsconfig.test.json` の両方を型検査 |
+| `pnpm typecheck` | `tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` を型検査 |
 | `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | `pnpm lint:fix` | oxlint の自動修正 |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:watch` | vitest watch |
 | `pnpm test:coverage` | カバレッジ計測（閾値は未設定。[docs/testing.md](./docs/testing.md) §6） |
 | `pnpm check:deps` | 依存ホワイトリスト + 循環検査 + 壁時計直読み禁止の検査 |
-| `pnpm verify` | `typecheck && lint && check:deps && test`。CI と同じ内容 |
+| `pnpm preview` | 回路盤サンドボックス（[apps/preview-circuit-board/](./apps/preview-circuit-board/README.md)）。**`pnpm verify` には入れていない** |
+| `pnpm verify` | `typecheck && lint && check:deps && api:check && test`。CI と同じ内容 |
 
 ## 現状
 
@@ -133,17 +134,41 @@ $ corepack prepare pnpm@9.15.0 --activate
 - **部品は 6 種のみ**（wire / torch / lever / button / repeater / lamp）。
   ディスペンサ・ホッパー・オブザーバ・感圧板・コンパレータは未実装
   （[docs/responsibility.md](./docs/responsibility.md) §1 に参照実装の全部品面がある）。
-  リピーターの `delayTicks` とボタンのパルス長も型にあるだけで未消費。
+- **リピーターの遅延（バニラ 1–4 tick）とボタンのパルス長は未実装であり、型にも無い。**
+  `Component.delayTicks` は「受け取って保存して一度も読まれない」フィールドだったので**削除した**。
+  どちらも「N tick 前の入力」「残り時間」という**状態**を要求するが、`propagateTick` は設計上
+  (board, previous power map) の純関数であり履歴を 1 tick ぶんしか持たない。
+  tick の状態の形を変える話であって、部品レコードを 1 行増やす話ではない
+  （[docs/design-notes.md](./docs/design-notes.md) DN-RS-12）。
+  ボタンの解放は呼び出し側——dt を tick に換算し盤面 `Ref` を持つ `stages/registration.ts`——の仕事である。
+- **ワイヤの到達距離は 14 マスであって 15 ではない**（バニラは 15）。ソースが電力マップのセルを 1 つ占有し、
+  最初のワイヤが既に 14 になるためである。**記録された差異**であり、閉じるには
+  「ソースは最初の隣接セルへ減衰しない」という変更が要る——全回路の全レベルが変わる。
 - **スティッキーピストンと引き寄せは未実装。** 工数ではなく、能力フラグが監査で確定していないためである。
   推測したフラグは 14 リポジトリへ一度に配られる（[docs/design-notes.md](./docs/design-notes.md) DN-RS-10）。
-- **プレビューはまだ無い。** plan.md §3.12 が要求する回路盤サンドボックス（部品を置いて動かす）は未着手であり、
-  したがって完成条件は満たしていない（[docs/testing.md](./docs/testing.md) §4）。
+- **リピーターはダイオードである。** 背面から入り正面から出る。側面には出さず、自分の入力セルも駆動しない。
+  トーチも取り付け先のセルを駆動しない。`Component` が `outputTo`（リピーターの出力）を持つのはこのためで、
+  向きは kind の性質ではなく設置の性質だから述語では表現できない（DN-RS-12）。
+- **回路盤サンドボックスプレビューは動く**（`pnpm preview`、[apps/preview-circuit-board/](./apps/preview-circuit-board/README.md)）。
+  plan.md §6 Step 2 の完了条件「テスト green + **内蔵プレビューが操作可能**」の後半は、これで満たしている
+  （[docs/testing.md](./docs/testing.md) §4-1）。
+  部品を置き、レバーを倒し、**1 tick ずつ進めて**電力 0–15 の伝播を見る端末アプリである。
+  **見せないもの**も明確で、プレイヤーも世界も無く、隣接は 2D の 4 近傍であり、
+  ピストンの実移動はプレビュー内の代役である（`redstone:effects` は今も `Effect.void`）。
+  依存は 0 個、壁時計の読み取りも 0 箇所。
+  **初回実行で 7 件の欠陥を出した**（`pnpm preview --stats`）。うち 3 件——
+  リピーターが自分をラッチして落ちない / `settle` が非循環回路を発振と誤判定する /
+  `isLit` がランプ 1 個ぶん漏れる——は当時の 21 本の電力グラフテストが 1 つも捕まえていなかった。
+  **4 件を修正し、残る 3 件は現在の挙動を名指しするテストを置いた。**
+  `--stats` の行は pin ではない（測るだけで期待値を記録しないので、直すと finding は静かに消える）。
+  pin は `test/power-graph.test.ts` の側にある。
 - **ビルド／publish はまだない。** `exports` は TypeScript ソースを直接指しており、`noEmit: true` なので `dist` がない。
   GitHub Packages への publish パイプラインは完成条件到達時に追加し、それまで `version` は `0.x` に留める。
 - **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
   （`vitest.config.ts` にコメントとして置いてある）。
 
-`pnpm verify` は green（typecheck エラーなし / oxlint 13 ファイル 0 件 / check:deps OK 13 ファイル / vitest 5 ファイル 70 テスト）。
+`pnpm verify` は green（typecheck エラーなし / oxlint 0 件 / check:deps OK /
+api-lock 一致 / vitest 6 ファイル 111 テスト）。
 
 ## ドキュメント
 

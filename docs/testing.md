@@ -12,7 +12,10 @@
 | ピストン押し出しの規則テスト | 実装済み（`test/piston.test.ts`） |
 | stage 契約の回帰テスト | 実装済み（`test/stage-registration.test.ts`） |
 | 依存境界ゲート | 実装済み（`test/check-dependency-whitelist.test.ts`） |
-| **回路盤サンドボックスプレビュー** | **未着手**（§4） |
+| **回路盤サンドボックスプレビュー** | **実装済み**（`apps/preview-circuit-board/`、§4-1） |
+
+**両方が揃ったので、plan.md §6 Step 2 の完了条件のうち「テスト green + プレビュー操作可能」の 2 つは満たしている**
+（機能面の残りは §4 の表のとおり）。
 
 ## 2. 今日のゲート
 
@@ -22,10 +25,15 @@ $ pnpm verify        # typecheck && lint && check:deps && test。CI と同じ内
 
 | ゲート | 何を捕まえるか | 実測（2026-07-26） |
 | --- | --- | --- |
-| `pnpm typecheck` | `tsconfig.build.json` と `tsconfig.test.json` の両方で型エラー | エラーなし |
-| `pnpm lint` | oxlint。**このリポジトリ唯一の lint / format 設定**（prettier も biome も `.editorconfig` も置かない） | `Found 0 warnings and 0 errors`（13 ファイル / 97 ルール）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
-| `pnpm check:deps` | 未許可 import / 推移閉包違反 / kit の実行時依存 / 循環 / 壁時計直読み | `OK — 13 file(s) scanned, allowed direct dependencies: @nerima-games/mc-sim, @nerima-games/mc-worldgen (plus @nerima-games/mc-kernel …)` |
-| `pnpm test` | vitest | 5 ファイル / **70 テスト** pass |
+| `pnpm typecheck` | `tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` の 3 プロジェクトで型エラー | エラーなし |
+| `pnpm lint` | oxlint。**このリポジトリ唯一の lint / format 設定**（prettier も biome も `.editorconfig` も置かない） | `Found 0 warnings and 0 errors`（25 ファイル / 97 ルール）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
+| `pnpm check:deps` | 未許可 import / 推移閉包違反 / kit の実行時依存 / 循環 / 壁時計直読み | `OK — 25 file(s) scanned, allowed direct dependencies: @nerima-games/mc-sim, @nerima-games/mc-worldgen (plus @nerima-games/mc-kernel …)` |
+| `pnpm api:check` | `api-lock.md` と公開 API の乖離 | `OK — api-lock.md matches the public API` |
+| `pnpm test` | vitest | 6 ファイル / **111 テスト** pass |
+
+**`apps/` は `SCAN_ROOTS` にも lint 対象にも入っている。** プレビューは `pnpm verify` で*実行*されないが、
+型検査・lint・依存ゲート・壁時計禁止はすべて適用される。
+「dev アプリだから検査しない」にすると、依存を 1 つ足すのに最も抵抗の少ない場所ができてしまう。
 
 `pnpm check:deps` が捕まえるものは 5 種類あり、typecheck と lint のどちらにも見えないものばかりである。
 特に「stage の `after` に兄弟モジュールを書く」違反は check:deps にも見えず、
@@ -36,15 +44,20 @@ CI（`.github/workflows/ci.yaml`）は同じ 4 つを個別ステップとして
 
 ## 3. 現在のテストスイート
 
-5 ファイル / 70 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
+6 ファイル / 111 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
 
 | ファイル | テスト数 | 対象 |
 | --- | ---: | --- |
-| `test/power-graph.test.ts` | 21 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター / 退化した盤面 / 収束と発振 / `sourcesOf`） |
+| `test/api-lock.test.ts` | 26 | `api-lock.md` 生成器の挙動（plan.md §6 Step 0-3） |
+| `test/power-graph.test.ts` | 33 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター（ダイオード） / 退化した盤面 / 収束と発振 / `sourcesOf` / ボタン） |
+| `test/stage-registration.test.ts` | 19 | §2.3-1 / §2.3-3 の回帰、固定レート tick、stage 挙動、ミラーした `DeltaTimeSecs` ブランドが kernel と一致すること |
 | `test/check-dependency-whitelist.test.ts` | 18 | 依存ポリシー、体験モジュール間ゼロエッジ、推移閉包、kit の dev 専用、壁時計禁止、**他リポジトリの席から読んだ roster** |
-| `test/stage-registration.test.ts` | 16 | §2.3-1 / §2.3-3 の回帰、固定レート tick、stage 挙動、ミラーした `DeltaTimeSecs` ブランドが kernel と一致すること |
 | `test/piston.test.ts` | 9 | 能力フラグの構造的検査、押し出し計画 |
 | `test/public-api.test.ts` | 6 | バレル（`index.ts`）の再エクスポートを名前で固定。契約と内部の区別を台帳化 |
+
+**プレビュー（`apps/`）にテストは無い。** 意図的である——プレビューは検査対象ではなく検査**手段**であり、
+そこで見つかったことは `test/power-graph.test.ts` に assertion として降ろすのが正しい置き場所である
+（§4-1）。mc-worldgen の先例も同じ扱いをしている。
 
 ### 3-0. `test/public-api.test.ts` がバレルを固定する理由
 
@@ -127,34 +140,81 @@ plan.md §6 Step 2 の完了条件は 2 つある。
 | 2 | ワイヤ / トーチ / レバー / ボタン / リピーター / ピストンのシナリオテスト | ✅（部品の一部は未実装、[responsibility.md](./responsibility.md) §1） |
 | 3 | ディスペンサ / ホッパー / オブザーバ / 感圧板 / コンパレータ | ❌ |
 | 4 | 参照実装のテスト資産（2,093 行）をオラクルとして移植 | ❌（[porting.md](./porting.md) §3） |
-| 5 | **回路盤サンドボックスプレビューが操作可能** | ❌ |
+| 5 | **回路盤サンドボックスプレビューが操作可能** | ✅（§4-1） |
 | 6 | スティッキーピストン / 引き寄せ | ❌（意図的にスコープ外、DN-RS-10） |
 | 7 | 99% カバレッジゲートが有効 | ❌（完成時に有効化、§6） |
 
-### 4-1. 回路盤サンドボックスプレビュー
+### 4-1. 回路盤サンドボックスプレビュー（実装済み）
 
-plan.md §3.12 が要求する形は「**部品を置いて動かすサンドボックス**」である。
-最低限これができること:
+`apps/preview-circuit-board/`。`pnpm preview` で起動する。
+plan.md §4.1（「プレビューは契約に含めない。各リポジトリ内の dev アプリ。`apps/preview-*/` に配置」）のとおり
+dev アプリであり、`index.ts` から export されず、`pnpm verify` はこれを実行しない。
 
-- 盤面に部品を置く・消す（ワイヤ、トーチ、レバー、ボタン、リピーター、ランプ、ピストン）
-- レバーを倒す・ボタンを押す
-- **1 tick ずつ進める**、および「安定するまで進む」（= `settle`。発振する回路では
-  `oscillating: true` をそのまま表示する、DN-RS-4）
-- 各セルの電力レベル 0–15 を見る
+plan.md §3.12 が要求する「部品を置いて動かすサンドボックス」の最低条件は全部満たしている。
 
-`domain/power-graph.ts` の API はこの用途に合わせて作られている。
-`settle(board, { from })` が途中の電力マップから再開できるのは、まさにステップボタンのためである
-（`settle can resume from a given power map, which is what the preview step button needs`）。
-`makeRedstoneFrameState` が Effect であるのは、1 ページに 2 つの盤面を置けるようにするためである（DN-RS-8）。
+| 要件 | 実装 |
+| --- | --- |
+| 部品を置く・消す | `1`–`9` で選択、`space` で設置、`e` で消去（ワイヤ / トーチ / レバー / ボタン / リピーター / ランプ / ピストン / ブロック / 黒曜石） |
+| レバーを倒す・ボタンを押す | `t` |
+| **1 tick ずつ進める** | `.`（`n` で N tick、`s` で `settle`） |
+| 安定するまで進む | `s`。発振する回路は `oscillating: true` をそのまま表示する（DN-RS-4） |
+| 各セルの電力 0–15 を見る | `power` ビュー（`v` で巡回）。16 進 1 桁で全セル表示 |
 
-配置場所は `apps/preview-circuit-board/`（plan.md §4.1: 「プレビューは契約に含めない。各リポジトリ内の dev アプリ。
-`apps/preview-*/` に配置」）。起動ハーネスは `mc-playground-kit` を**devDependency として**使う
-（[responsibility.md](./responsibility.md) §3-1）。
+**加えて、テストには書けないものを 2 つ出している。**
 
-**プレビューがなぜ必須なのか。** テストが検出しない種類のバグがあるからである。
-`stages/stage-ids.ts:50-54` が挙げている例——感圧板の 1 フレームちらつき——は、
-「テストでは見えず、プレビューでは一目で分かる」ものの典型である。
-回路の見た目が正しく更新されるかどうかは、`expect` では書けない。
+- **tick カウンタ**と、**tick 軸に沿った電力テープ**（`timeline` ビュー）。
+  テストは最終状態を assert するので、「2 tick 遅れて届いた信号」は最終状態が同じ限り見えない。
+  リピーターの遅延が効いているかどうかは、まさにこれでしか分からない。
+- **ピストンの拒否理由**（`immovable` / `too-long`）。`planPush` が 2 種類の拒否を区別しているのは
+  「プレイヤーへの説明が違うから」（`domain/piston.ts:98-116`）であり、
+  表示されない拒否理由は「何も起きなかった」と区別がつかない。
+
+#### なぜ mc-playground-kit を使わなかったか
+
+本節は以前「起動ハーネスは `mc-playground-kit` を devDependency として使う」と書いていた。
+**この判断を変更した。** 理由は 3 つある。
+
+1. **kit はまだ publish されていない**（README 現状のボトムアップ publish-then-pin）。
+   実行できないプレビューは完了条件ではなく、完了条件を満たす計画である。
+2. **回路盤は「状態を見せる」プレビューである。** plan.md が見せろと言っているもの——セルの電力、
+   点いたランプ、何 tick かかったか——はすべて「座標に紐づいた数値」であり、
+   一人称 3D はそれらに何も足さず、回路全体を一度に見る能力を奪う。
+   mc-worldgen の地形プレビューが先に同じ論証をしており（`apps/preview-terrain/main.ts` 冒頭）、
+   回路には失うシルエットすら無いぶん、こちらのほうが強い。
+   **mc-sim の障害物コースは違う**——あれは一人称の操作そのものが対象なので、kit を待つのが正しい。
+3. `tsconfig.base.json` は `lib` から "DOM" を外している。これは機械的な保証であり、
+   3D プレビューはそれをどこかの tsconfig で戻すことを要求する。
+   プレビューのために、出荷ソースの保証を「約束」に格下げすることになる。
+
+#### プレビューは実際に何を見つけたか
+
+`pnpm preview --stats` は数値レポートを出す。**全部が実行時の測定**であり、記録された期待値は 1 つも無い
+——直せば finding は自動的に消える。初回実行で 7 件出た。詳細は
+[`apps/preview-circuit-board/README.md`](../apps/preview-circuit-board/README.md) の表にある。
+
+重いものを 3 つだけ（いずれも**修正済み**）:
+
+- **リピーターがダイオードになっていなかった。** `propagateTick` はソースの電力を全隣接セルに流すので、
+  リピーターは自分の入力セルを 12 → 14 に持ち上げ、次 tick に**自分自身から再点火していた**。
+  レバーを切っても回路は永久に点いたままで、側面に触れただけの独立回路にも給電した。
+  同じ原因でトーチも自分の支持セルを駆動し、NOT ゲートが 2 tick 周期で点滅していた（DN-RS-12）。
+- **`settle` が非循環回路を OSCILLATING と報告していた。** `SETTLE_TICK_LIMIT = MAX_POWER_LEVEL + 2` の
+  根拠は「ワイヤ最長走行距離 + 2」だが、収束時間を決めるのは減衰ではなく直列の遅延素子数である。
+  リピーター 16 個の直列（ワイヤ 0 本、ループ無し）は 18 tick 必要で、既定の 17 では嘘の判定が出た（DN-RS-4）。
+- **`isLit` がランプ 1 個ぶん漏れていた。** `propagateTick` は正しく——ランプは伝導しない——
+  漏れていたのは accessor のほうで、隣接セルの電力を見るため「点灯」だけが 1 マス余分に伝わった（DN-RS-5 §5-1）。
+
+**この 3 つはいずれも当時の 21 本の電力グラフテストが捕まえていなかった。**
+理由は本節冒頭と同じで、テストは最終状態を assert し、これらの最終状態は**期待どおり**だった。
+壊れていたのは「電源を外したあと」「隣に何があるか」「何 tick 目か」であり、
+それを見るために作られたのがこのプレビューである。
+
+確認できた finding は `test/power-graph.test.ts` に assertion として落とすこと。
+レポートは読まれなければ効かないが、テストは落ちる。
+**`--stats` の行は pin ではない**——実行時に測って期待値を記録しないので、
+直すと finding は「消える」のであって「固定される」のではない。
+7 件のうち 4 件を直し、残る 3 件（vanilla との到達距離の差、リピーター遅延、ボタンのパルス）は
+**現在の挙動を名指しするテスト**を置いた。deferred であることと、記録されていないことは違う。
 
 ## 5. 決定論
 
@@ -179,7 +239,7 @@ plan.md §3.12 が要求する形は「**部品を置いて動かすサンドボ
 - 参照実装（`takeokunn/ts-minecraft`）は branches / functions / lines / statements のすべてに **99%** を強制している。
 - しかし**スケルトンに閾値を課しても意味がない**。型定義とごく小さな純粋関数だけのリポジトリなら
   簡単に満たせてしまい、実装の品質について何も語らない数字になる。
-  現状の 68 テストは「まだ書かれていない実装」については何も言っていない。
+  現状のテストは「まだ書かれていない実装」については何も言っていない。
 - 計測とレポートは常に動かしている（`pnpm test:coverage`）ので、数字はいつでも見える。
   CI は毎回 `coverage/` をアーティファクトとして残す（`.github/workflows/ci.yaml`、保持 7 日）。
 

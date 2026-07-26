@@ -15,7 +15,7 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | ワイヤ（電力伝播・1 マス 1 減衰） | `packages/entity/domain/redstone/redstone-simulation.ts:68`（`propagatePower`） | `domain/power-graph.ts` に実装済み |
 | トーチ（1 tick 遅延反転） | 同 `:254`（`updateTorches`） | 実装済み |
 | レバー / ボタン | 同 `:36-46`（`isPowerSource`） | 実装済み（ボタンのパルス長は未実装） |
-| リピーター | 同 `:219-245` | 実装済み（`delayTicks` は型にあるが未消費） |
+| リピーター | 同 `:219-245` | 実装済み（ダイオード。遅延は未実装で、`delayTicks` フィールドは**削除済み**——DN-RS-12） |
 | ピストン押し出し | `packages/app/application/frame/stages/redstone-piston-world-effects.ts`（263 LOC） | `domain/piston.ts` に押し出し計画のみ実装済み |
 | ランプ | `redstone-lamp-world-effects.ts`（92 LOC） | `isLit` として実装済み |
 | ディスペンサ | `redstone-dispenser-world-effects.ts`（137 LOC） | 未実装（`ComponentKind` にまだ無い） |

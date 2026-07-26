@@ -49,7 +49,7 @@ type Component = {
     readonly active?: boolean;
     readonly invertedBy?: PositionKey;
     readonly inputFrom?: PositionKey;
-    readonly delayTicks?: number;
+    readonly outputTo?: PositionKey;
 };
 ```
 
@@ -157,12 +157,6 @@ type RedstoneFrameState = {
 };
 ```
 
-### SETTLE_TICK_LIMIT  `const`
-
-```ts
-const SETTLE_TICK_LIMIT: number;
-```
-
 ### SettleResult  `type`
 
 ```ts
@@ -254,6 +248,12 @@ const settle: (board: CircuitBoard, options?: {
     readonly from?: PowerMap;
     readonly limit?: number;
 }) => SettleResult;
+```
+
+### settleTickLimitFor  `const`
+
+```ts
+const settleTickLimitFor: (board: CircuitBoard) => number;
 ```
 
 ### sourcesOf  `const`

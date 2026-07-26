@@ -1,0 +1,22 @@
+{
+  // The dev preview under apps/preview-circuit-board.
+  //
+  // A SEPARATE project on purpose. tsconfig.build.json proves that the shipped
+  // simulation is platform-free — it inherits `types: []` and a `lib` without
+  // "DOM", so a Node global or a browser type leaking into `domain/` or
+  // `stages/` fails the build. That proof is the reason the power graph runs
+  // unchanged in a deterministic Node scenario test, in a worker and in a
+  // browser, and it would be destroyed by adding `apps/**` to that project's
+  // `include`.
+  //
+  // NOTE what this file does NOT do: it does not add "DOM" to `lib`. The preview
+  // renders to a terminal, so it needs Node's stdio and nothing from a browser.
+  // If a future preview ever needs "DOM" here, that is the moment to ask whether
+  // it still belongs in this repository at all — see apps/preview-circuit-board/main.ts.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["apps/**/*.ts", "index.ts", "domain/**/*.ts", "stages/**/*.ts"],
+  "exclude": ["node_modules", "coverage", "dist"]
+}
