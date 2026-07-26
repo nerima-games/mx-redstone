@@ -50,6 +50,13 @@ jobs:
       - name: Dependency whitelist / time-source ban
         run: pnpm check:deps
 
+      # The API lock (plan.md §6 Step 0-3). Fails when the committed
+      # api-lock.md no longer matches the package's public surface, so a change
+      # to what consumers can see cannot land without a reviewable diff. Run
+      # `pnpm api:update` to refresh it.
+      - name: API lock
+        run: pnpm api:check
+
       - name: Test
         run: pnpm test
 

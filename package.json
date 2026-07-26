@@ -50,7 +50,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "check:deps": "tsx scripts/check-dependency-whitelist.ts",
-    "verify": "pnpm typecheck && pnpm lint && pnpm check:deps && pnpm test"
+    "api:check": "tsx scripts/api-lock.ts",
+    "api:update": "tsx scripts/api-lock.ts --write",
+    "verify": "pnpm typecheck && pnpm lint && pnpm check:deps && pnpm api:check && pnpm test"
   },
   "dependencies": {
     "effect": "^3.20.0"

@@ -83,7 +83,7 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | 親 | 種別 | 何のために |
 | --- | --- | --- |
 | `@nerima-games/mc-sim` | `dependencies` | エンティティ位置・インベントリ・ゲーム状態の読み書き。音の要求もここ経由 |
-| `@nerima-games/mc-worldgen` | `dependencies` | 部品が置かれているブロックの読み書き、チャンクダーティ通知 |
+| `@nerima-games/mc-worldgen` | `dependencies` | 部品が置かれているブロックの読み書き、チャンクダーティ通知。どちらも `ChunkStore`（`@nerima-games/mc-worldgen/ChunkStore`）。**この行は当たっていた** — plan.md §3.8 が挙げるダーティ通知は mc-sim ではなく mc-worldgen に決着した |
 | `@nerima-games/mc-kernel` | `dependencies`（普遍） | 共有語彙。許可リストに書かずに import 可、ただし `package.json` への記載は必要 |
 | `@nerima-games/mc-playground-kit` | **`devDependencies` のみ** | 回路盤プレビューの起動ハーネス |
 
