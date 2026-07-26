@@ -90,6 +90,7 @@ graph BT
   compose --> redstone
   compose --> ui
   compose --> multiplayer
+  compose --> render
 ```
 
 このグラフは `scripts/check-dependency-whitelist.ts` の `REPOSITORY_POLICY.dependencyGraph`（:127-212）に全 16 行転記されており、

@@ -223,23 +223,40 @@ mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしてお�
 kernel 公開時に削除。`frame-contract.ts` と同じ理由で `index.ts` から re-export していない
 ——座標語彙も所有していないものだからである。
 
-## 6. `GameModule` はまだ実装していない
+## 6. `GameModule` を実装した（`redstoneModule`）
 
-plan.md §4.1 はもう 1 つ契約型を定義している。
+plan.md §4.1 はもう 1 つ契約型を定義している。縦切りスパイク後の形はこうである。
 
 ```typescript
-interface GameModule<ROut, E, RIn> {
+interface GameModule<ROut, E, RIn, RRegister = never> {
   readonly layers: Layer.Layer<ROut, E, RIn>          // 提供するサービス群
-  readonly frameStages: ReadonlyArray<StageRegistration>
+  readonly frameStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, RRegister>
 }
 ```
 
-**`RIn` を書けないので実装していない。** `RIn` は「この Layer が構築のために要求するサービス群」であり、
-mx-redstone の場合それは mc-sim と mc-worldgen のサービス Tag である。
-それらの公開 API はまだ存在しない（未公開かつ未実装）。
-存在しない型引数を仮の名前で埋めた `GameModule` は、後で必ず書き直す嘘になる。
+ここには長らく「`RIn` を書けないので実装していない」と書いてあった。
+**診断は半分間違っていて、間違っていた側が重要だった。**
 
-`makeRedstoneStages: Effect.Effect<ReadonlyArray<StageRegistration>>` は
-**正直な部分集合**である（`stages/registration.ts:166-176`）。
-`layers` が空である間、`GameModule` は `frameStages` しか持たないので、
-配列を直接返すことと情報量が変わらない。
+Layer は障害ではなかった。plan.md §3.12 が「主要な公開API: stage登録のみ（電力グラフは内部実装）」と
+明言しているとおり、mx-redstone はサービスを公開しない。だから `layers` は空であり、最初から空だった。
+
+本当の障害は **`frameStages` が配列だったこと**である。本リポジトリの stage は Effect の中で確保した
+`Ref`（盤面・電力マップ・tick アキュムレータ）から組み立てられるので、`ReadonlyArray` 型のフィールドに
+入れる方法が無かった。mc-sim が publish されても解決しない。
+配列であることは同時に、**どのモジュールにも stage を組み立てるためにサービスを取得する文脈が無い**
+ことを意味しており、それが `FrameServices` を肥大させていた原因でもあった
+（mc-kernel `docs/freeze-checklist.md` (b)）。
+
+```typescript
+export const makeRedstoneStages: Effect.Effect<ReadonlyArray<StageRegistration>>
+
+export const redstoneModule: GameModule<never, never, never> = {
+  layers: Layer.empty,
+  frameStages: makeRedstoneStages,
+}
+```
+
+`RIn` は `never` のままである。`redstone:effects` がピストンやランプを mc-sim 越しに書き始めるとき、
+それらのサービスは `frameStages` の中で — つまり `RRegister` パラメータで — 取得される。
+本リポジトリは mc-sim が供給しなければならないものを**構築**するのではなく、
+mc-sim が供給するものを**呼ぶ**だけだからである。

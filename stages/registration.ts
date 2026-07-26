@@ -25,8 +25,8 @@
  * below is bounded anyway, because relying on somebody else's clamp is how you
  * discover it was removed.
  */
-import { Effect, Ref } from 'effect'
-import type { DeltaTimeSecs, StageRegistration } from '../domain/frame-contract'
+import { Effect, Layer, Ref } from 'effect'
+import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
 import {
   emptyPowerMap,
   propagateTick,
@@ -166,11 +166,34 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
 /**
  * Build the module's state and its stages together.
  *
- * Not yet a `GameModule` (plan.md §4.1): that type carries a
- * `Layer.Layer<ROut, E, RIn>`, and `RIn` cannot be named until mc-sim's public
- * API exists. Returning the stages alone is the honest subset.
+ * This is exactly `GameModule.frameStages` — see `redstoneModule` below.
  */
 export const makeRedstoneStages: Effect.Effect<ReadonlyArray<StageRegistration>> = Effect.map(
   makeRedstoneFrameState,
   redstoneStages,
 )
+
+/**
+ * mx-redstone as a `GameModule` (plan.md §4.1).
+ *
+ * This used to say "not yet a `GameModule`: that type carries a
+ * `Layer.Layer<ROut, E, RIn>`, and `RIn` cannot be named until mc-sim's public
+ * API exists". The diagnosis was half right, and the half that was wrong is the
+ * interesting one.
+ *
+ * The Layer was never the obstacle. plan.md §3.12 is explicit that this
+ * repository's only public API is stage registration — the power graph is
+ * internal — so mx-redstone provides no service and its Layer is empty. The
+ * obstacle was that `frameStages` was an ARRAY, and these stages are built from
+ * `Ref`s allocated in an Effect. Publishing mc-sim would not have changed that;
+ * the vertical-slice spike making `frameStages` an Effect did.
+ *
+ * `RIn` is `never` and stays `never`. When `redstone:effects` starts writing
+ * pistons and lamps through mc-sim, it will acquire those services in
+ * `frameStages` — the `RRegister` parameter — because this repository does not
+ * BUILD anything mc-sim has to supply, it CALLS things mc-sim supplies.
+ */
+export const redstoneModule: GameModule<never, never, never> = {
+  layers: Layer.empty,
+  frameStages: makeRedstoneStages,
+}

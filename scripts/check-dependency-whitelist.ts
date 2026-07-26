@@ -204,6 +204,14 @@ export const REPOSITORY_POLICY = {
       '@nerima-games/mx-redstone',
       '@nerima-games/mx-ui',
       '@nerima-games/mx-multiplayer',
+      // Added by the vertical-slice spike. mc-render registers the frame's
+      // input, camera-mirror, chunk-sync, draw and post-fx stages, and NOTHING
+      // in the roster previously declared a runtime edge to it — so the shipped
+      // build had no input stage at all (plan.md §2.3-2). Registering another
+      // module's stages is wiring, not a rule; rule 3 still blocks compose from
+      // reaching mc-meshing or mc-sim behind it.
+      // See mc-compose/docs/architecture.md §5.
+      '@nerima-games/mc-render',
     ])],
 
     // The dev-meta workspace (plan.md §6 Step 0) clones the other repositories

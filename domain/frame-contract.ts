@@ -24,7 +24,7 @@
  * for it, and the whole point of kernel (plan.md §3.1) is that the vocabulary has
  * exactly one home.
  */
-import type { Effect } from 'effect'
+import type { Effect, Layer } from 'effect'
 import { Brand } from 'effect'
 
 /**
@@ -99,4 +99,43 @@ export interface StageRegistration {
   readonly id: StageId
   readonly after?: ReadonlyArray<StageId>
   readonly run: (dt: DeltaTimeSecs) => Effect.Effect<void, never, FrameServices>
+}
+
+/**
+ * A repository's contribution to a running game.
+ *
+ * `ROut`      — services this module provides.
+ * `E`         — errors that can occur while *building* those services.
+ * `RIn`       — services this module needs to be given in order to build.
+ * `RRegister` — services this module needs in order to REGISTER its stages.
+ *
+ * ---------------------------------------------------------------------------
+ * `frameStages` is an Effect, and this repository is part of why
+ * ---------------------------------------------------------------------------
+ *
+ * kernel declared it `ReadonlyArray<StageRegistration>` — a VALUE — until the
+ * vertical-slice spike. A value has no context, so a module had no moment at
+ * which it could acquire a service in order to BUILD a stage, and the only
+ * remaining channel was `run` — which forced every service any stage touched
+ * into `FrameServices`, and that in turn forced kernel to name mc-sim's and
+ * mc-render's services. The tier model (plan.md §2.2) forbids that outright.
+ *
+ * `stages/registration.ts` in this repository had already run into it: it
+ * exported an `Effect.Effect<ReadonlyArray<StageRegistration>>` with a comment
+ * saying it "is NOT yet a `GameModule`" because the service set could not be
+ * named. It was the right shape all along, and the contract has caught up.
+ *
+ * `RRegister` is separate from `RIn` because the two are genuinely different
+ * sets — mc-render acquires `InputService` to register its input stage, and
+ * `InputService` is a service mc-render PROVIDES rather than one it needs to be
+ * given. It defaults to `never` so the common module still reads as three
+ * parameters, which is exactly how this repository writes its own.
+ *
+ * The error channel of `frameStages` stays `never`, unlike the Layer's: a
+ * module that can fail to come up says so in `E`, where a host already has to
+ * handle it.
+ */
+export interface GameModule<ROut, E, RIn, RRegister = never> {
+  readonly layers: Layer.Layer<ROut, E, RIn>
+  readonly frameStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, RRegister>
 }

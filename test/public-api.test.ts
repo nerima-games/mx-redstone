@@ -26,6 +26,10 @@ describe('public API surface', () => {
       const contract = [
         'redstoneStages',
         'makeRedstoneStages',
+        // the full plan.md §4.1 module — Layer plus an Effect-valued
+        // `frameStages`. Expressible only since the vertical-slice spike; see
+        // `stages/registration.ts` on why the array was the obstacle.
+        'redstoneModule',
         'makeRedstoneFrameState',
         'REDSTONE_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
