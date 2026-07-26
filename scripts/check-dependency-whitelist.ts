@@ -251,7 +251,7 @@ export const BANNED_TIME_SOURCES: ReadonlyArray<{ readonly pattern: RegExp; read
 ]
 
 /** Directories and files scanned for imports and banned time sources. */
-export const SCAN_ROOTS: ReadonlyArray<string> = ['index.ts', 'domain', 'stages', 'scripts', 'test']
+export const SCAN_ROOTS: ReadonlyArray<string> = ['apps', 'index.ts', 'domain', 'stages', 'scripts', 'test']
 
 const SKIPPED_DIRECTORIES: ReadonlySet<string> = new Set([
   'node_modules',
@@ -486,12 +486,26 @@ export type ImportRecord = {
  * are used to read the real specifier back out of the original source.
  *
  * The `d` flag is what makes that possible.
+ *
+ * REGRESSION — do not rewrite the middle segment as `[^'";]+?`.
+ *
+ * That form was ambiguous with the `\s+` that follows it: both could match the
+ * same run of whitespace, so the engine tried every way to split it. Measured on
+ * `'import ' + ' '.repeat(n)`: 283ms at n=1000, 2.4s at n=2000, 19.3s at n=4000.
+ * These repositories are public and CI runs on `pull_request`, so any fork PR
+ * could have burned a runner to the six-hour job cap with a file of blanks — and
+ * `maskSource` blanks comment bodies while preserving length, so a large doc
+ * comment after a bare `import` reproduced it by accident.
+ *
+ * `[^'";]*[^'";\s]` forces the segment to end on a non-space, which removes the
+ * overlap. Same n=4000 input: 20ms. Verified identical output on 11 import and
+ * export forms.
  */
 const IMPORT_PATTERNS: ReadonlyArray<RegExp> = [
   // import x from 'm' / import type { x } from 'm' / import 'm'
-  /\bimport\s+(?:type\s+)?(?:[^'";]+?\s+from\s+)?['"]([^'"]*)['"]/dgu,
+  /\bimport\s+(?:type\s+)?(?:[^'";]*[^'";\s]\s+from\s+)?['"]([^'"]*)['"]/dgu,
   // export * from 'm' / export { x } from 'm' / export type { x } from 'm'
-  /\bexport\s+(?:type\s+)?[^'";]+?\s+from\s+['"]([^'"]*)['"]/dgu,
+  /\bexport\s+(?:type\s+)?[^'";]*[^'";\s]\s+from\s+['"]([^'"]*)['"]/dgu,
   // await import('m') and the import('m') type operator
   /\bimport\s*\(\s*['"]([^'"]*)['"]\s*\)/dgu,
 ]
