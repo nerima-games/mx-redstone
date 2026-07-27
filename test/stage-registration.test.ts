@@ -24,6 +24,7 @@ import {
   REDSTONE_STAGE_IDS,
   UPSTREAM_STAGE_IDS,
 } from '../stages/stage-ids'
+import { FrameServicesLayer } from './frame-services'
 
 const allAfterEdges = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.flatMap((stage) => [...(stage.after ?? [])])
@@ -188,6 +189,9 @@ describe('fixed-rate redstone ticks', () => {
   )
 })
 
+// Every test below RUNS a stage, so every one provides `FrameServicesLayer` —
+// see `./frame-services.ts` for why a layer that is empty today is not a line
+// worth deleting.
 describe('stage behaviour', () => {
   it.effect('the power stage advances the graph once a full redstone tick has accumulated', () =>
     Effect.gen(function* () {
@@ -206,7 +210,7 @@ describe('stage behaviour', () => {
       expect(powerAt(settled, 'lever')).toBe(MAX_POWER_LEVEL)
       expect(powerAt(settled, 'w0')).toBe(14)
       expect(yield* Ref.get(state.tickCount)).toBe(1)
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('an empty board costs a tick and produces no power, rather than failing', () =>
@@ -217,7 +221,7 @@ describe('stage behaviour', () => {
       yield* power?.run(DeltaTimeSecs(1)) ?? Effect.void
       expect((yield* Ref.get(state.power)).size).toBe(0)
       expect(yield* Ref.get(state.tickCount)).toBe(MAX_TICKS_PER_FRAME)
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('every stage tolerates dt = 0', () =>
@@ -226,7 +230,7 @@ describe('stage behaviour', () => {
       yield* Ref.set(state.board, leverAndWire)
       yield* Effect.forEach(redstoneStages(state), (stage) => stage.run(DeltaTimeSecs(0)))
       expect((yield* Ref.get(state.power)).size).toBe(0)
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('each call to makeRedstoneFrameState yields independent state (re-entrant initialisation)', () =>
