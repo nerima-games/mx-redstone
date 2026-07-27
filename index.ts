@@ -27,8 +27,13 @@
  * cares — never a call into a sibling.
  */
 
+export * from './domain/comparator'
+export * from './domain/dispenser'
+export * from './domain/hopper'
+export * from './domain/observer'
 export * from './domain/piston'
 export * from './domain/power-graph'
+export * from './domain/pressure-plate'
 export * from './stages/registration'
 export * from './stages/stage-ids'
 

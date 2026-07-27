@@ -157,8 +157,31 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
     // FIRST CUT: piston extension/retraction (domain/piston.ts), lamp lighting,
     // dispensers, droppers, hoppers and observers are applied here, each as a
     // write through mc-sim. They are separated from `power` so that the graph
-    // stays a pure function — the reference's six `redstone-*-world-effects.ts`
-    // files (618 LOC) are the shape this stage grows into.
+    // stays a pure function — the reference's five `redstone-*-world-effects.ts`
+    // files are the shape this stage grows into.
+    //
+    // The DECISIONS those effects need are now all written and tested:
+    // `domain/observer.ts` says which observers fired, `domain/dispenser.ts`
+    // which dispensers saw a rising edge, `domain/hopper.ts` which hoppers are
+    // locked and when they are due, `domain/pressure-plate.ts` how many
+    // occupants are worth how much signal, and `domain/comparator.ts` what a
+    // container reading means. Every one of them is a pure function whose
+    // memory is a VALUE — deliberately, because the reference held the
+    // observer's and the dispenser's in module-level `Map`s with reset
+    // functions beside them, and this stage is built from per-call `Ref`s for
+    // the reason DN-RS-8 gives.
+    //
+    // What is missing is not effort, it is six named things that do not exist:
+    // `InventoryServiceApi.inventoryAt(position)`, a per-item `maxStackSize`,
+    // `EntityManagerApi.entitiesWithin(bounds)`, an entity extent, kernel's
+    // `Position`, and an owner for the dropped-item `behaviour` payload that is
+    // not a sibling experience module. docs/design-notes.md DN-RS-17 has the
+    // table, with the file and line where each one is absent.
+    //
+    // Three of the six are ONE addition: a comparator reading a chest, a hopper
+    // draining one and a dispenser drawing from one are all blocked on
+    // `inventoryAt`. When this stage acquires mc-sim's services in
+    // `frameStages`, that is the first thing to ask for.
     run: () => Effect.void,
   },
 ]

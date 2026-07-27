@@ -36,6 +36,8 @@
  * (`stages/registration.ts:11-27`), and a preview that advanced circuits on a
  * wall clock would show a different circuit on a faster machine.
  */
+import type { BlockRef } from '../../domain/block-ref'
+import { OBSERVER_PULSE_TICKS, observeChanges, type Sightings } from '../../domain/observer'
 import {
   emptyPowerMap,
   isLit,
@@ -50,11 +52,13 @@ import type { PositionKey } from '../../domain/position-key'
 import {
   applyPistons,
   circuitBoardOf,
+  coordOf,
   inBounds,
   isGraphKind,
   keyOf,
   makePart,
   OPPOSITE_FACING,
+  SIDE_FACINGS,
   step,
   type BoardSize,
   type Coord,
@@ -91,6 +95,17 @@ export type Sandbox = {
   history: Array<HistoryEntry>
   watched: Array<PositionKey>
   events: ReadonlyArray<PistonEvent>
+  /**
+   * What each observer's watched cell held on the tick that just finished.
+   *
+   * A FIELD, not a module constant, and that is the point of it being here at
+   * all: the reference keeps this in a module-level `Map`
+   * (`redstone-observer-world-effects.ts:34`) with a reset function beside it,
+   * so two worlds share one memory. Two sandboxes in one process share nothing.
+   */
+  sightings: Sightings
+  /** Redstone ticks left on each observer's pulse. */
+  observerPulse: Map<PositionKey, number>
   /** One line describing what the last keystroke did. */
   note: string
   scenario: string
@@ -108,6 +123,8 @@ export const makeSandbox = (
   history: [{ tick: 0, power: emptyPowerMap }],
   watched: [...(options.watched ?? [])],
   events: [],
+  sightings: new Map(),
+  observerPulse: new Map(),
   note: '',
   scenario: options.scenario ?? 'sandbox',
 })
@@ -122,14 +139,77 @@ const record = (sandbox: Sandbox): void => {
 }
 
 /**
- * Advance one redstone tick: power first, then the world.
+ * What an observer sees in the cell it watches.
  *
- * The order is the whole reason `redstone:power` and `redstone:effects` are two
- * stages rather than one (docs/public-api.md §4-2). Doing it the other way round
- * — moving a piston and then computing power — makes the board a function of the
- * order the pistons happened to be iterated in.
+ * The preview's grid IS the world here, so a "block" is a part kind, and an
+ * empty cell reads `AIR` rather than being absent — an observer must fire when
+ * the block it was watching is MINED, and a missing entry would be a departed
+ * observer instead (`domain/observer.ts` drops those from the memory).
+ */
+const sightingAt = (sandbox: Sandbox, key: PositionKey, facing: Facing): BlockRef =>
+  sandbox.parts.get(keyOf(step(coordOf(key), facing)))?.kind ?? 'AIR'
+
+/**
+ * Sample every observer, fire the ones whose cell changed, and age the pulses.
+ *
+ * This is the caller `domain/observer.ts` is written for, and it is worth
+ * saying what it demonstrates that no test can. The library decides WHICH
+ * observers fired and how long a pulse lasts; the countdown is here, next to the
+ * tick counter, for the same reason the button's release belongs in
+ * `stages/registration.ts` — remaining time is state and the power map has no
+ * cell for it. Watch an observer on screen: it goes bright for exactly two
+ * ticks and then dark, and nothing in `domain/` counted either of them.
+ *
+ * It is also the cheap version of the sampling argument. One lookup per placed
+ * observer per tick, not a scan of the board: plan.md §3.11 records per-tick
+ * full scans as a disaster, and this is bounded by what the player built.
+ */
+const advanceObservers = (sandbox: Sandbox): void => {
+  const current = new Map<PositionKey, BlockRef>()
+  for (const [key, part] of sandbox.parts) {
+    if (part.kind === 'observer') {
+      current.set(key, sightingAt(sandbox, key, part.facing))
+    }
+  }
+
+  const sweep = observeChanges(current, sandbox.sightings)
+  sandbox.sightings = sweep.seen
+
+  const pulses = new Map<PositionKey, number>()
+  for (const [key, remaining] of sandbox.observerPulse) {
+    if (current.has(key) && remaining > 1) {
+      pulses.set(key, remaining - 1)
+    }
+  }
+  for (const key of sweep.fired) {
+    pulses.set(key, OBSERVER_PULSE_TICKS)
+  }
+  sandbox.observerPulse = pulses
+
+  for (const [key, part] of sandbox.parts) {
+    if (part.kind === 'observer') {
+      sandbox.parts.set(key, { ...part, active: pulses.has(key) })
+    }
+  }
+}
+
+/**
+ * Advance one redstone tick: observers, then power, then the world.
+ *
+ * The last two are the whole reason `redstone:power` and `redstone:effects` are
+ * two stages rather than one (docs/public-api.md §4-2). Doing it the other way
+ * round — moving a piston and then computing power — makes the board a function
+ * of the order the pistons happened to be iterated in.
+ *
+ * Observers go FIRST, before power and before the pistons move anything, so
+ * that what they compare is the board as it stood at the end of the previous
+ * tick. Sampling them after `applyPistons` would let a piston's own extension
+ * arrive in the same tick that powered it, and an observer wired back to that
+ * piston would then drive itself at 1 Hz with nothing else on the board.
  */
 export const stepOnce = (sandbox: Sandbox): void => {
+  advanceObservers(sandbox)
+
   const board = boardOf(sandbox)
   sandbox.power = propagateTick(board, sandbox.power)
   sandbox.tick += 1
@@ -217,6 +297,16 @@ export const resetPower = (sandbox: Sandbox): void => {
   sandbox.tick = 0
   sandbox.history = [{ tick: 0, power: emptyPowerMap }]
   sandbox.events = []
+  // Observers re-arm. Keeping the sightings would make every observer fire on
+  // the first tick after a reset, against a change that happened before it —
+  // which is the module-level-Map failure, arriving through the reset button.
+  sandbox.sightings = new Map()
+  sandbox.observerPulse = new Map()
+  for (const [key, part] of Array.from(sandbox.parts)) {
+    if (part.kind === 'observer' && part.active) {
+      sandbox.parts.set(key, { ...part, active: false })
+    }
+  }
   // Retract every piston: the power map is gone, so leaving an arm out would
   // show a piston extended with nothing powering it.
   // A snapshot, because the loop deletes piston arms as it goes.
@@ -287,6 +377,15 @@ export const toggleAt = (sandbox: Sandbox, coord: Coord): string => {
   if (part === undefined) {
     return `nothing at ${key}`
   }
+  if (part.kind === 'comparator') {
+    // Vanilla toggles a comparator's mode with the same gesture that throws a
+    // lever, so the preview uses the same key. Unlike the repeater's delay this
+    // one REACHES the graph: `[` and `]` demonstrate a field the model does not
+    // have, and `t` here demonstrates one it does.
+    const subtract = !part.subtract
+    sandbox.parts.set(key, { ...part, subtract })
+    return `comparator at ${key} is now in ${subtract ? 'subtract' : 'compare'} mode`
+  }
   if (part.kind !== 'lever' && part.kind !== 'button') {
     return `${part.kind} has nothing to toggle`
   }
@@ -345,11 +444,13 @@ export const watchedCells = (sandbox: Sandbox, limit = 8): ReadonlyArray<Positio
 
   const byPriority: Record<string, number> = {
     lamp: 0,
-    repeater: 1,
-    torch: 2,
-    lever: 3,
-    button: 4,
-    piston: 5,
+    comparator: 1,
+    repeater: 2,
+    observer: 3,
+    torch: 4,
+    lever: 5,
+    button: 6,
+    piston: 7,
   }
 
   return [...sandbox.parts]
@@ -418,6 +519,33 @@ export const describeCell = (sandbox: Sandbox, coord: Coord): string => {
     // A repeater is a diode: this is the only cell it drives, and an unnamed
     // output is a repeater wired to nothing rather than one wired to everything.
     details.push(board.components.has(output) ? `output ${output}` : 'no output')
+  }
+  if (part.kind === 'comparator') {
+    details.push(part.subtract ? 'SUBTRACT' : 'compare', `facing ${part.facing}`)
+    const input = keyOf(step(coord, OPPOSITE_FACING[part.facing]))
+    const output = keyOf(step(coord, part.facing))
+    details.push(board.components.has(input) ? `rear ${input}` : 'no rear')
+    details.push(board.components.has(output) ? `output ${output}` : 'no output')
+    // The sides are what makes a comparator a comparator, so they are reported
+    // with their LEVELS rather than as cell names: "compare refused" is only
+    // legible next to the number that beat the rear.
+    const sides = SIDE_FACINGS[part.facing]
+      .map((side) => keyOf(step(coord, side)))
+      .map((sideKey) => `${sideKey}=${String(powerAt(sandbox.power, sideKey))}`)
+    details.push(`sides ${sides.join(' ')}`)
+  }
+  if (part.kind === 'observer') {
+    details.push(`watches ${keyOf(step(coord, part.facing))}`)
+    const output = keyOf(step(coord, OPPOSITE_FACING[part.facing]))
+    details.push(board.components.has(output) ? `output ${output}` : 'no output')
+    const remaining = sandbox.observerPulse.get(key)
+    details.push(
+      remaining === undefined
+        ? sandbox.sightings.has(key)
+          ? `armed on ${sandbox.sightings.get(key) ?? 'AIR'}`
+          : 'not yet armed — step once'
+        : `PULSING, ${String(remaining)} tick(s) left`,
+    )
   }
   if (part.kind === 'torch') {
     details.push(`on ${part.facing}`)

@@ -46,13 +46,16 @@
  */
 
 /**
- * PLACEHOLDER for kernel's `BlockType`.
+ * `BlockRef` is `domain/block-ref.ts`'s, and is re-exported here.
  *
- * Unbranded and opaque on purpose: this repository must not invent a second
- * block vocabulary, and nothing here inspects the value. See
- * `domain/position-key.ts` for the same reasoning applied to coordinates.
+ * It was declared in this file while pistons were the only rule that had to name
+ * a block. `domain/observer.ts` is the second, and one placeholder invented
+ * twice is the `ItemId` story mc-sim's `domain/inventory.ts` opens with. The
+ * re-export is so that moving it changed no import anywhere else.
  */
-export type BlockRef = string
+export type { BlockRef } from './block-ref'
+
+import type { BlockRef } from './block-ref'
 
 /**
  * The subset of mc-kernel's capability table that piston logic needs.

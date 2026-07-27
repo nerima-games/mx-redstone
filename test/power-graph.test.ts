@@ -30,8 +30,10 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import {
+  drivenPowerAt,
   emptyPowerMap,
   isLit,
+  isPowered,
   MAX_POWER_LEVEL,
   powerAt,
   propagateTick,
@@ -851,6 +853,581 @@ describe('buttons — the pulse is the caller’s, and this names the current be
       expect(powerAt(held, 'w0')).toBe(14)
 
       expect(propagateTick(released, held).size).toBe(0)
+    }),
+  )
+})
+
+describe('comparators — the only component whose output is a NUMBER', () => {
+  /**
+   * lever - w0 - comparator - out, with two stubs on the comparator's sides.
+   *
+   * The sides are wires so that a scenario can energise them; `sideInputs` names
+   * them so the comparator reads them. The flank stubs double as the check that
+   * a comparator drives nothing sideways, which is the same claim the repeater
+   * fixture above makes and a worse failure here — see the latch test below.
+   */
+  const comparatorBoard = (options: {
+    readonly mode?: 'compare' | 'subtract'
+    readonly sideSources?: ReadonlyArray<readonly [string, Component]>
+    readonly containerSignal?: number
+  } = {}): CircuitBoard =>
+    graph(
+      [
+        ['lever', { kind: 'lever', active: true }],
+        ['w0', wire()],
+        [
+          'comparator',
+          {
+            kind: 'comparator',
+            inputFrom: 'w0',
+            outputTo: 'out',
+            sideInputs: ['sideA', 'sideB'],
+            ...(options.mode === undefined ? {} : { mode: options.mode }),
+            ...(options.containerSignal === undefined
+              ? {}
+              : { containerSignal: options.containerSignal }),
+          },
+        ],
+        ['out', wire()],
+        ['sideA', wire()],
+        ['sideB', wire()],
+        ...(options.sideSources ?? []),
+      ],
+      [
+        ['lever', 'w0'],
+        ['w0', 'comparator'],
+        ['comparator', 'out'],
+        ['comparator', 'sideA'],
+        ['comparator', 'sideB'],
+        ...(options.sideSources ?? []).map(([key]) => ['sideA', key] as const),
+      ],
+    )
+
+  it.effect('a comparator emits the LEVEL it read, not full power — the first variable-strength source', () =>
+    Effect.sync(() => {
+      // Every other source in the model emits MAX_POWER_LEVEL. This is the one
+      // that does arithmetic, and `sourcesOf` had to learn to seed a source at
+      // something other than 15 for it.
+      const settled = settle(comparatorBoard())
+
+      expect(settled.oscillating).toBe(false)
+      expect(powerAt(settled.power, 'w0')).toBe(14)
+      expect(powerAt(settled.power, 'comparator')).toBe(14)
+      expect(powerAt(settled.power, 'comparator')).not.toBe(MAX_POWER_LEVEL)
+    }),
+  )
+
+  it.effect('compare mode holds the rear back while a side matches or beats it', () =>
+    Effect.sync(() => {
+      // The side is fed by its own lever two steps away, so it carries 13 — one
+      // less than the rear's 14 — and the comparator passes. Raise the side to
+      // touch the lever directly and it wins.
+      const passing = settle(
+        comparatorBoard({ sideSources: [['sideLever', { kind: 'lever', active: true }]] }),
+      )
+      expect(powerAt(passing.power, 'sideA')).toBe(14)
+      // 14 against 14: compare mode passes on equality.
+      expect(powerAt(passing.power, 'comparator')).toBe(14)
+
+      const blocked = settle(
+        graph(
+          [
+            ['lever', { kind: 'lever', active: true }],
+            ['w0', wire()],
+            ['w1', wire()],
+            ['comparator', { kind: 'comparator', inputFrom: 'w1', outputTo: 'out', sideInputs: ['sideA'] }],
+            ['out', wire()],
+            ['sideA', wire()],
+            ['sideLever', { kind: 'lever', active: true }],
+          ],
+          [
+            ['lever', 'w0'],
+            ['w0', 'w1'],
+            ['w1', 'comparator'],
+            ['comparator', 'out'],
+            ['comparator', 'sideA'],
+            ['sideA', 'sideLever'],
+          ],
+        ),
+      )
+      // Rear is 13 (two steps from the lever); the side is 14. Compare refuses.
+      expect(powerAt(blocked.power, 'w1')).toBe(13)
+      expect(powerAt(blocked.power, 'sideA')).toBe(14)
+      expect(powerAt(blocked.power, 'comparator')).toBe(0)
+      expect(powerAt(blocked.power, 'out')).toBe(0)
+    }),
+  )
+
+  it.effect('subtract mode takes the side off the rear', () =>
+    Effect.sync(() => {
+      const board = graph(
+        [
+          ['lever', { kind: 'lever', active: true }],
+          ['w0', wire()],
+          ['comparator', { kind: 'comparator', mode: 'subtract', inputFrom: 'w0', outputTo: 'out', sideInputs: ['s3'] }],
+          ['out', wire()],
+          // A four-cell run off a second lever, so the side arrives at 11.
+          ['sideLever', { kind: 'lever', active: true }],
+          ['s0', wire()],
+          ['s1', wire()],
+          ['s2', wire()],
+          ['s3', wire()],
+        ],
+        [
+          ['lever', 'w0'],
+          ['w0', 'comparator'],
+          ['comparator', 'out'],
+          ['sideLever', 's0'],
+          ['s0', 's1'],
+          ['s1', 's2'],
+          ['s2', 's3'],
+          ['s3', 'comparator'],
+        ],
+      )
+
+      const settled = settle(board)
+      expect(powerAt(settled.power, 'w0')).toBe(14)
+      // Four conducting steps from the side lever, so 11.
+      expect(powerAt(settled.power, 's3')).toBe(11)
+      expect(powerAt(settled.power, 'comparator')).toBe(14 - 11)
+      expect(powerAt(settled.power, 'out')).toBe(2)
+    }),
+  )
+
+  it.effect('REGRESSION: a comparator drives only `outputTo` — it does not power its own rear or its sides', () =>
+    Effect.sync(() => {
+      // The repeater's latch (DN-RS-12) in the component where it would be
+      // worse. A comparator that drove its own sides would read its own output
+      // as a side signal, and in compare mode side-equals-rear emits 0 — so it
+      // would switch itself off, then on, then off: a two-tick blinker built out
+      // of the component players place to hold a value STILL.
+      const board = comparatorBoard()
+      let power = emptyPowerMap
+      for (let tick = 0; tick < 6; tick += 1) {
+        power = propagateTick(board, power)
+      }
+
+      expect(powerAt(power, 'comparator')).toBe(14)
+      expect(powerAt(power, 'out')).toBe(13)
+      // The rear stays the lever's level, not lifted by the comparator's output.
+      expect(powerAt(power, 'w0')).toBe(14)
+      expect(powerAt(power, 'sideA')).toBe(0)
+      expect(powerAt(power, 'sideB')).toBe(0)
+
+      // …and it lets go. Nothing on the board generates once the lever is off.
+      const off = graph(
+        [
+          ['lever', { kind: 'lever', active: false }],
+          ['w0', wire()],
+          ['comparator', { kind: 'comparator', inputFrom: 'w0', outputTo: 'out', sideInputs: ['sideA'] }],
+          ['out', wire()],
+          ['sideA', wire()],
+        ],
+        [
+          ['lever', 'w0'],
+          ['w0', 'comparator'],
+          ['comparator', 'out'],
+          ['comparator', 'sideA'],
+        ],
+      )
+      for (let tick = 0; tick < 20; tick += 1) {
+        power = propagateTick(off, power)
+      }
+      expect(power.size).toBe(0)
+    }),
+  )
+
+  it.effect('a comparator with no output named drives nothing, exactly as a repeater does', () =>
+    Effect.sync(() => {
+      const board = line([
+        ['lever', { kind: 'lever', active: true }],
+        ['w0', wire()],
+        ['comparator', { kind: 'comparator', inputFrom: 'w0' }],
+        ['w1', wire()],
+      ])
+
+      const settled = settle(board)
+      expect(powerAt(settled.power, 'comparator')).toBe(14)
+      expect(powerAt(settled.power, 'w1')).toBe(0)
+    }),
+  )
+
+  it.effect('REGRESSION: `containerSignal` REPLACES the rear reading rather than adding to it', () =>
+    Effect.sync(() => {
+      // In the world the cell behind a comparator holds either a container or a
+      // wire, never both, and a rule that took the maximum would let a player
+      // wire past an empty chest and read a full one.
+      const empty = settle(comparatorBoard({ containerSignal: 0 }))
+      expect(powerAt(empty.power, 'w0')).toBe(14)
+      expect(powerAt(empty.power, 'comparator')).toBe(0)
+
+      const stocked = settle(comparatorBoard({ containerSignal: 7 }))
+      expect(powerAt(stocked.power, 'comparator')).toBe(7)
+      expect(powerAt(stocked.power, 'out')).toBe(6)
+    }),
+  )
+
+  it.effect('the sides are READ without an edge, the same way `inputFrom` and `invertedBy` are', () =>
+    Effect.sync(() => {
+      // `adjacency` bounds where power FLOWS. What a component may look at has
+      // never been bounded by it — `sourcesOf` reads `previous` at `invertedBy`
+      // directly and always has. A side named but not adjacent still gates the
+      // comparator, which is what lets a caller model a placement this
+      // geometry-free graph cannot otherwise express.
+      const board = graph(
+        [
+          ['lever', { kind: 'lever', active: true }],
+          ['w0', wire()],
+          ['comparator', { kind: 'comparator', inputFrom: 'w0', outputTo: 'out', sideInputs: ['detached'] }],
+          ['out', wire()],
+          ['detachedLever', { kind: 'lever', active: true }],
+          ['detached', wire()],
+        ],
+        [
+          ['lever', 'w0'],
+          ['w0', 'comparator'],
+          ['comparator', 'out'],
+          ['detachedLever', 'detached'],
+        ],
+      )
+
+      const settled = settle(board)
+      expect(powerAt(settled.power, 'detached')).toBe(14)
+      // Rear 14 against side 14: compare passes on equality, so the comparator
+      // is on — and the point is that the side was read at all.
+      expect(powerAt(settled.power, 'comparator')).toBe(14)
+
+      const stronger = settle(
+        graph(
+          [
+            ['lever', { kind: 'lever', active: true }],
+            ['w0', wire()],
+            ['w1', wire()],
+            ['comparator', { kind: 'comparator', inputFrom: 'w1', outputTo: 'out', sideInputs: ['detachedLever'] }],
+            ['out', wire()],
+            ['detachedLever', { kind: 'lever', active: true }],
+          ],
+          [
+            ['lever', 'w0'],
+            ['w0', 'w1'],
+            ['w1', 'comparator'],
+            ['comparator', 'out'],
+          ],
+        ),
+      )
+      // Side is a lever at 15 and the rear is 13: refused, with no edge between
+      // the comparator and the lever at all.
+      expect(powerAt(stronger.power, 'comparator')).toBe(0)
+    }),
+  )
+
+  it.effect('REGRESSION: a comparator is a DELAY ELEMENT, and the settle bound counts it', () =>
+    Effect.sync(() => {
+      // DN-RS-4 made the bound tight rather than generous so that adding a third
+      // delayed component and forgetting `DELAYED_KINDS` would show up. This is
+      // that day: a comparator reads `previous` at its rear and both sides, so a
+      // chain costs one tick each, and a bound that had not learned about them
+      // would call a perfectly stable comparator chain a clock.
+      const chain = (length: number): CircuitBoard =>
+        line([
+          ['lever', { kind: 'lever', active: true }],
+          ...Array.from(
+            { length },
+            (_, index) =>
+              [
+                `c${String(index)}`,
+                {
+                  kind: 'comparator',
+                  inputFrom: index === 0 ? 'lever' : `c${String(index - 1)}`,
+                  outputTo: index === length - 1 ? 'out' : `c${String(index + 1)}`,
+                },
+              ] as const,
+          ),
+          ['out', wire()],
+        ])
+
+      for (const length of [1, 2, 5, 16]) {
+        const board = chain(length)
+        expect(settleTickLimitFor(board)).toBe(length + 2)
+
+        const bounded = settle(board)
+        const generous = settle(board, { limit: 4096 })
+        expect(bounded.oscillating).toBe(false)
+        // The property, not the number: the default answer and a limit nothing
+        // can reach must agree, exactly as the repeater-chain regression above
+        // asserts it.
+        expect(bounded.ticks).toBe(generous.ticks)
+      }
+    }),
+  )
+
+  it.effect('REGRESSION: a comparator loses ONE LEVEL per stage — the recorded source divergence, compounding', () =>
+    Effect.sync(() => {
+      // NOT A FIX. This is `MAX_POWER_LEVEL`'s divergence (a source decays into
+      // its first neighbour, so a signal crosses fourteen wire cells and not
+      // fifteen) arriving in the one component where it costs something other
+      // than reach.
+      //
+      // For a lever the divergence loses one cell. For a repeater it loses
+      // nothing that survives, because a repeater restores full power and
+      // discards the level it read. A comparator is the first component that
+      // PASSES A NUMBER ON, and here that number is one smaller at every stage:
+      // in vanilla a comparator drives the dust in front of it at its own output
+      // strength, so a value crosses any number of comparators unchanged.
+      //
+      // What that breaks is arithmetic, not reach. An item sorter that compares
+      // one chest's reading against another's through different numbers of
+      // comparators gets different answers for equal chests. Closing it means a
+      // source not decaying into its first neighbour, which renumbers every
+      // level in every circuit — a behaviour decision, and the same one
+      // `MAX_POWER_LEVEL` defers. This test is what makes taking it loud.
+      const stages = (count: number): CircuitBoard =>
+        line([
+          ['lever', { kind: 'lever', active: true }],
+          ...Array.from({ length: count }, (_, index) => [
+            [`c${String(index)}`, {
+              kind: 'comparator',
+              inputFrom: index === 0 ? 'lever' : `d${String(index - 1)}`,
+              outputTo: `d${String(index)}`,
+            }] as const,
+            [`d${String(index)}`, wire()] as const,
+          ]).flat(),
+        ])
+
+      // The lever holds 15. Each stage is comparator + one dust: the comparator
+      // reads the previous stage's dust and emits that level, then the dust in
+      // front decays once more.
+      const readings = [1, 2, 3, 4].map((count) => {
+        const settled = settle(stages(count))
+        expect(settled.oscillating).toBe(false)
+        return powerAt(settled.power, `c${String(count - 1)}`)
+      })
+
+      expect(readings).toStrictEqual([15, 14, 13, 12])
+      // In vanilla every entry above is 15.
+    }),
+  )
+})
+
+describe('observers — a source whose trigger is not a signal', () => {
+  const observerBoard = (active: boolean): CircuitBoard =>
+    graph(
+      [
+        ['observer', { kind: 'observer', active, outputTo: 'out' }],
+        ['out', wire()],
+        ['watched', wire()],
+        ['flank', wire()],
+      ],
+      [
+        ['observer', 'out'],
+        ['observer', 'watched'],
+        ['observer', 'flank'],
+      ],
+    )
+
+  it.effect('a firing observer is a full-strength source, and a quiet one is nothing', () =>
+    Effect.sync(() => {
+      expect(powerAt(propagateTick(observerBoard(true), emptyPowerMap), 'observer')).toBe(
+        MAX_POWER_LEVEL,
+      )
+      expect(propagateTick(observerBoard(false), emptyPowerMap).size).toBe(0)
+    }),
+  )
+
+  it.effect('REGRESSION: an observer drives only `outputTo`, so it cannot pulse into the cell it watches', () =>
+    Effect.sync(() => {
+      // Vanilla's observer emits from its back face and watches forwards. An
+      // omnidirectional one would pulse into the very block whose change it is
+      // waiting for — the torch's support-cell failure (DN-RS-12) in a component
+      // whose whole job is to notice that a cell changed.
+      const power = settle(observerBoard(true)).power
+
+      expect(powerAt(power, 'out')).toBe(14)
+      expect(powerAt(power, 'watched')).toBe(0)
+      expect(powerAt(power, 'flank')).toBe(0)
+    }),
+  )
+
+  it.effect('an observer is NOT a delay element — its tick is spent outside the graph', () =>
+    Effect.sync(() => {
+      // A torch and a repeater cost a tick because they read `previous`. An
+      // observer's memory is `domain/observer.ts`'s, held by the caller, so from
+      // the graph's side it is exactly as instantaneous as a lever.
+      const board = observerBoard(true)
+      expect(settleTickLimitFor(board)).toBe(2)
+      expect(settle(board)).toMatchObject({ oscillating: false, ticks: 2 })
+    }),
+  )
+
+  it.effect('`Component` carries no `watching` field — the graph cannot read a block', () =>
+    Effect.sync(() => {
+      // The same pin `delayTicks` gets, for the same reason: a field the graph
+      // stores and never reads is worse than an absent one. Which cell an
+      // observer watches belongs beside the `active` flag it produces, in
+      // whoever owns the world.
+      // @ts-expect-error `watching` is deliberately not part of `Component`.
+      const unmodelled: Component = { kind: 'observer', watching: 'somewhere' }
+      expect(unmodelled.kind).toBe('observer')
+    }),
+  )
+})
+
+describe('pressure plates — a lever thrown by whoever stands on it', () => {
+  it.effect('a pressed plate is a source exactly as a lever is', () =>
+    Effect.sync(() => {
+      const board = line([
+        ['plate', { kind: 'pressure-plate', active: true }],
+        ['w0', wire()],
+      ])
+      const power = propagateTick(board, emptyPowerMap)
+      expect(powerAt(power, 'plate')).toBe(MAX_POWER_LEVEL)
+      expect(powerAt(power, 'w0')).toBe(14)
+    }),
+  )
+
+  it.effect('a plate drives every neighbour — it is a switch, not a diode', () =>
+    Effect.sync(() => {
+      const board = graph(
+        [
+          ['plate', { kind: 'pressure-plate', active: true }],
+          ['north', wire()],
+          ['south', wire()],
+        ],
+        [
+          ['plate', 'north'],
+          ['plate', 'south'],
+        ],
+      )
+      const power = propagateTick(board, emptyPowerMap)
+      expect(powerAt(power, 'north')).toBe(14)
+      expect(powerAt(power, 'south')).toBe(14)
+    }),
+  )
+
+  it.effect('REGRESSION: `emits` lets a weighted plate report a COUNT, and omitting it means full power', () =>
+    Effect.sync(() => {
+      // The field exists for exactly one component, and it is read for every
+      // source uniformly — so there is no component for which setting it
+      // silently does nothing, which is the shape `delayTicks` had.
+      const weighed = line([
+        ['plate', { kind: 'pressure-plate', active: true, emits: 4 }],
+        ['w0', wire()],
+        ['w1', wire()],
+        ['w2', wire()],
+        ['w3', wire()],
+      ])
+      const power = propagateTick(weighed, emptyPowerMap)
+      expect(powerAt(power, 'plate')).toBe(4)
+      expect(powerAt(power, 'w0')).toBe(3)
+      expect(powerAt(power, 'w3')).toBe(0)
+
+      const plain = line([['plate', { kind: 'pressure-plate', active: true }], ['w0', wire()]])
+      expect(powerAt(propagateTick(plain, emptyPowerMap), 'plate')).toBe(MAX_POWER_LEVEL)
+    }),
+  )
+
+  it.effect('a plate reporting zero occupants is not a source at all', () =>
+    Effect.sync(() => {
+      // `emits: 0` and `active: false` mean the same thing to the board, which
+      // is what lets a caller compute the level with `plateSignal` and set
+      // `active` from the same number without a second rule about zero.
+      const board = line([
+        ['plate', { kind: 'pressure-plate', active: true, emits: 0 }],
+        ['w0', wire()],
+      ])
+      expect(powerAt(propagateTick(board, emptyPowerMap), 'w0')).toBe(0)
+    }),
+  )
+})
+
+describe('hoppers and dispensers — actuators, which conduct nothing', () => {
+  it.effect('REGRESSION: power stops dead at a hopper, so a filter cannot weld the line feeding it to the line beyond', () =>
+    Effect.sync(() => {
+      // The lamp's failure (DN-RS-5) in a component players deliberately put IN
+      // a circuit. A hopper is in neither `RECEIVES_POWER` nor `CONDUCTS_POWER`,
+      // which makes it exactly as transparent to power as an empty cell.
+      for (const kind of ['hopper', 'dispenser'] as const) {
+        const board = line([
+          ['lever', { kind: 'lever', active: true }],
+          ['w0', wire()],
+          ['actuator', { kind }],
+          ['w1', wire()],
+          ['w2', wire()],
+        ])
+
+        const power = propagateTick(board, emptyPowerMap)
+        expect(powerAt(power, 'w0')).toBe(14)
+        expect(powerAt(power, 'actuator')).toBe(0)
+        expect(powerAt(power, 'w1')).toBe(0)
+        expect(powerAt(power, 'w2')).toBe(0)
+      }
+    }),
+  )
+
+  it.effect('REGRESSION: `isPowered` still says yes, though the actuator’s own entry is 0', () =>
+    Effect.sync(() => {
+      // The reason an actuator does not need to be in `RECEIVES_POWER` at all.
+      // "Is power arriving here" is answered by asking which neighbours DRIVE
+      // this cell — the same question, through the same `conductsInto`, that
+      // `isLit` asks — rather than by reading a map entry that would be a
+      // decayed level and, per DN-RS-5 §5-1, would leak one cell too far.
+      const board = line([
+        ['lever', { kind: 'lever', active: true }],
+        ['w0', wire()],
+        ['hopper', { kind: 'hopper' }],
+        ['w1', wire()],
+      ])
+
+      const power = propagateTick(board, emptyPowerMap)
+      expect(powerAt(power, 'hopper')).toBe(0)
+      expect(isPowered(board, power, 'hopper')).toBe(true)
+      expect(drivenPowerAt(board, power, 'hopper')).toBe(14)
+
+      // The wire beyond it is driven by nothing, so it is not powered either.
+      expect(isPowered(board, power, 'w1')).toBe(false)
+    }),
+  )
+
+  it.effect('an actuator on a repeater’s flank is unpowered, because the repeater drives only its output', () =>
+    Effect.sync(() => {
+      // `drivenPowerAt` and the sweep share `conductsInto`, so the accessor
+      // cannot leak what the sweep refused — the property DN-RS-5 §5-1 was
+      // fixed to get, now carrying a second consumer.
+      const board = graph(
+        [
+          ['lever', { kind: 'lever', active: true }],
+          ['w0', wire()],
+          ['repeater', { kind: 'repeater', inputFrom: 'w0', outputTo: 'out' }],
+          ['out', wire()],
+          ['sideDispenser', { kind: 'dispenser' }],
+        ],
+        [
+          ['lever', 'w0'],
+          ['w0', 'repeater'],
+          ['repeater', 'out'],
+          ['repeater', 'sideDispenser'],
+        ],
+      )
+
+      const power = settle(board).power
+      expect(powerAt(power, 'out')).toBe(14)
+      expect(isPowered(board, power, 'sideDispenser')).toBe(false)
+    }),
+  )
+
+  it.effect('`drivenPowerAt` is not `isLit`: a powered WIRE is driven but is not lit', () =>
+    Effect.sync(() => {
+      // The kind check in `isLit` is not redundant with the accessor. A caller
+      // who dropped it would light every cell on the board.
+      const board = line([
+        ['lever', { kind: 'lever', active: true }],
+        ['w0', wire()],
+        ['w1', wire()],
+      ])
+      const power = propagateTick(board, emptyPowerMap)
+
+      expect(drivenPowerAt(board, power, 'w1')).toBe(14)
+      expect(isLit(board, power, 'w1')).toBe(false)
     }),
   )
 })

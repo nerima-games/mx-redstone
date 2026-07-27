@@ -137,7 +137,7 @@ export const buildHud = (
 }
 
 export const KEY_HINT =
-  'arrows/hjkl move  space place  e erase  f rotate  t toggle  1-9 palette  [ ] delay  . step  n run  s settle  r reset  c clear  o scenario  m watch  v view  ? help  x quit'
+  'arrows/hjkl move  space place  e erase  f rotate  t toggle  1-9 0 - palette  [ ] delay  . step  n run  s settle  r reset  c clear  o scenario  m watch  v view  ? help  x quit'
 
 /**
  * The help overlay.
@@ -160,9 +160,9 @@ export const KEY_SECTIONS: ReadonlyArray<string> = [
   '  arrows / hjkl     move the cursor           (HJKL moves 5)',
   '  space / enter     place the selected part',
   '  e                 erase the cell',
-  '  f                 rotate: torch support side, repeater output, piston push direction',
-  '  t                 throw a lever / press a button under the cursor',
-  '  1-9               wire torch lever button repeater lamp piston block obsidian',
+  '  f                 rotate: torch support, repeater/comparator output, observer eye, piston push',
+  '  t                 throw a lever / press a button / switch a comparator between compare and subtract',
+  '  1-9 0 -           wire torch lever button repeater comparator observer lamp piston block obsidian',
   '  [ ]               repeater delay 1-4 — preview-only; the graph does not model delay',
   '  .                 step ONE redstone tick',
   '  n                 run --run-ticks ticks (default 10)',

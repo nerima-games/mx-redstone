@@ -353,12 +353,133 @@ const pistonBench: Scenario = {
   },
 }
 
+
+/**
+ * Two comparators in a row, each reading the dust the last one drove.
+ *
+ * The claim: in vanilla a comparator passes a LEVEL through unchanged, and here
+ * it loses one per stage. That is `MAX_POWER_LEVEL`'s recorded divergence — a
+ * source decays into its first neighbour — arriving in the one component whose
+ * output is a number other components do arithmetic on. For a lever it costs a
+ * cell of reach; here it corrupts the value.
+ *
+ * Read it in the `power` view: the comparators show 15, 14, 13 rather than
+ * 15, 15, 15.
+ */
+const comparatorLadder: Scenario = {
+  name: 'comparator-ladder',
+  title: 'a comparator loses one level per stage — vanilla loses none',
+  notes: [
+    't the lever, s to settle, then v to the power view and read the C cells left to right',
+    'they read 15 14 13: each comparator emits what it READ, and the dust in front decays once more',
+    'in vanilla all three are 15, because a comparator drives the dust at its own output strength',
+    'this is the same divergence as "a signal crosses 14 cells, not 15" — recorded, not fixed (DN-RS-13)',
+  ],
+  minWidth: 16,
+  minHeight: 6,
+  build: () => {
+    const { parts, put } = builder()
+    const source = put({ x: 1, y: 2 }, 'lever', lever())
+    const first = put({ x: 2, y: 2 }, 'comparator', { facing: 'right' })
+    const d0 = put({ x: 3, y: 2 }, 'wire')
+    const second = put({ x: 4, y: 2 }, 'comparator', { facing: 'right' })
+    const d1 = put({ x: 5, y: 2 }, 'wire')
+    const third = put({ x: 6, y: 2 }, 'comparator', { facing: 'right' })
+    put({ x: 7, y: 2 }, 'wire')
+    put({ x: 8, y: 2 }, 'lamp')
+    return { parts, watched: [source, first, d0, second, d1, third] }
+  },
+}
+
+/**
+ * One comparator with a wire on its rear and a wire on one flank.
+ *
+ * Two claims at once. The mode key (`t`) switches compare and subtract, and the
+ * flank is where compare-versus-subtract is visible at all: with the sides bare
+ * the two modes are the same function. The second claim is that the comparator
+ * drives NEITHER side — a comparator that powered its flanks would read its own
+ * output as a side signal and, in compare mode, switch itself off with it.
+ */
+const comparatorSides: Scenario = {
+  name: 'comparator-sides',
+  title: 'compare against subtract, which only differ once a side is wired',
+  notes: [
+    't both levers, s to settle, v to the power view: the C reads 14 — the side (13) does not beat it',
+    'move onto the C and press t. S is subtract: 14 - 13 = 1, and the dust in FRONT is 0',
+    'that 0 is the divergence again — a level of 1 has nothing left to hand on, so the lamp goes out',
+    'the stub below the C is a side input AND a flank: it is read, and it is never driven',
+  ],
+  minWidth: 16,
+  minHeight: 8,
+  build: () => {
+    const { parts, put, run } = builder()
+    const source = put({ x: 1, y: 3 }, 'lever', lever())
+    const rear = put({ x: 2, y: 3 }, 'wire')
+    const comparator = put({ x: 3, y: 3 }, 'comparator', { facing: 'right' })
+    const out = put({ x: 4, y: 3 }, 'wire')
+    put({ x: 5, y: 3 }, 'lamp')
+
+    // The side: a lever three cells up, so the side arrives at 13 — one weaker
+    // than the rear's 14 — and compare passes until you shorten the run. Two
+    // wire cells rather than one, and the difference matters: with one, the side
+    // is 14 as well, compare still passes (it passes on EQUALITY) and subtract
+    // gives 0, so the scenario would demonstrate the boundary case instead of
+    // the ordinary one. The preview is where that was noticed.
+    const sideSource = put({ x: 3, y: 0 }, 'lever', lever())
+    put({ x: 3, y: 1 }, 'wire')
+    const side = put({ x: 3, y: 2 }, 'wire')
+
+    // The flank the comparator must never drive. `y: 4` touches it and nothing
+    // else — and note that it is ALSO a side cell, so it is doing two jobs: an
+    // input the comparator reads and an output it must not write.
+    const flank = run({ x: 3, y: 4 }, 1)
+
+    return { parts, watched: [source, rear, comparator, out, sideSource, side, flank[0] ?? source] }
+  },
+}
+
+/**
+ * An observer watching a cell you can edit, wired to a lamp.
+ *
+ * The one scenario in this preview whose input is not a switch. Place or erase
+ * a block in the watched cell and the observer pulses for exactly two ticks —
+ * `OBSERVER_PULSE_TICKS` — then goes dark on its own. A test that asserts a
+ * final state cannot see any of that: the final state is dark either way.
+ *
+ * It also shows the arming rule. The observer does NOT fire on the first tick
+ * against the block that was already there, which is what stops a chunk load
+ * from being a barrage of pulses.
+ */
+const observerEdge: Scenario = {
+  name: 'observer-edge',
+  title: 'an observer fires on a CHANGE, and not on what was already there',
+  notes: [
+    '. once: the observer arms on what it sees and stays dark (e). Placement is not a change',
+    'move the cursor onto the block at its eye (the # to its left) and press e to mine it',
+    '. again: the observer goes E and the lamp lights. . twice more and it is dark by itself',
+    'the two-tick pulse is counted by the PREVIEW, not by domain/ — remaining time is state',
+  ],
+  minWidth: 14,
+  minHeight: 6,
+  build: () => {
+    const { parts, put } = builder()
+    // The watched cell, holding something a person can erase and replace.
+    const watchedBlock = put({ x: 2, y: 2 }, 'block')
+    // Facing LEFT means the eye looks left at the block and the output is on the
+    // right — an observer reads forwards and pulses backwards.
+    const observer = put({ x: 3, y: 2 }, 'observer', { facing: 'left' })
+    const out = put({ x: 4, y: 2 }, 'wire')
+    const lamp = put({ x: 5, y: 2 }, 'lamp')
+    return { parts, watched: [watchedBlock, observer, out, lamp] }
+  },
+}
+
 /** The empty board plan.md actually asked for. */
 const sandbox: Scenario = {
   name: 'sandbox',
   title: 'an empty board',
   notes: [
-    'pick a part with 1-9, move with the arrows or hjkl, place with space',
+    'pick a part with 1-9, 0 or - , move with the arrows or hjkl, place with space',
     'f rotates, t throws a lever or presses a button, e erases',
     '. steps one tick, n runs several, s settles, r resets the power map',
   ],
@@ -373,6 +494,9 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   repeaterDelay,
   repeaterLatch,
   repeaterChain,
+  comparatorLadder,
+  comparatorSides,
+  observerEdge,
   torchInverter,
   torchClock,
   buttonLatch,

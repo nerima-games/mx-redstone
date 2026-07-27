@@ -704,3 +704,288 @@ readonly outputTo?: PositionKey    // リピーター: 駆動する唯一のセ�
 | `a named output that is not a declared edge drives nothing — adjacency is still the graph` | 隣接に無いセルを名指しても何も駆動しない |
 | `REGRESSION: a torch does not power the cell it inverts, so an inverter is steady rather than a 2-tick blinker` | レバー OFF で 20 tick、トーチは 15 のまま、支持セルは 0 のまま |
 | `REGRESSION: \`Component\` carries no delay field, and every repeater costs exactly one tick` | `@ts-expect-error` による**コンパイル時**の不在確認と、直列 N 個が N tick である実測 |
+
+---
+
+## DN-RS-13 コンパレータは値を 1 段ごとに 1 失う
+
+**完成条件 #3 の 5 部品のうち、モデルの穴を露出させたのはコンパレータである。**
+穴は「表現できない」ではなく「表現の代償が部品によって違う」という形をしていた。
+
+### 規則
+
+`domain/signal-level.ts` の `MAX_POWER_LEVEL` は既に 1 つの乖離を記録している——
+**ソースは自分の最初の隣接セルへ減衰する**ので、信号は 15 マスではなく 14 マスしか届かない。
+バニラではレバーに触れたダストが 15 である。
+
+この乖離のコストは部品によって違う。
+
+| 部品 | 失うもの | 生き残るか |
+| --- | --- | --- |
+| レバー | 到達距離 1 マス | — |
+| リピーター | 何も失わない | 出力は常に 15 に復元される。読んだレベルは捨てられる |
+| **コンパレータ** | **値そのものを 1 段につき 1** | **次のコンパレータがその値で演算する** |
+
+コンパレータは**数を次へ渡す最初の部品**である。`sourcesOf` はコンパレータを
+「読んだレベル」で seed し、`propagateTick` はそのセルから 1 減らして前へ渡すので、
+コンパレータ + ダスト 1 段ごとに 1 ずつ落ちる。
+
+```
+lever  C  dust  C  dust  C  dust
+15     15  14   14  13   13  12
+```
+
+バニラでは 15, 15, 15 である——コンパレータは正面のダストを**自分の出力強度で駆動する**ので、
+値は何段通っても変わらない。
+
+### 破れたときに起きること
+
+**アイテムソーターが壊れる。** プレイヤーがコンパレータで作る装置のほぼ全部は
+「2 つのコンテナの読みを比較する」形をしている。経路のコンパレータの個数が違えば、
+**中身が等しい 2 つのチェストが違う数を返す**。到達距離の乖離と違って、これは
+「1 マス足りない」ではなく「答えが間違っている」である。
+
+### 直さない理由と、直すときに落ちるもの
+
+閉じるには「ソースが最初の隣接セルへ減衰しない」ようにするしかなく、それは
+**盤面上の全セルの全レベルを振り直す**。`MAX_POWER_LEVEL` のコメントが 15 対 14 について
+先送りしているのと**同じ 1 つの決定**であり、2 つの決定ではない。
+だから DN として記録し、テストで固定する。
+
+**回帰テスト**: `test/power-graph.test.ts`
+`describe('comparators — the only component whose output is a NUMBER')`
+
+| テスト名 | 主張 |
+| --- | --- |
+| `REGRESSION: a comparator loses ONE LEVEL per stage — the recorded source divergence, compounding` | 1〜4 段のラダーが `[15, 14, 13, 12]` を返す。バニラは全部 15 |
+| `a comparator emits the LEVEL it read, not full power — the first variable-strength source` | `sourcesOf` が 15 以外で seed できることそのもの |
+
+プレビューも実行時に測っている（`pnpm preview --stats` の finding、および
+`comparator-ladder` シナリオ）。**数値は記録されていない**ので、直せば finding は消える。
+固定しているのはテストのほうである。
+
+---
+
+## DN-RS-14 コンテナの読みは盤面でも前 tick の電力でもない第 3 の入力である
+
+### 規則
+
+`sourcesOf(board, previous)` は (盤面, 前 tick の電力マップ) の純関数である。
+チェストを背面に置いたコンパレータの出力は**そのどちらでもない**——
+中身は mc-sim のものだからである。
+
+解決は `Component.containerSignal`、すなわち**世界の所有者の申告**である。
+ボタンの `active` と同じ形であり、同じ理由による（`sourcesOf` のコメント全文を参照）。
+
+```typescript
+const rear =
+  component.containerSignal ??
+  (component.inputFrom === undefined ? 0 : powerAt(previous, component.inputFrom))
+```
+
+`??` であって `Math.max` ではない。**世界ではコンパレータの背面セルはコンテナかワイヤのどちらかであり、
+両方ではない。** 最大値を取ると、空のチェストの脇に配線を回して満杯の読みを作れてしまう。
+
+### 規則は本リポジトリのもの、データは mc-sim のもの
+
+`containerSignalStrength(slots)`（`domain/comparator.ts`）は本リポジトリにある。
+「コンテナの充填率をどう 0-15 に写すか」は**レッドストーンの規則**であり、
+プレイヤーのソーターが読む数を決めるのはこの式だからである。
+
+一方、その `slots` を埋めるものは 2 つとも存在しない。**[DN-RS-17](#dn-rs-17-実装できない部分は名指しする) が全部を表にしてある。**
+
+`ContainerSlot` が `{ count, maxStack }` であって `ItemType` を含まないのは意図的である。
+アイテム語彙は mc-kernel のもの（`domain/item-type.ts:128`）であり、
+規則がここに住み、データがあちらに住むためには**規則がアイテムを名指ししない**必要がある。
+`test/public-api.test.ts` の
+`REGRESSION: exports no item roster either` がそれを構造的に固定している。
+
+**回帰テスト**: `test/comparator.test.ts` / `test/power-graph.test.ts`
+
+| テスト名 | 主張 |
+| --- | --- |
+| `REGRESSION: `containerSignal` REPLACES the rear reading rather than adding to it` | 空チェスト（0）でコンパレータが 0。`Math.max` なら背面ワイヤの 14 が出る |
+| `REGRESSION: one item in a big chest reads 1, not 0 — empty and nearly-empty must differ` | 27 スロットに 1 個で 1。床がなければ 0 でソーターが動かない |
+| `fullness is measured in STACKS, so one bucket fills a slot as much as 64 cobblestone` | `maxStack` がスロットごとである理由。全体定数 64 で割るとバケツのチェストは 1 になる |
+| `REGRESSION: a corrupt slot contributes nothing rather than poisoning every comparator on the board` | `NaN` が全盤面へ伝播しない（`NaN > 0` は false なので、症状は「動かないソーター」になる） |
+
+---
+
+## DN-RS-15 オブザーバの記憶は値である。ブロック変更イベントは存在しない（そして要求すべきでもない）
+
+### 15-1. 参照実装のモジュールレベル Map
+
+`redstone-observer-world-effects.ts:34`:
+
+```typescript
+const lastSeenBlocks = new Map<string, BlockType>()
+```
+
+6 行下に `resetObserverWatchState()` があり、コメントは
+「Exposed for tests: reset the change-detection memory between scenarios」と書いてある。
+**この脱出ハッチが診断そのものである。** plan.md §3.8 が参照実装最大級のバグ源として記録し、
+DN-RS-8 が `makeRedstoneFrameState` を Effect にした理由と同じものが、
+ここではリセット関数という蓋つきで残っている。
+
+参照実装自身も代償を認めている——「a stale entry after a world switch costs at most one spurious
+pulse」。オブザーバの spurious pulse 1 回は、**TNT 1 個の起爆**である。
+ディスペンサ側（`redstone-dispenser-world-effects.ts:36`）も同じ形をしている。
+
+`observeChanges(current, previous)` は記憶を引数で受け取り戻り値で返す。
+コストは引数 1 つとフィールド 1 つで、リセット関数とそれが存在する理由のクラスごと消える。
+
+### 15-2. 変更イベントはある。粒度が違う
+
+mc-worldgen は変更フィードを publish している——`ChunkStoreApi.subscribeDirty`
+（`application/chunk-store.ts:174`）。ただし返るのは
+
+```typescript
+ChunkDirtyBatch = { changed: ReadonlyArray<ChunkCoord>; removed: ReadonlyArray<ChunkCoord> }
+```
+
+（`mc-worldgen/domain/chunk-store-state.ts:208-211`）であり、**チャンク粒度である。**
+その上のヘッダ（`:180-198`）が、SET への重複排除こそが設計の全部だと書いている——
+落下砂の柱は 1 tick に同じチャンクを最大 32 回 dirty にし、購読者は 1 回だけ再メッシュしなければならない。
+
+したがって「ブロック座標のバッチをくれ」は**要求してはならない**。
+それは mx-redstone が、自分がルックアップを 1 回省くために
+mc-worldgen を全購読者に対して遅くしろと言うことである。
+
+**代わりにサンプリングする。** オブザーバ 1 個につき redstone tick 1 回の `getBlock`。
+これは **O(設置されたオブザーバ数)** であって O(chunks × blocks) ではない——
+plan.md §3.11 が「disaster」と呼ぶ per-tick 全走査は**ロードされた世界の量**に比例するが、
+これは**プレイヤーが建てたもの**に比例する。
+
+さらに、誰にも代償を払わせずに狭められる: `subscribeDirty` は健全な**ゲート**である。
+変わらなかったチャンクにある監視セルは飛ばしてよい。
+**dirty バッチはどのブロックが動いたかを言えないが、どれが動かなかったかは確実に言える。**
+
+### 15-3. だから `Component` に `watching` は無い
+
+グラフはブロックを読めない。読めないセルを名指すフィールドは
+**受け取って保存して一度も読まれない**——DN-RS-12 が `delayTicks` を削除した理由そのものである。
+オブザーバがどのセルを見ているかは、それが生む `active` の隣、世界の所有者のところにある。
+
+パルス長 `OBSERVER_PULSE_TICKS = 2`（参照実装 `:17` と一致）は**規則**なのでここにあり、
+**カウントダウンは呼び出し側**にある。ボタンのパルスと同じ答えである。
+プレビューがその呼び出し側を実演している（`apps/preview-circuit-board/sandbox.ts` の `advanceObservers`）。
+
+**回帰テスト**: `test/observer.test.ts`
+
+| テスト名 | 主張 |
+| --- | --- |
+| `REGRESSION: the FIRST sighting arms the detector and fires nothing` | 既にあったブロックの隣に置いても発火しない。チャンクロードごとのパルスの雨を止める |
+| `REGRESSION: the memory is a value in and a value out — one sweep cannot arm another observer’s` | 2 つの盤面が互いの sighting を継がない |
+| `REGRESSION: an observer that is gone is dropped, so a new one at the same cell arms afresh` | エントリ漏れと、同座標の新品が他人の記憶を継ぐ問題の両方 |
+| `a block replaced and restored between two ticks is ONE change — the divergence is named` | サンプリング由来の乖離を**名指し**している（イベント駆動のバニラなら 2 回見える） |
+
+---
+
+## DN-RS-16 アクチュエータは受電もしないし導通もしない
+
+### 規則
+
+ホッパーとディスペンサは `RECEIVES_POWER` にも `CONDUCTS_POWER` にも**入っていない**。
+盤面上では**空セルと同じくらい電力に対して透明**である。
+「電力が来ているか」は `drivenPowerAt` / `isPowered` が答える。
+
+```typescript
+export const drivenPowerAt = (board, power, key): PowerLevel  // 自分を駆動する隣接セルの最大レベル
+export const isPowered = (board, power, key): boolean         // それが > 0 か
+```
+
+### 参照実装の `canConduct` は逆のことを言っている。矛盾ではない
+
+DN-RS-2 が引いているとおり、参照実装の `canConduct`（`redstone-simulation.ts:24-34`）は
+Dispenser を導通側に列挙し、Lamp と Hopper だけを外している。
+
+**`canConduct` は 1 つの述語で両方向を兼ねている。**
+本リポジトリは同じ問いを 2 つに割っており（`RECEIVES_POWER` と `CONDUCTS_POWER`）、
+その分割は既にこの行に現れている——**ランプは受電するが導通しない**。参照実装はそれを言えない。
+したがって「ディスペンサを RECEIVES_POWER に入れないこと」は DN-RS-2 と矛盾しない。
+DN-RS-2 の規則文は「受電できるのはワイヤとランプだけ」であり、**その文はそのまま真である**。
+
+### 入れるとどうなるか
+
+1. **ホッパーが導通すると、フィルタが自分の線を溶接する。** ホッパーはプレイヤーが
+   **回路の中に置く**ブロックである。DN-RS-5 がランプについて警告している
+   「2 つの独立回路が黙って 1 つに溶接される」が、それを目的に置かれた部品で起きる。
+2. **アクチュエータが受電すると、自分の減衰済みレベルを持つ。** DN-RS-5 §5-1 が
+   その代償の記録である——ランプは `RECEIVES_POWER` にいて、自分のエントリを読んだ accessor が
+   点灯を電力より 1 マス多く漏らした。同じバグを継いだアクチュエータは、
+   **ディスペンサなのでそれで発射する**。
+
+`isLit` は `drivenPowerAt` の上に書き直してあり、**sweep と accessor が `conductsInto` を共有する**
+という DN-RS-5 §5-1 の性質はそのまま、消費者が 1 つ増えただけである。
+
+**回帰テスト**: `test/power-graph.test.ts`
+`describe('hoppers and dispensers — actuators, which conduct nothing')`
+
+| テスト名 | 主張 |
+| --- | --- |
+| `REGRESSION: power stops dead at a hopper, so a filter cannot weld the line feeding it to the line beyond` | ホッパー / ディスペンサの向こう側のワイヤが 0 |
+| `REGRESSION: `isPowered` still says yes, though the actuator’s own entry is 0` | 自分のエントリ 0、`drivenPowerAt` 14 |
+| `an actuator on a repeater’s flank is unpowered, because the repeater drives only its output` | accessor が sweep の拒否を漏らさない |
+| `` `drivenPowerAt` is not `isLit`: a powered WIRE is driven but is not lit `` | `isLit` の kind 検査が冗長でないこと |
+
+### 16-1. ホッパーは電力が「止める」唯一の部品
+
+`isHopperLocked(powered) === powered`。**通電したホッパーはロックされる。**
+他の全部品と向きが逆であり、モデルを知っている読み手ほど `if (powered)` と書いて
+**閉じるべきときに開いているフィルタ**を作る。だから 1 行の関数に名前がついている。
+
+参照実装はロックもクールダウンもモデルしていない——
+`redstone-hopper-world-effects.ts:11-14` が「this model transfers directly」と書き、
+毎フレーム手の届く範囲を全部移す。ロックを無視するホッパーは**遅いホッパーではなく、
+フィルタとして使えないホッパー**であり、ゲーム中の仕分け機は全部フィルタである。
+
+搬送周期 `HOPPER_TRANSFER_PERIOD_TICKS = 4`（バニラの 8 game tick、redstone は 10 Hz なので半分）は
+**規則**なのでここにあり、**カウンタは呼び出し側**にある。4 回目の同じ答えである。
+比較が `>=` であって `===` でないのは、`stages/registration.ts` が長いフレームのあと
+超過分を**捨てる**（DN-RS-3）ので、カウンタは任意の値を飛び越えうるからである。
+`===` にすると、そのホッパーは二度と来ない数を永久に待つ。
+
+---
+
+## DN-RS-17 実装できない部分は名指しする
+
+完成条件 #3 の 5 部品のうち、**コンパレータとオブザーバは完全に本リポジトリのもの**であり、
+**ホッパー / ディスペンサ / 感圧板はレッドストーンの部分だけがここにある**。
+残りは「あとで」ではなく、**具体的に何が無いか**である。TODO ではない。
+
+| 欲しいもの | どこに無いか | 誰が要るか |
+| --- | --- | --- |
+| `InventoryServiceApi.inventoryAt(position)` | mc-sim `application/inventory-service.ts:17-53` は**プレイヤーの 1 つのインベントリ**だけを扱う。`add` / `remove` / `countOf` / `snapshot` のどれも位置を取らない。`Inventory`（`domain/inventory.ts:112`）は識別子を持たない `ReadonlyArray<Slot>` である | コンパレータ（コンテナの読み）、ホッパー（搬送）、ディスペンサ（在庫）。**3 つは 1 つの追加でほどける** |
+| アイテムごとの `maxStackSize` 能力 | mc-kernel は `MAX_STACK_COUNT = 64` を単一の全体定数として publish している（`domain/quantities.ts:20`）。`BLOCK_CAPABILITY_DEFAULTS`（`domain/block-capabilities.ts:97-179`）の 11 フラグは `passable` / `pistonImmovable` / `suffocates` など**全部ブロックの物理**で、アイテムの能力表は無い | コンパレータ。バケツのチェストは満杯であり、64 で割ると 1/64 になる |
+| ドロップアイテムを spawn する手段 | `EntityManagerApi.spawn` は**ある**（`mc-sim/application/entity-manager.ts:100`）。呼べない: `SpawnRequest<S>`（`mc-sim/domain/entity.ts:347-352`）の `behaviour: S` は mc-sim 自身の言葉で「rules tier が entity ごとに持つもの——クリーパーなら mx-gameplay の `CreeperFuse`」であり、`S` を名指すことは兄弟体験モジュールの import である（plan.md §2.3-1、エッジはゼロ） | ディスペンサ。**したがってドロップの生成は mx-gameplay がレッドストーンのイベントに反応する形になる。mx-redstone が mx-gameplay へ手を伸ばす形にはならない** |
+| 発射体とそのダメージ | 参照実装は `entityManager.getEntities()` を hitscan して `applyDamage` する（`redstone-dispenser-world-effects.ts:90-115`）。ダメージ数値は mc-sim のものでもない——`mc-sim/domain/entity.ts` が「剣が何ダメージか」「落下で何ダメージか」は mx-gameplay と明記している | ディスペンサ。矢の 5 点はレッドストーンのリポジトリが発明する戦闘定数である |
+| `EntityManagerApi.entitiesWithin(bounds)` | 公開されているのは `entities` / `find` / `count` / `countOfKind` / `sweep`（`mc-sim/application/entity-manager.ts:100-140`）で、**全部 roster 全体に対するもの**。`entities` にはそこで「THE HOT PATH」と注記がある | 感圧板。板ごとに数えると redstone tick ごとに O(板 × entity) で、その注記が防ごうとしているものそのもの |
+| entity の大きさ | `EntityState`（`mc-sim/domain/entity.ts:229-260`）は `feetPosition` / `healthPoints` / 不透明な `behaviour` だけで、寸法をいっさい持たない。参照実装は mob spawner config の `MOB_HALF_WIDTH` / `MOB_HALF_HEIGHT` を読む（rules tier の定数） | 感圧板。AABB 重なり判定（`entity-update-stage.pressure-plate.ts:19-54`）が書けない |
+| 幾何そのもの | `domain/power-graph.ts` 冒頭が「There is NO geometry here」と書き、`domain/position-key.ts` は不透明な文字列である。kernel の `Position` が来るまで、この リポジトリは**航行できない** | 感圧板。重なり判定はキーの上には書けない |
+
+**境界は「何を諦めたか」ではなく「何を足せばほどけるか」で書いてある。**
+1 行目がその形の価値を示している——コンパレータ・ホッパー・ディスペンサの 3 つは、
+別々の 3 つの欠落ではなく **`inventoryAt` 1 つ**である。
+
+### 感圧板で「本リポジトリのもの」だった部分
+
+`plateSignal(occupants, weighing)`（`domain/pressure-plate.ts`）。
+石 / 木の板はスイッチ（何か乗っていれば 15）、重量感圧板は**測定器**である——
+金は 15 個で、鉄は 150 個で飽和する。この写像はレッドストーンの規則であり、
+**プレイヤーのカウンタが読む数を決める**。
+
+参照実装はスイッチしか持たない（`redstone-simulation.ts:40`）ので、
+重量板の算術はバニラからの移植である。飽和する **ceil** であって round ではない:
+1 個で 0 を返す重量板は、**11 個目まで壊れて見える板**である。
+
+「どの entity を数えるか」（石の板はドロップアイテムを無視し、木の板は無視しない）は
+呼び出し側の判断である。`EntityKind` は mc-sim が分類を持たない branded string
+（`mc-sim/domain/entity.ts:157`）であり、それは正しい——分類は rules tier のものだからである。
+**呼び出し側がフィルタし、このファイルは数える。**
+
+### 板の解放遅延はここに無い
+
+バニラの板は最後の entity が降りたあとしばらく通電したままである。それは**残り時間**であり、
+状態である。本リポジトリは同じ答えを 4 回出した——ボタンのパルス、リピーターの遅延、
+オブザーバのパルス、そしてこれ。電力マップに置く場所は無く、盤面は入力である。
+`stages/registration.ts` の tick カウンタの隣に行く。

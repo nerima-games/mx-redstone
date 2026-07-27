@@ -72,6 +72,28 @@ describe('public API surface', () => {
         // stand for every board. See domain/power-graph.ts.
         'settleTickLimitFor',
         'isLit',
+        // the two accessors that answer "is power arriving here" through the
+        // same `conductsInto` the sweep uses, so the accessor cannot leak what
+        // the sweep refused (DN-RS-5 §5-1)
+        'drivenPowerAt',
+        'isPowered',
+        // the five components of completion criterion 3. Each is a rule in its
+        // own file and each is re-exported for the same reason the power graph
+        // is: this repository's tests and its preview drive them by name.
+        'comparatorOutput',
+        'containerSignalStrength',
+        'CONTAINER_SIGNAL_FLOOR',
+        'CONTAINER_SIGNAL_SPAN',
+        'observeChanges',
+        'OBSERVER_PULSE_TICKS',
+        'dispenserEdges',
+        'isHopperLocked',
+        'hopperTransferDue',
+        'HOPPER_TRANSFER_PERIOD_TICKS',
+        'HOPPER_TRANSFER_ITEMS',
+        'plateSignal',
+        'LIGHT_PLATE_CAPACITY',
+        'HEAVY_PLATE_CAPACITY',
         // pistons — the capability lookup is a parameter, never a local set
         'PISTON_PUSH_LIMIT',
         'planPush',
@@ -111,6 +133,22 @@ describe('public API surface', () => {
         'BLOCK_TYPES',
         'blockTypeToIndex',
       ]
+      for (const name of forbidden) {
+        expect(Object.keys(redstone)).not.toContain(name)
+      }
+    }),
+  )
+
+  it.effect('REGRESSION: exports no item roster either — the hopper and the dispenser move things this repository cannot name', () =>
+    Effect.sync(() => {
+      // The block-roster test above, one vocabulary across. `ItemType` is
+      // mc-kernel's closed union (`domain/item-type.ts:128`); a hopper that
+      // moves items and a dispenser that ejects them are the two rules most
+      // likely to grow a local list of them, and `domain/hopper.ts` records why
+      // neither may. `ContainerSlot` is the shape the comparator reads and it
+      // names no item at all — count and stack size, nothing else — which is
+      // what lets the rule live here with the data still elsewhere.
+      const forbidden = ['ITEM_TYPES', 'ItemType', 'ItemId', 'ItemStack', 'MAX_STACK_COUNT']
       for (const name of forbidden) {
         expect(Object.keys(redstone)).not.toContain(name)
       }

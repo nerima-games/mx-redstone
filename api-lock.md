@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 35
+exported declarations: 58
 supporting declarations: 8
 
 ## Exported
@@ -32,6 +32,18 @@ type BlockCapabilityLookup = {
 type BlockRef = string;
 ```
 
+### CONTAINER_SIGNAL_FLOOR  `const`
+
+```ts
+const CONTAINER_SIGNAL_FLOOR = 1;
+```
+
+### CONTAINER_SIGNAL_SPAN  `const`
+
+```ts
+const CONTAINER_SIGNAL_SPAN = 14;
+```
+
 ### CircuitBoard  `type`
 
 ```ts
@@ -41,14 +53,24 @@ type CircuitBoard = {
 };
 ```
 
+### ComparatorMode  `type`
+
+```ts
+type ComparatorMode = 'compare' | 'subtract';
+```
+
 ### Component  `type`
 
 ```ts
 type Component = {
     readonly kind: ComponentKind;
     readonly active?: boolean;
+    readonly emits?: PowerLevel;
     readonly invertedBy?: PositionKey;
     readonly inputFrom?: PositionKey;
+    readonly sideInputs?: ReadonlyArray<PositionKey>;
+    readonly mode?: ComparatorMode;
+    readonly containerSignal?: PowerLevel;
     readonly outputTo?: PositionKey;
 };
 ```
@@ -56,13 +78,55 @@ type Component = {
 ### ComponentKind  `type`
 
 ```ts
-type ComponentKind = 'wire' | 'torch' | 'lever' | 'button' | 'repeater' | 'lamp';
+type ComponentKind = 'wire' | 'torch' | 'lever' | 'button' | 'repeater' | 'lamp' | 'comparator' | 'observer' | 'pressure-plate' | 'hopper' | 'dispenser';
+```
+
+### ContainerSlot  `type`
+
+```ts
+type ContainerSlot = {
+    readonly count: number;
+    readonly maxStack: number;
+};
+```
+
+### DispenserSweep  `type`
+
+```ts
+type DispenserSweep = {
+    readonly fired: ReadonlyArray<PositionKey>;
+    readonly powered: PowerEdgeMemory;
+};
 ```
 
 ### EXPERIENCE_MODULE_STAGE_PREFIXES  `const`
 
 ```ts
 const EXPERIENCE_MODULE_STAGE_PREFIXES: readonly ["gameplay:", "redstone:", "ui:", "multiplayer:"];
+```
+
+### HEAVY_PLATE_CAPACITY  `const`
+
+```ts
+const HEAVY_PLATE_CAPACITY = 150;
+```
+
+### HOPPER_TRANSFER_ITEMS  `const`
+
+```ts
+const HOPPER_TRANSFER_ITEMS = 1;
+```
+
+### HOPPER_TRANSFER_PERIOD_TICKS  `const`
+
+```ts
+const HOPPER_TRANSFER_PERIOD_TICKS = 4;
+```
+
+### LIGHT_PLATE_CAPACITY  `const`
+
+```ts
+const LIGHT_PLATE_CAPACITY = 15;
 ```
 
 ### MAX_POWER_LEVEL  `const`
@@ -77,16 +141,48 @@ const MAX_POWER_LEVEL = 15;
 const MAX_TICKS_PER_FRAME = 4;
 ```
 
+### OBSERVER_PULSE_TICKS  `const`
+
+```ts
+const OBSERVER_PULSE_TICKS = 2;
+```
+
 ### OWN_STAGE_PREFIX  `const`
 
 ```ts
 const OWN_STAGE_PREFIX = "redstone:";
 ```
 
+### ObserverSweep  `type`
+
+```ts
+type ObserverSweep = {
+    readonly fired: ReadonlyArray<PositionKey>;
+    readonly seen: Sightings;
+};
+```
+
 ### PISTON_PUSH_LIMIT  `const`
 
 ```ts
 const PISTON_PUSH_LIMIT = 12;
+```
+
+### PlateWeighing  `type`
+
+```ts
+type PlateWeighing = {
+    readonly kind: 'binary';
+} | {
+    readonly kind: 'weighted';
+    readonly capacity: number;
+};
+```
+
+### PowerEdgeMemory  `type`
+
+```ts
+type PowerEdgeMemory = ReadonlyMap<PositionKey, boolean>;
 ```
 
 ### PowerLevel  `type`
@@ -167,12 +263,42 @@ type SettleResult = {
 };
 ```
 
+### Sightings  `type`
+
+```ts
+type Sightings = ReadonlyMap<PositionKey, BlockRef>;
+```
+
 ### UPSTREAM_STAGE_IDS  `const`
 
 ```ts
 const UPSTREAM_STAGE_IDS: {
     readonly simPhysics: StageId;
 };
+```
+
+### comparatorOutput  `const`
+
+```ts
+const comparatorOutput: (rear: PowerLevel, sides: ReadonlyArray<PowerLevel>, mode: ComparatorMode) => PowerLevel;
+```
+
+### containerSignalStrength  `const`
+
+```ts
+const containerSignalStrength: (slots: ReadonlyArray<ContainerSlot>) => PowerLevel;
+```
+
+### dispenserEdges  `const`
+
+```ts
+const dispenserEdges: (current: ReadonlyMap<PositionKey, boolean>, previous: PowerEdgeMemory) => DispenserSweep;
+```
+
+### drivenPowerAt  `const`
+
+```ts
+const drivenPowerAt: (board: CircuitBoard, power: PowerMap, key: PositionKey) => PowerLevel;
 ```
 
 ### emptyCircuitBoard  `const`
@@ -187,6 +313,21 @@ const emptyCircuitBoard: CircuitBoard;
 const emptyPowerMap: PowerMap;
 ```
 
+### hopperTransferDue  `const`
+
+```ts
+const hopperTransferDue: (options: {
+    readonly powered: boolean;
+    readonly ticksSinceTransfer: number;
+}) => boolean;
+```
+
+### isHopperLocked  `const`
+
+```ts
+const isHopperLocked: (powered: boolean) => boolean;
+```
+
 ### isLit  `const`
 
 ```ts
@@ -197,6 +338,12 @@ const isLit: (board: CircuitBoard, power: PowerMap, key: PositionKey) => boolean
 
 ```ts
 const isPistonMovable: (capabilities: BlockCapabilityLookup, block: BlockRef) => boolean;
+```
+
+### isPowered  `const`
+
+```ts
+const isPowered: (board: CircuitBoard, power: PowerMap, key: PositionKey) => boolean;
 ```
 
 ### makeRedstoneFrameState  `const`
@@ -211,10 +358,22 @@ const makeRedstoneFrameState: Effect.Effect<RedstoneFrameState>;
 const makeRedstoneStages: Effect.Effect<ReadonlyArray<StageRegistration>>;
 ```
 
+### observeChanges  `const`
+
+```ts
+const observeChanges: (current: Sightings, previous: Sightings) => ObserverSweep;
+```
+
 ### planPush  `const`
 
 ```ts
 const planPush: (column: ReadonlyArray<BlockRef>, capabilities: BlockCapabilityLookup) => PushOutcome;
+```
+
+### plateSignal  `const`
+
+```ts
+const plateSignal: (occupants: number, weighing: PlateWeighing) => PowerLevel;
 ```
 
 ### powerAt  `const`

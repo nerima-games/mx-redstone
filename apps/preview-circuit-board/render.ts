@@ -70,6 +70,21 @@ const glyphFor = (part: Part, level: number, lit: boolean): { readonly glyph: st
   if (part.kind === 'repeater') {
     return { glyph: FACING_GLYPH[part.facing], color: powerColor(level) }
   }
+  if (part.kind === 'comparator') {
+    // The MODE is the glyph and the LEVEL is the colour, because a comparator's
+    // level is the thing worth reading off the board — it is the only component
+    // whose output is a number, and a facing arrow like the repeater's would
+    // spend the glyph on the one property the HUD already reports.
+    return { glyph: part.subtract ? 'S' : 'C', color: powerColor(level) }
+  }
+  if (part.kind === 'observer') {
+    // Case follows the lever and the button: loud while it fires. A pulse two
+    // ticks long is exactly the thing a final-state test cannot see, so it has
+    // to be visible here.
+    return part.active
+      ? { glyph: 'E', color: SOURCE }
+      : { glyph: 'e', color: [90, 120, 100] }
+  }
   if (part.kind === 'lamp') {
     return lit ? { glyph: 'O', color: LIT } : { glyph: 'o', color: DARK }
   }
@@ -293,5 +308,6 @@ export const isClipped = (sandbox: Sandbox, columns: number, rows: number): bool
 
 export const LEGEND: ReadonlyArray<string> = [
   '+ wire   T/t torch   / \\ lever   B/b button   > < ^ v repeater   O/o lamp',
+  'C comparator (compare)   S comparator (subtract)   E/e observer (E = pulsing)',
   'P piston   = " arm   # block   % obsidian (pistonImmovable)   . empty',
 ]

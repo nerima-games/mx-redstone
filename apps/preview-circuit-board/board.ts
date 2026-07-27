@@ -124,6 +124,8 @@ export type PartKind =
   | 'lever'
   | 'button'
   | 'repeater'
+  | 'comparator'
+  | 'observer'
   | 'lamp'
   | 'piston'
   | 'head'
@@ -137,6 +139,8 @@ const GRAPH_KINDS: ReadonlySet<PartKind> = new Set<PartKind>([
   'lever',
   'button',
   'repeater',
+  'comparator',
+  'observer',
   'lamp',
 ])
 
@@ -156,10 +160,34 @@ const BLOCK_KINDS: ReadonlySet<PartKind> = new Set<PartKind>(['block', 'obsidian
  */
 export type Part = {
   readonly kind: PartKind
-  /** torch: the side it hangs on. repeater: OUTPUT side. piston: push direction. */
+  /**
+   * torch: the side it hangs on. repeater / comparator: OUTPUT side. piston:
+   * push direction. observer: the side it WATCHES, which is the opposite of the
+   * side it outputs from.
+   *
+   * The observer is the one that reads backwards, and it reads backwards in
+   * vanilla too: the face with the eye watches, the face behind it pulses. A
+   * preview that drew the arrow pointing at the output would put the eye on the
+   * wrong cell and make every observer scenario watch the wrong block.
+   */
   readonly facing: Facing
-  /** lever: thrown. button: held down. */
+  /**
+   * lever: thrown. button: held down. observer: PULSING.
+   *
+   * The observer's flag is written by `sandbox.ts`, not by the player — that is
+   * the whole demonstration. `domain/observer.ts` says which observers fired and
+   * `OBSERVER_PULSE_TICKS` says for how long; counting it down is the caller's
+   * job, and here the caller is this app.
+   */
   readonly active: boolean
+  /**
+   * comparator: `subtract` rather than the default `compare`.
+   *
+   * Toggled with `t`, which is the same key that throws a lever, because in
+   * vanilla it is the same gesture — you right-click a comparator to switch its
+   * mode. Unlike `delayTicks` below, this one REACHES the power graph.
+   */
+  readonly subtract: boolean
   /**
    * repeater: 1–4, as in vanilla.
    *
@@ -178,9 +206,18 @@ export const makePart = (kind: PartKind, overrides: Partial<Part> = {}): Part =>
   kind,
   facing: overrides.facing ?? 'right',
   active: overrides.active ?? false,
+  subtract: overrides.subtract ?? false,
   delayTicks: overrides.delayTicks ?? 1,
   extended: overrides.extended ?? false,
 })
+
+/** The two perpendicular neighbours of a facing — a comparator's side cells. */
+export const SIDE_FACINGS: Record<Facing, readonly [Facing, Facing]> = {
+  right: ['up', 'down'],
+  left: ['up', 'down'],
+  up: ['left', 'right'],
+  down: ['left', 'right'],
+}
 
 export type PartMap = ReadonlyMap<PositionKey, Part>
 
@@ -202,6 +239,44 @@ const componentOf = (parts: PartMap, key: PositionKey, part: Part): Component | 
 
   if (part.kind === 'lever' || part.kind === 'button') {
     return { kind: part.kind, active: part.active }
+  }
+
+  if (part.kind === 'observer') {
+    // `facing` is the WATCHED side, so the output is behind it. An observer that
+    // drove every neighbour would pulse into the very cell whose change it is
+    // waiting for; naming one output is what makes it a diode, exactly as for a
+    // repeater. `active` was written by `advanceObservers` in `sandbox.ts` —
+    // this file never decides whether an observer is firing.
+    const output = keyOf(step(coord, OPPOSITE_FACING[part.facing]))
+    const driven = parts.get(output)
+    return {
+      kind: 'observer',
+      active: part.active,
+      ...(driven !== undefined && isGraphKind(driven.kind) ? { outputTo: output } : {}),
+    }
+  }
+
+  if (part.kind === 'comparator') {
+    // A repeater with two extra questions. `facing` is the output for the same
+    // reason it is for a repeater — it is the arrow on the screen — and the
+    // sides are the two cells perpendicular to it.
+    //
+    // The sides are named whether or not a component sits there. `sideInputs`
+    // SELECTS cells to read, and reading has never been bounded by adjacency
+    // (`sourcesOf` reads `invertedBy` directly); an empty cell reads 0, which is
+    // what a bare side means. That is different from `outputTo`, which selects
+    // an EDGE and so must name a component that exists.
+    const input = keyOf(step(coord, OPPOSITE_FACING[part.facing]))
+    const output = keyOf(step(coord, part.facing))
+    const feeding = parts.get(input)
+    const driven = parts.get(output)
+    return {
+      kind: 'comparator',
+      mode: part.subtract ? 'subtract' : 'compare',
+      sideInputs: SIDE_FACINGS[part.facing].map((side) => keyOf(step(coord, side))),
+      ...(feeding !== undefined && isGraphKind(feeding.kind) ? { inputFrom: input } : {}),
+      ...(driven !== undefined && isGraphKind(driven.kind) ? { outputTo: output } : {}),
+    }
   }
 
   if (part.kind === 'torch') {

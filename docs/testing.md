@@ -9,6 +9,7 @@
 | 要件 | 状態 |
 | --- | --- |
 | 回路シナリオテスト | 実装済み（`test/power-graph.test.ts`） |
+| 部品ごとの規則テスト | 実装済み（`test/comparator.test.ts` / `observer.test.ts` / `hopper.test.ts` / `dispenser.test.ts` / `pressure-plate.test.ts`） |
 | ピストン押し出しの規則テスト | 実装済み（`test/piston.test.ts`） |
 | stage 契約の回帰テスト | 実装済み（`test/stage-registration.test.ts`） |
 | 依存境界ゲート | 実装済み（`test/check-dependency-whitelist.test.ts`） |
@@ -23,13 +24,13 @@
 $ pnpm verify        # typecheck && lint && check:deps && test。CI と同じ内容
 ```
 
-| ゲート | 何を捕まえるか | 実測（2026-07-26） |
+| ゲート | 何を捕まえるか | 実測（2026-07-27） |
 | --- | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` の 3 プロジェクトで型エラー | エラーなし |
-| `pnpm lint` | oxlint。**このリポジトリ唯一の lint / format 設定**（prettier も biome も `.editorconfig` も置かない） | `Found 0 warnings and 0 errors`（25 ファイル / 97 ルール）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
-| `pnpm check:deps` | 未許可 import / 推移閉包違反 / kit の実行時依存 / 循環 / 壁時計直読み | `OK — 25 file(s) scanned, allowed direct dependencies: @nerima-games/mc-sim, @nerima-games/mc-worldgen (plus @nerima-games/mc-kernel …)` |
+| `pnpm lint` | oxlint。**このリポジトリ唯一の lint / format 設定**（prettier も biome も `.editorconfig` も置かない） | `Found 0 warnings and 0 errors`（37 ファイル / 97 ルール）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
+| `pnpm check:deps` | 未許可 import / 推移閉包違反 / kit の実行時依存 / 循環 / 壁時計直読み | `OK — 37 file(s) scanned, allowed direct dependencies: @nerima-games/mc-sim, @nerima-games/mc-worldgen (plus @nerima-games/mc-kernel …)` |
 | `pnpm api:check` | `api-lock.md` と公開 API の乖離 | `OK — api-lock.md matches the public API` |
-| `pnpm test` | vitest | 6 ファイル / **111 テスト** pass |
+| `pnpm test` | vitest | 11 ファイル / **176 テスト** pass |
 
 **`apps/` は `SCAN_ROOTS` にも lint 対象にも入っている。** プレビューは `pnpm verify` で*実行*されないが、
 型検査・lint・依存ゲート・壁時計禁止はすべて適用される。
@@ -44,16 +45,29 @@ CI（`.github/workflows/ci.yaml`）は同じ 4 つを個別ステップとして
 
 ## 3. 現在のテストスイート
 
-6 ファイル / 111 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
+11 ファイル / 176 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
 
 | ファイル | テスト数 | 対象 |
 | --- | ---: | --- |
+| `test/power-graph.test.ts` | 54 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター（ダイオード） / **コンパレータ** / **オブザーバ** / **感圧板** / **アクチュエータ** / 退化した盤面 / 収束と発振 / `sourcesOf` / ボタン） |
 | `test/api-lock.test.ts` | 26 | `api-lock.md` 生成器の挙動（plan.md §6 Step 0-3） |
-| `test/power-graph.test.ts` | 33 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター（ダイオード） / 退化した盤面 / 収束と発振 / `sourcesOf` / ボタン） |
 | `test/stage-registration.test.ts` | 19 | §2.3-1 / §2.3-3 の回帰、固定レート tick、stage 挙動、ミラーした `DeltaTimeSecs` ブランドが kernel と一致すること |
-| `test/check-dependency-whitelist.test.ts` | 18 | 依存ポリシー、体験モジュール間ゼロエッジ、推移閉包、kit の dev 専用、壁時計禁止、**他リポジトリの席から読んだ roster** |
+| `test/check-dependency-whitelist.test.ts` | 19 | 依存ポリシー、体験モジュール間ゼロエッジ、推移閉包、kit の dev 専用、壁時計禁止、**他リポジトリの席から読んだ roster** |
+| `test/comparator.test.ts` | 13 | コンパレータの算術を**全数**（16 x 16 x 2）＋コンテナ充填率の写像 |
 | `test/piston.test.ts` | 9 | 能力フラグの構造的検査、押し出し計画 |
-| `test/public-api.test.ts` | 6 | バレル（`index.ts`）の再エクスポートを名前で固定。契約と内部の区別を台帳化 |
+| `test/observer.test.ts` | 9 | 変化検出、armed 規則、記憶が値であること（DN-RS-15） |
+| `test/dispenser.test.ts` | 7 | 立ち上がりエッジ、オブザーバとの非対称（DN-RS-15） |
+| `test/pressure-plate.test.ts` | 7 | スイッチ板と重量板の写像（DN-RS-17） |
+| `test/public-api.test.ts` | 7 | バレル（`index.ts`）の再エクスポートを名前で固定。契約と内部の区別を台帳化 |
+| `test/hopper.test.ts` | 6 | ロックの反転と搬送周期（DN-RS-16 §16-1） |
+
+### 3-00. コンパレータだけ全数テストである理由
+
+他の全部品は fixture 回路で検証している。`comparatorOutput` は数を 3 つ取って 1 つ返す関数で、
+入力空間は 16 x 16 x 16 x 2 しかない。ここでの off-by-one は「回路が動かない」ではなく
+**「fixture が使う入力ではすべて正しく、プレイヤーのソーターが座る境界だけ間違っている」**であり、
+`>=` を `>` と書いた版は**側面を配線していない全テストを通る**。
+数えられる入力空間は数えるほうが安い。
 
 **プレビュー（`apps/`）にテストは無い。** 意図的である——プレビューは検査対象ではなく検査**手段**であり、
 そこで見つかったことは `test/power-graph.test.ts` に assertion として降ろすのが正しい置き場所である
@@ -138,11 +152,28 @@ plan.md §6 Step 2 の完了条件は 2 つある。
 | --- | --- | --- |
 | 1 | `pnpm verify` が green | ✅ |
 | 2 | ワイヤ / トーチ / レバー / ボタン / リピーター / ピストンのシナリオテスト | ✅（部品の一部は未実装、[responsibility.md](./responsibility.md) §1） |
-| 3 | ディスペンサ / ホッパー / オブザーバ / 感圧板 / コンパレータ | ❌ |
+| 3 | ディスペンサ / ホッパー / オブザーバ / 感圧板 / コンパレータ | **コンパレータ・オブザーバ ✅／ホッパー・ディスペンサ・感圧板はレッドストーンの規則だけ ✅、残りは境界（§4-2、[design-notes.md](./design-notes.md) DN-RS-17）** |
 | 4 | 参照実装のテスト資産（2,093 行）をオラクルとして移植 | ❌（[porting.md](./porting.md) §3） |
 | 5 | **回路盤サンドボックスプレビューが操作可能** | ✅（§4-1） |
 | 6 | スティッキーピストン / 引き寄せ | ❌（意図的にスコープ外、DN-RS-10） |
 | 7 | 99% カバレッジゲートが有効 | ❌（完成時に有効化、§6） |
+
+### 4-2. 完成条件 #3 の 5 部品——2 つは全部、3 つは半分
+
+**この分割そのものが成果物である。**「あとで」ではなく「何が無いか」で書いてある。
+
+| 部品 | ここにあるもの | 残り |
+| --- | --- | --- |
+| コンパレータ | 全部。2 モード、側面、コンテナ読み取りの写像、可変強度ソースとしてのグラフ統合 | コンテナの中身（DN-RS-17 の 1 行目） |
+| オブザーバ | 全部。変化検出、armed 規則、パルス長、ダイオードとしてのグラフ統合 | 無し（サンプリングの根拠は DN-RS-15 §15-2） |
+| ホッパー | ロックの反転（通電で**止まる**唯一の部品）と搬送周期 | アイテムの移動 = `inventoryAt` + `ItemType` |
+| ディスペンサ | 立ち上がりエッジ検出（記憶は値。参照実装はモジュール変数） | 中身の取り出し、ドロップの spawn、発射体 |
+| 感圧板 | 占有数 → 信号強度（スイッチ板と重量板）、ソースとしてのグラフ統合 | 「誰が乗っているか」= 幾何 + entity の寸法 + 空間クエリ |
+
+**コンパレータは、本リポジトリの信号モデルの穴を実際に露出させた。**
+穴は「表現できない」ではなく「既に記録済みの乖離のコストが、この部品でだけ質的に違う」であり、
+DN-RS-13 がそれである。**その発見はほかの 4 部品を合わせたより価値がある**というのが
+このタスクの前提だったので、そのとおりに書いてある。
 
 ### 4-1. 回路盤サンドボックスプレビュー（実装済み）
 
@@ -154,8 +185,8 @@ plan.md §3.12 が要求する「部品を置いて動かすサンドボック�
 
 | 要件 | 実装 |
 | --- | --- |
-| 部品を置く・消す | `1`–`9` で選択、`space` で設置、`e` で消去（ワイヤ / トーチ / レバー / ボタン / リピーター / ランプ / ピストン / ブロック / 黒曜石） |
-| レバーを倒す・ボタンを押す | `t` |
+| 部品を置く・消す | `1`–`9` / `0` / `-` で選択、`space` で設置、`e` で消去（ワイヤ / トーチ / レバー / ボタン / リピーター / **コンパレータ** / **オブザーバ** / ランプ / ピストン / ブロック / 黒曜石） |
+| レバーを倒す・ボタンを押す | `t`。**同じキーがコンパレータの compare / subtract を切り替える**——バニラでも同じ操作である |
 | **1 tick ずつ進める** | `.`（`n` で N tick、`s` で `settle`） |
 | 安定するまで進む | `s`。発振する回路は `oscillating: true` をそのまま表示する（DN-RS-4） |
 | 各セルの電力 0–15 を見る | `power` ビュー（`v` で巡回）。16 進 1 桁で全セル表示 |
@@ -168,6 +199,12 @@ plan.md §3.12 が要求する「部品を置いて動かすサンドボック�
 - **ピストンの拒否理由**（`immovable` / `too-long`）。`planPush` が 2 種類の拒否を区別しているのは
   「プレイヤーへの説明が違うから」（`domain/piston.ts:98-116`）であり、
   表示されない拒否理由は「何も起きなかった」と区別がつかない。
+- **オブザーバの 2 tick パルス**（`observer-edge` シナリオ）。プレビューは
+  「変化していない世界」を実際に持っている唯一の場所である——監視セルのブロックを消して初めて発火し、
+  ちょうど 2 tick 光って自分で消える。**最終状態を assert するテストにはこれが見えない**:
+  最終状態はどちらの経路でも暗いからである。
+  カウントダウンをしているのがプレビュー側（`sandbox.ts` の `advanceObservers`）で、
+  `domain/` はどちらの tick も数えていない——DN-RS-15 §15-3 の「残り時間は呼び出し側」の実演になっている。
 
 #### なぜ mc-playground-kit を使わなかったか
 
@@ -208,6 +245,23 @@ plan.md §3.12 が要求する「部品を置いて動かすサンドボック�
 理由は本節冒頭と同じで、テストは最終状態を assert し、これらの最終状態は**期待どおり**だった。
 壊れていたのは「電源を外したあと」「隣に何があるか」「何 tick 目か」であり、
 それを見るために作られたのがこのプレビューである。
+
+#### 5 部品を足したときにプレビューが見つけたこと
+
+- **コンパレータの減衰**（`--stats` の finding、`comparator-ladder` シナリオ）。
+  4 段のラダーが `15, 14, 13, 12` を返す。バニラは全部 15 である。
+  これは `MAX_POWER_LEVEL` が既に記録していた乖離だが、**到達距離の話としてしか書かれていなかった**——
+  「数を次へ渡す部品」で何が起きるかは、ラダーを実際に組んで power ビューを見るまで誰も書いていない。
+  DN-RS-13 がその finding である。
+- **側面が同じ値だとモードの差が消える。** `comparator-sides` シナリオの最初の版は、
+  側面レバーをコンパレータの 2 マス上に置いていた。すると側面は背面と同じ 14 になり、
+  compare は**等号で通る**ので 14、subtract は 0 になる。
+  境界ケースだけを実演するシナリオになっていたので、側面の走行を 1 マス伸ばしてある
+  （13 対 14 → compare 14、subtract 1）。**説明用の回路は、説明したい規則の一般ケースに置く**という話であり、
+  組んで数を見るまで気づかない類のものである。
+- **2D 盤面ではコンパレータの側面と側方は同じセルである。** プレビューの格子は 4 近傍なので、
+  「読むが駆動してはならないセル」が 1 つに重なる。テストでは 2 つに分けて書けるので、
+  重なった場合が正しいことはプレビューでしか見えない（重なっても側方は 0 のままである）。
 
 確認できた finding は `test/power-graph.test.ts` に assertion として落とすこと。
 レポートは読まれなければ効かないが、テストは落ちる。

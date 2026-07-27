@@ -87,18 +87,46 @@ import {
   writeLine,
 } from './terminal'
 
-/** The palette, in the order the number keys select it. */
+/**
+ * The palette, in the order the selection keys walk it.
+ *
+ * Grouped by what a part IS rather than by when it was added: the five graph
+ * components that carry a signal, then the lamp that only receives one, then the
+ * three world parts a piston moves. The comparator and the observer therefore
+ * sit next to the repeater, which is where a person looking for them will reach.
+ */
 const PALETTE: ReadonlyArray<PartKind> = [
   'wire',
   'torch',
   'lever',
   'button',
   'repeater',
+  'comparator',
+  'observer',
   'lamp',
   'piston',
   'block',
   'obsidian',
 ]
+
+/**
+ * Which palette slot a key selects.
+ *
+ * `1`-`9`, then `0` and `-`. Eleven parts do not fit in nine digits, and the two
+ * alternatives were both worse: dropping a part off the palette makes it
+ * unplaceable, and a modifier key makes the two newest components harder to
+ * reach than the nine older ones for no reason a user could guess.
+ */
+const paletteSlot = (key: string): number | undefined => {
+  if (key === '0') {
+    return 10
+  }
+  if (key === '-') {
+    return 11
+  }
+  const slot = Number(key)
+  return Number.isInteger(slot) && slot >= 1 && slot <= 9 ? slot : undefined
+}
 
 type State = {
   sandbox: Sandbox
@@ -323,8 +351,8 @@ const handleKey = (state: State, key: string, options: PreviewOptions): boolean 
       break
 
     default: {
-      const slot = Number(key)
-      if (Number.isInteger(slot) && slot >= 1 && slot <= PALETTE.length) {
+      const slot = paletteSlot(key)
+      if (slot !== undefined && slot <= PALETTE.length) {
         state.palette = PALETTE[slot - 1] ?? 'wire'
         sandbox.note = `palette: ${state.palette}`
       }

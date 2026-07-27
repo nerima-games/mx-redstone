@@ -67,31 +67,63 @@
  * a repeater, `invertedBy` for a torch — and `conductsInto` is the single place
  * where those names become edges. A predicate over `ComponentKind` cannot
  * express this: direction is a property of the placement, not of the kind.
+ *
+ * ---------------------------------------------------------------------------
+ * Rules live in their own files; this one places them
+ * ---------------------------------------------------------------------------
+ *
+ * A comparator's arithmetic is `domain/comparator.ts` and a plate's weighing is
+ * `domain/pressure-plate.ts`. Neither of those files knows what a board is, and
+ * this one does not know what a comparator computes — it knows which cell is the
+ * rear and which are the sides, which is placement, which is the one thing this
+ * file is for. The two components that read no cell at all (`hopper`,
+ * `dispenser`) appear here only as kinds, so that a board can contain them and
+ * so that power stops at them.
  */
+import { comparatorOutput, type ComparatorMode } from './comparator'
 import type { PositionKey } from './position-key'
+import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level'
 
 /**
- * Redstone power runs 0–15; a wire loses one level per cell.
+ * The signal range, re-exported.
  *
- * A signal therefore crosses FOURTEEN wire cells, not fifteen. A source occupies
- * a cell of the power map like everything else, and every conducting step loses
- * one, so the first wire beside a lever is already at 14 and the fourteenth is
- * at 1. Fifteen was written in several places here and is wrong in all of them:
- * it counts the source's own cell as wire.
- *
- * This is a DIVERGENCE from vanilla, where the dust touching a lever is at 15
- * and a run reaches fifteen cells, and it is recorded rather than fixed. Closing
- * it means a source not decaying into its first neighbour, which changes every
- * level in every circuit and is a behaviour decision, not a typo. What is fixed
- * is the arithmetic claim; `test/power-graph.test.ts` pins the 14 so that the
- * day somebody does close the gap, it is a failing test rather than a quiet
- * renumbering of the whole board.
+ * `MAX_POWER_LEVEL` and `PowerLevel` moved to `domain/signal-level.ts` when the
+ * comparator arrived — the comparator and the weighted pressure plate both do
+ * arithmetic in this range, this file needs both of their rules, and a constant
+ * that all three want cannot live in the file two of them import. That header
+ * carries the full reasoning. The names are re-exported here, and therefore from
+ * the barrel, so nothing downstream saw the move.
  */
-export const MAX_POWER_LEVEL = 15
+export { MAX_POWER_LEVEL, type PowerLevel }
 
-export type PowerLevel = number
-
-export type ComponentKind = 'wire' | 'torch' | 'lever' | 'button' | 'repeater' | 'lamp'
+/**
+ * Every kind of component a board can hold.
+ *
+ * The last five arrived together and split three ways, which is the useful thing
+ * to notice about them:
+ *
+ *   - `comparator` is a SOURCE with a computed level, and the only component in
+ *     the model whose output is a number rather than a yes/no.
+ *   - `observer` and `pressure-plate` are sources whose `active` is set by
+ *     something outside the graph — a block that changed, an entity that stood
+ *     on it — exactly as a lever's is set by a player.
+ *   - `hopper` and `dispenser` are neither. They neither receive power nor pass
+ *     it, so a wire on each side of one is two circuits; they are on the board
+ *     because `redstone:effects` has to find them and because power has to STOP
+ *     at them. See `RECEIVES_POWER` for why they are not in it.
+ */
+export type ComponentKind =
+  | 'wire'
+  | 'torch'
+  | 'lever'
+  | 'button'
+  | 'repeater'
+  | 'lamp'
+  | 'comparator'
+  | 'observer'
+  | 'pressure-plate'
+  | 'hopper'
+  | 'dispenser'
 
 /**
  * One placed component.
@@ -104,13 +136,35 @@ export type ComponentKind = 'wire' | 'torch' | 'lever' | 'button' | 'repeater' |
 export type Component = {
   readonly kind: ComponentKind
   /**
-   * Levers and buttons: whether the player has switched it on.
+   * Levers, buttons, observers and pressure plates: whether it is currently on.
+   *
+   * One field for four components because it means one thing in all four: THE
+   * OWNER OF THE WORLD SAYS THIS IS ON RIGHT NOW. What differs is who the owner
+   * is answering to — a player's hand for a lever and a button, a block that
+   * changed for an observer (`domain/observer.ts`), an entity standing on it for
+   * a plate (`domain/pressure-plate.ts`) — and none of those is visible from
+   * inside the power graph.
    *
    * A button is a PULSE in vanilla and a boolean here; nothing in this file
-   * counts one down. That is deliberate and it is the caller's job — see the
-   * note above `sourcesOf`.
+   * counts one down, and neither does anything count down an observer's two
+   * ticks. That is deliberate and it is the caller's job — see the note above
+   * `sourcesOf`.
    */
   readonly active?: boolean
+  /**
+   * How strong this source is while `active`. Omitted means full power.
+   *
+   * Only a weighted pressure plate needs it: a gold plate reports how many
+   * things are standing on it, and `domain/pressure-plate.ts` turns that count
+   * into this number. A lever could carry one and no lever does, which is the
+   * right shape — the field is read for every source uniformly, so there is no
+   * component for which setting it silently does nothing.
+   *
+   * Not used by a comparator. A comparator's level is derived from the board
+   * every tick (see `sourcesOf`), so writing it down would be storing a cached
+   * value beside the thing it is cached from.
+   */
+  readonly emits?: PowerLevel
   /**
    * Torches: the cell whose power inverts this torch. In the world this is the
    * block the torch is attached to.
@@ -120,13 +174,71 @@ export type Component = {
    */
   readonly invertedBy?: PositionKey
   /**
-   * Repeaters: the cell read as input. In the world this is the block behind the
-   * repeater.
+   * Repeaters and comparators: the cell read as input. In the world this is the
+   * block behind the component — its REAR.
+   *
+   * The two read it differently and that difference is the comparator: a
+   * repeater asks whether the rear carries anything and then emits full power,
+   * while a comparator asks HOW MUCH and emits a function of it. A repeater is
+   * therefore immune to the level it receives and a comparator is not, which is
+   * the whole reason `MAX_POWER_LEVEL`'s recorded divergence from vanilla costs
+   * more here than anywhere else (DN-RS-13).
    */
   readonly inputFrom?: PositionKey
   /**
-   * Repeaters: the ONE cell this repeater drives. In the world this is the block
-   * the repeater faces.
+   * Comparators: the cells beside it, whose power it compares the rear against.
+   *
+   * A list rather than two named fields because a comparator has two sides in
+   * vanilla and the number is a property of the world's geometry, which this
+   * file refuses to know. A caller working on a 2D preview grid supplies two; a
+   * caller reading voxel faces might one day supply four for a vertical
+   * placement. Omitted or empty means nothing is beside it, so `compare` passes
+   * the rear through and `subtract` subtracts nothing.
+   *
+   * Like `outputTo`, these SELECT edges rather than create them — a side that is
+   * not a declared neighbour is still read, because reading is not conducting
+   * and `adjacency` bounds where power FLOWS, not what a component may look at.
+   * The asymmetry is deliberate: `invertedBy` and `inputFrom` have always been
+   * read without an edge (`sourcesOf` calls `powerAt(previous, …)` directly),
+   * and a comparator's sides are the same kind of reading.
+   */
+  readonly sideInputs?: ReadonlyArray<PositionKey>
+  /**
+   * Comparators: `compare` (the default) or `subtract`.
+   *
+   * The player toggles it by right-clicking, so it is placement state like
+   * `inputFrom`. Defaulting to `compare` matches a freshly placed comparator in
+   * vanilla, and matches the reference, whose state field is a `comparatorSubtract`
+   * boolean checked with `=== true` (`redstone-simulation.ts:321`).
+   */
+  readonly mode?: ComparatorMode
+  /**
+   * Comparators: what the CONTAINER behind this one reads, if there is one.
+   *
+   * The comparator's third input, and the one that is not in the model. A
+   * comparator behind a chest measures how full the chest is, and how full a
+   * chest is lives in mc-sim — so it is neither the board's topology nor the
+   * previous power map, and `sourcesOf` is a pure function of exactly those two.
+   *
+   * It is a field for the same reason `active` is: it is a statement by whoever
+   * owns the world about the world right now, computed with this repository's
+   * own rule (`containerSignalStrength`, `domain/comparator.ts`) from data that
+   * is mc-sim's. That header names the two missing pieces exactly.
+   *
+   * When present it REPLACES the rear reading rather than adding to it. In the
+   * world the two are mutually exclusive: the cell behind a comparator holds
+   * either a container or a wire, never both.
+   */
+  readonly containerSignal?: PowerLevel
+  /**
+   * Repeaters, comparators and observers: the ONE cell this component drives. In
+   * the world this is the block it faces — for an observer, the cell behind it,
+   * since an observer watches forwards and outputs backwards.
+   *
+   * All three are diodes and all three use this field, which is the point of it
+   * being about placement rather than about kind. A comparator with its output
+   * unnamed is as inert as a repeater with its output unnamed, and for the same
+   * reason.
    *
    * A repeater restores full power, which is how a signal travels further than
    * the reach of a single wire run. It restores it in exactly one direction:
@@ -207,9 +319,17 @@ export const sourcesOf = (board: CircuitBoard, previous: PowerMap): PowerMap => 
   const sources = new Map<PositionKey, PowerLevel>()
 
   for (const [key, component] of board.components) {
-    if (component.kind === 'lever' || component.kind === 'button') {
+    if (
+      component.kind === 'lever' ||
+      component.kind === 'button' ||
+      component.kind === 'observer' ||
+      component.kind === 'pressure-plate'
+    ) {
+      // The four components whose truth is declared from outside. `emits` lets
+      // a weighted plate report a count rather than a yes; everything else
+      // omits it and gets full power.
       if (component.active === true) {
-        sources.set(key, MAX_POWER_LEVEL)
+        sources.set(key, component.emits ?? MAX_POWER_LEVEL)
       }
       continue
     }
@@ -236,9 +356,27 @@ export const sourcesOf = (board: CircuitBoard, previous: PowerMap): PowerMap => 
       if (inputPower > 0) {
         sources.set(key, MAX_POWER_LEVEL)
       }
+      continue
     }
 
-    // `wire` and `lamp` generate nothing, so they need no branch.
+    if (component.kind === 'comparator') {
+      // The rear is either a container's reading or the cell behind, never
+      // both: in the world that cell holds one or the other. Both are read from
+      // OUTSIDE the current sweep — `previous` for the wire, the world owner's
+      // statement for the container — which is what makes a comparator a delay
+      // element like a repeater (`DELAYED_KINDS`).
+      const rear =
+        component.containerSignal ??
+        (component.inputFrom === undefined ? 0 : powerAt(previous, component.inputFrom))
+      const sides = (component.sideInputs ?? []).map((side) => powerAt(previous, side))
+      const output = comparatorOutput(rear, sides, component.mode ?? 'compare')
+      if (output > 0) {
+        sources.set(key, output)
+      }
+    }
+
+    // `wire`, `lamp`, `hopper` and `dispenser` generate nothing, so they need no
+    // branch.
     //
     // An if-chain rather than a `switch`, deliberately: a `switch` over a closed
     // union needs a `default` clause to satisfy oxlint's `default-case`, and
@@ -262,6 +400,29 @@ export const sourcesOf = (board: CircuitBoard, previous: PowerMap): PowerMap => 
  * out — a torch that could never turn off, and therefore a game with no clocks,
  * no monostables and no memory cells. It is worth stating loudly because the
  * symptom (a circuit that is always on) looks nothing like the cause.
+ *
+ * ---------------------------------------------------------------------------
+ * The two ACTUATORS are not in here, and the reference's predicate says they are
+ * ---------------------------------------------------------------------------
+ *
+ * A hopper is locked while powered and a dispenser fires on a rising edge, so
+ * both plainly have to know whether they are powered — and neither is in this
+ * set. The answer is `drivenPowerAt`, which asks the question a receiver's own
+ * map entry only approximates: does a cell that DRIVES me carry power.
+ *
+ * That is not the obvious reading of the reference. Its `canConduct`
+ * (`redstone-simulation.ts:24-34`) lists Dispenser among the conductors and
+ * excludes only Lamp and Hopper — but `canConduct` is ONE predicate gating both
+ * directions there, and this repository splits the question in two
+ * (`RECEIVES_POWER` here, `CONDUCTS_POWER` below). The split is already visible
+ * in this line: a lamp receives here and does not conduct there, and the
+ * reference cannot say that at all.
+ *
+ * Adding an actuator to this set would make it hold a decayed level of its own,
+ * and DN-RS-5 §5-1 is the record of what that costs — a lamp is in this set, and
+ * the accessor that read its own entry leaked litness exactly one cell past
+ * where power stopped. An actuator whose "am I powered" came from its own entry
+ * would inherit that bug and, being a dispenser, would fire on it.
  */
 const RECEIVES_POWER: ReadonlySet<ComponentKind> = new Set<ComponentKind>(['wire', 'lamp'])
 
@@ -272,6 +433,13 @@ const RECEIVES_POWER: ReadonlySet<ComponentKind> = new Set<ComponentKind>(['wire
  * energise the wire it is placed against. Lamps are the interesting exclusion:
  * letting one conduct is the classic beginner's bug, because it silently welds
  * the two independent circuits either side of it into one.
+ *
+ * `hopper` and `dispenser` are excluded for the same reason as a lamp, and it
+ * matters more for them: a hopper is a block a player puts IN a circuit, so a
+ * hopper that conducted would join the line feeding it to the line beyond it and
+ * the filter would lock itself. They are in no set at all — they neither receive
+ * nor conduct — which makes them exactly as transparent to power as an empty
+ * cell, and `drivenPowerAt` still answers whether one is powered.
  */
 const CONDUCTS_POWER: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
   'wire',
@@ -279,6 +447,9 @@ const CONDUCTS_POWER: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
   'button',
   'torch',
   'repeater',
+  'comparator',
+  'observer',
+  'pressure-plate',
 ])
 
 /**
@@ -286,13 +457,22 @@ const CONDUCTS_POWER: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
  *
  * `CONDUCTS_POWER` above answers "can this kind push power onward at all"; this
  * answers "along which edges", and the two are different questions because
- * direction is a property of the PLACEMENT, not of the kind. Two components have
- * an answer narrower than "all of them":
+ * direction is a property of the PLACEMENT, not of the kind. Four components
+ * have an answer narrower than "all of them":
  *
  *   - a repeater drives exactly `outputTo` and nothing else. It is a diode. The
  *     flanks stay dark, and — the reason any circuit with a repeater in it can
  *     be switched off at all — so does `inputFrom`, which the repeater samples
  *     on the next tick and would otherwise find lifted by its own output.
+ *   - a comparator, likewise, and the latch it is protected from is worse than
+ *     the repeater's: a comparator drives its own SIDES with its own output, and
+ *     a compare-mode comparator whose side equals its rear emits 0. So one that
+ *     powered its flanks would switch itself off, then on, then off — a
+ *     two-tick blinker built out of a component players use to hold a value
+ *     still.
+ *   - an observer drives exactly `outputTo` too. Vanilla's observer emits from
+ *     its back face only, and the cell it WATCHES is in front; an omnidirectional
+ *     observer would pulse into the block whose change it is watching for.
  *   - a torch drives every neighbour EXCEPT `invertedBy`. It does not power the
  *     block it hangs on, so it inverts instead of blinking.
  *
@@ -313,7 +493,11 @@ const conductsInto = (board: CircuitBoard, key: PositionKey): ReadonlyArray<Posi
 
   const neighbours = neighboursOf(board, key)
 
-  if (component.kind === 'repeater') {
+  if (
+    component.kind === 'repeater' ||
+    component.kind === 'comparator' ||
+    component.kind === 'observer'
+  ) {
     return neighbours.filter((neighbour) => neighbour === component.outputTo)
   }
 
@@ -375,9 +559,21 @@ export const propagateTick = (board: CircuitBoard, previous: PowerMap): PowerMap
 /**
  * The components whose output is a function of the PREVIOUS power map.
  *
- * These are the two that cost a tick. Everything else resolves inside the sweep.
+ * These are the three that cost a tick. Everything else resolves inside the
+ * sweep.
+ *
+ * The comparator is the third, and it is the one this set was written for. The
+ * bound below is TIGHT rather than generous specifically so that adding a
+ * delayed component and forgetting this line shows up — and the day arrived:
+ * a comparator reads `previous` at its rear and at both sides, so a chain of
+ * them costs one tick each, and a bound that had not learned about them would
+ * call a stable comparator chain a clock.
  */
-const DELAYED_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>(['torch', 'repeater'])
+const DELAYED_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
+  'torch',
+  'repeater',
+  'comparator',
+])
 
 /**
  * Upper bound on iterations in `settle`, for THIS board.
@@ -477,25 +673,67 @@ export const settle = (
 }
 
 /**
+ * The strongest level arriving at a cell from a neighbour that DRIVES it.
+ *
+ * The qualification is the whole content of this function, and it is the second
+ * time this repository has paid for getting it wrong. `isLit` used to ask "does
+ * any adjacent cell carry power", and a lamp is in `RECEIVES_POWER` — a lit lamp
+ * holds its own decayed level — so litness travelled exactly one lamp further
+ * than power did: two lamps in a row both lit, the third did not.
+ * `propagateTick` was never wrong about it; a lamp is not in `CONDUCTS_POWER`
+ * and the second lamp's power really was 0. The leak was in the accessor, one
+ * layer above the sweep (DN-RS-5 §5-1).
+ *
+ * So the question is asked ONCE, here, through `conductsInto` — the same
+ * function the sweep uses — and every consumer that needs "is this thing
+ * powered" asks it rather than looking at a map entry. `isLit` is one such
+ * consumer. So is a dispenser deciding whether it has just seen a rising edge,
+ * and a hopper deciding whether it is locked: neither is in `RECEIVES_POWER`, so
+ * neither has a map entry to be misled by, and this is where they get their
+ * answer instead.
+ *
+ * Not "the cell's own level > 0", which would be shorter and wrong at the tail
+ * of a wire run: a wire at level 1 has nothing left to give (`outgoing` is 0) so
+ * the cell beside it holds 0, and in vanilla the lamp there is lit.
+ */
+export const drivenPowerAt = (
+  board: CircuitBoard,
+  power: PowerMap,
+  key: PositionKey,
+): PowerLevel => {
+  let strongest = 0
+  for (const neighbour of neighboursOf(board, key)) {
+    const level = powerAt(power, neighbour)
+    if (level > strongest && conductsInto(board, neighbour).includes(key)) {
+      strongest = level
+    }
+  }
+  return strongest
+}
+
+/**
  * A lamp is lit when a cell that DRIVES it carries power.
  *
- * The qualification is the whole content of this function. It used to read "when
- * any adjacent cell carries power", and a lamp is in `RECEIVES_POWER` — a lit
- * lamp holds its own decayed level — so litness travelled exactly one lamp
- * further than power did: two lamps in a row both lit, the third did not.
- * `propagateTick` was never wrong about this; a lamp is not in `CONDUCTS_POWER`
- * and the second lamp's power really was 0. The leak was here, in the accessor,
- * one layer above the sweep — which is the same failure the comment on
- * `CONDUCTS_POWER` warns about, arriving through the door nobody was watching.
- * Reusing `conductsInto` means the accessor and the sweep cannot disagree again;
- * a lamp on a repeater's flank is dark here for the same reason it has no power.
- *
- * Not "the lamp's own level > 0", which would be shorter and wrong at the tail
- * of a wire run: a wire at level 1 has nothing left to give (`outgoing` is 0) so
- * the lamp beside it holds 0, and in vanilla that lamp is lit.
+ * The kind check is not redundant with `drivenPowerAt`: a wire in the middle of
+ * a run is driven by its neighbour and is not "lit", and a caller who confused
+ * the two would light every cell on the board. `test/power-graph.test.ts` pins
+ * that separately.
  */
 export const isLit = (board: CircuitBoard, power: PowerMap, key: PositionKey): boolean =>
-  board.components.get(key)?.kind === 'lamp' &&
-  neighboursOf(board, key).some(
-    (neighbour) => powerAt(power, neighbour) > 0 && conductsInto(board, neighbour).includes(key),
-  )
+  board.components.get(key)?.kind === 'lamp' && drivenPowerAt(board, power, key) > 0
+
+/**
+ * Whether an actuator has power arriving at it.
+ *
+ * For the two components that act on power without carrying it — a dispenser
+ * fires on the rising edge of this, a hopper is LOCKED while it is true
+ * (`domain/hopper.ts`; note the inversion) — and for `redstone:effects`, which
+ * has to ask the same question about a piston.
+ *
+ * Deliberately NOT restricted by kind, unlike `isLit`. "Is power arriving here"
+ * is a question about a cell, and a piston is not a `ComponentKind` at all
+ * (`domain/piston.ts` moves the world; it does not carry power), so a kind check
+ * would exclude the caller that needs it most.
+ */
+export const isPowered = (board: CircuitBoard, power: PowerMap, key: PositionKey): boolean =>
+  drivenPowerAt(board, power, key) > 0

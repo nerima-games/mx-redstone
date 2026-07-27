@@ -40,6 +40,11 @@ export const REDSTONE_STAGE_IDS = {
    * Apply the consequences: extend and retract pistons, light lamps, fire
    * dispensers and droppers, move hoppers, trigger observers. Every one of
    * those is a write through mc-sim.
+   *
+   * The DECISIONS are already here and tested (`domain/observer.ts`,
+   * `domain/dispenser.ts`, `domain/hopper.ts`, `domain/comparator.ts`); what
+   * this stage adds is the writes. See `registration.ts` for the six named
+   * things that have to exist upstream first.
    */
   effects: StageId('redstone:effects'),
 } as const

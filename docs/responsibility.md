@@ -18,10 +18,11 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | リピーター | 同 `:219-245` | 実装済み（ダイオード。遅延は未実装で、`delayTicks` フィールドは**削除済み**——DN-RS-12） |
 | ピストン押し出し | `packages/app/application/frame/stages/redstone-piston-world-effects.ts`（263 LOC） | `domain/piston.ts` に押し出し計画のみ実装済み |
 | ランプ | `redstone-lamp-world-effects.ts`（92 LOC） | `isLit` として実装済み |
-| ディスペンサ | `redstone-dispenser-world-effects.ts`（137 LOC） | 未実装（`ComponentKind` にまだ無い） |
-| ホッパー | `redstone-hopper-world-effects.ts`（53 LOC） | 未実装 |
-| オブザーバ | `redstone-observer-world-effects.ts`（73 LOC） | 未実装 |
-| 感圧板 / コンパレータ | `redstone-simulation.ts:24-46`, `:292`（`updateComparators`） | 未実装 |
+| ディスペンサ | `redstone-dispenser-world-effects.ts`（137 LOC） | `domain/dispenser.ts` に**立ち上がりエッジ検出のみ**。中身 / ドロップ / 発射体は境界（[design-notes.md](./design-notes.md) DN-RS-17） |
+| ホッパー | `redstone-hopper-world-effects.ts`（53 LOC） | `domain/hopper.ts` に**ロックの反転と搬送周期のみ**。搬送そのものは境界（DN-RS-16 §16-1、DN-RS-17） |
+| オブザーバ | `redstone-observer-world-effects.ts`（73 LOC） | `domain/observer.ts` に実装済み（変化検出とパルス長。記憶は値であってモジュール変数ではない——DN-RS-15） |
+| 感圧板 | `redstone-simulation.ts:40` | `domain/pressure-plate.ts` に**占有数 → 信号強度のみ**。占有判定は境界（DN-RS-17） |
+| コンパレータ | `redstone-simulation.ts:292`（`updateComparators`） | `domain/comparator.ts` に実装済み（2 モード + コンテナ充填率の写像）。**本リポジトリの信号モデルの穴を露出させた部品である——DN-RS-13** |
 
 移植元の実測は [porting.md](./porting.md) を参照。
 `stages/registration.ts:157-161` が `redstone:effects` stage のコメントとして、
@@ -56,7 +57,8 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | ブロック定義（`REDSTONE_WIRE` / `PISTON` / `REDSTONE_LAMP` … のリテラル型と定義テーブル） | `mc-kernel` | ブロック語彙は全 16 リポジトリの共有物。ここに 2 つ目の語彙を作ると fork になる（plan.md §3.1） |
 | **`pistonImmovable` 能力フラグと、そのメンバーシップ** | `mc-kernel` | 権威は `mc-kernel/docs/capability-flag-audit.md` §3。詳細は [design-notes.md](./design-notes.md) DN-RS-1 |
 | 部品が置かれている世界・チャンク・そのライフサイクル | `mc-worldgen` | 名詞。`ChunkManager` がロード/アンロード/ダーティフラグを持つ（plan.md §3.7） |
-| ピストンが押したエンティティの位置、ディスペンサ / ホッパーが読み書きするインベントリ | `mc-sim` | 名詞。`EntityManager` / `InventoryService`（plan.md §3.8） |
+| ピストンが押したエンティティの位置、ディスペンサ / ホッパーが読み書きするインベントリ、感圧板に乗っているもの | `mc-sim` | 名詞。`EntityManager` / `InventoryService`（plan.md §3.8）。**足りないものは [design-notes.md](./design-notes.md) DN-RS-17 に 1 つずつ名指ししてある**——`inventoryAt(position)` / `entitiesWithin(bounds)` / entity の寸法 / アイテムごとの `maxStackSize` |
+| ディスペンサが出すドロップアイテムと矢のダメージ | `mx-gameplay`（**mc-sim 越しに観測される**） | `EntityManagerApi.spawn` は `SpawnRequest<S>` を取り、`behaviour: S` は rules tier のものである（`mc-sim/domain/entity.ts:347-352`）。`S` を名指すことは兄弟体験モジュールの import であり、エッジはゼロ（plan.md §2.3-1）。したがって**ディスペンサはイベントを出し、ドロップを作るのは mx-gameplay である** |
 | レバーのクリック音・ピストンの伸縮音 | `mc-audio`（**`mc-sim` 経由で要求する**） | mc-audio は mx-redstone の親ではない。[architecture.md](./architecture.md) §7 |
 | 回路を説明する画面・ホットバー・任意の DOM | `mx-ui` | 「全画面」は mx-ui（plan.md §3.13）。プレビューは例外だが、それは出荷物ではない |
 | stage の全順序、Layer 配線、セッションライフサイクル | `mc-compose` | 全順序は compose だけが所有する（plan.md §2.3-3）。[public-api.md](./public-api.md) §3 |
@@ -133,14 +135,27 @@ index.ts                      # 公開バレル。ただし「公開」の意味
 domain/
   frame-contract.ts           # plan.md §4.1 の契約をローカルに再掲。kernel 公開時に削除
   position-key.ts             # Position のキー表現。kernel 公開時に削除
-  power-graph.ts              # 電力グラフ（内部実装）
-  piston.ts                   # ピストン押し出し計画（内部実装）
+  block-ref.ts                # ブロックの不透明な参照。kernel 公開時に削除
+  signal-level.ts             # 信号の値域（0-15）。規則 3 つが共有するので独立している
+  power-graph.ts              # 電力グラフ。規則を「置く」場所であって規則そのものではない
+  piston.ts                   # ピストン押し出し計画
+  comparator.ts               # コンパレータの算術とコンテナ充填率
+  observer.ts                 # ブロック変化検出とパルス長
+  pressure-plate.ts           # 占有数 → 信号強度
+  hopper.ts                   # ロックの反転と搬送周期
+  dispenser.ts                # 立ち上がりエッジ検出
 stages/
   stage-ids.ts                # このリポジトリが書き下す StageId を 1 ファイルに集約
   registration.ts             # StageRegistration の生成 = 唯一の公開 API
 scripts/
   check-dependency-whitelist.ts   # 16 リポジトリ共通の境界ゲート（テンプレート）
 ```
+
+**1 規則 1 ファイル**である（plan.md §3.11）。`power-graph.ts` が規則を持たないのはその帰結で、
+あのファイルが知っているのは「どのセルが背面でどのセルが側面か」——つまり**設置**であり、
+コンパレータが何を計算するかは知らない。逆に `comparator.ts` は盤面が何かを知らない。
+`signal-level.ts` が独立しているのは同じ理由の裏返しで、値域を 3 つの規則が共有するため
+`power-graph.ts` に置くと `power-graph -> comparator -> power-graph` の循環になる。
 
 `domain/` と `stages/` の分割は依存境界ではなく**純粋性の境界**である。
 `domain/` は世界を知らない純粋関数だけを置き、`stages/` が Effect と `Ref` を持ち込む。

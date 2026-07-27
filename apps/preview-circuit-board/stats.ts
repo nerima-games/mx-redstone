@@ -160,6 +160,32 @@ const measurePlainArrival = (): number => {
   return -1
 }
 
+
+// ---------------------------------------------------------------------------
+// 2-1. What does a comparator do to the number it is passing on?
+// ---------------------------------------------------------------------------
+
+/**
+ * A ladder of comparators, each reading the dust the last one drove.
+ *
+ * A comparator is the only component whose output is a LEVEL rather than a
+ * yes/no, so it is the only one for which "how much did this cost" is a question
+ * with an answer other than a tick. In vanilla the answer is nothing: a
+ * comparator drives the dust in front of it at its own output strength, so a
+ * value crosses any number of them unchanged.
+ */
+const measureComparatorLadder = (stages: number): ReadonlyArray<number> => {
+  const map = cells()
+  at(map, 0, 0, 'lever', { active: true })
+  for (let index = 0; index < stages; index += 1) {
+    at(map, index * 2 + 1, 0, 'comparator', { facing: 'right' })
+    at(map, index * 2 + 2, 0, 'wire')
+  }
+  const board = circuitBoardOf(map)
+  const power = settle(board, { limit: UNBOUNDED }).power
+  return Array.from({ length: stages }, (_, index) => powerAt(power, keyOf({ x: index * 2 + 1, y: 0 })))
+}
+
 // ---------------------------------------------------------------------------
 // 3. Is a repeater a diode?
 // ---------------------------------------------------------------------------
@@ -554,6 +580,27 @@ const collectFindings = (): ReadonlyArray<Finding> => {
     })
   }
 
+
+  const ladder = measureComparatorLadder(4)
+  const passedThrough = ladder.every((level) => level === (ladder[0] ?? 0))
+  if (!passedThrough) {
+    findings.push({
+      title: 'a comparator loses one level per stage — vanilla loses none',
+      detail: [
+        `Four comparators in a row, each reading the dust the last one drove: ${ladder.join(', ')}.`,
+        'This is the SAME divergence as finding F1 above, arriving where it costs something other',
+        'than reach. A lever losing its first level costs one cell of wire. A repeater loses',
+        'nothing that survives, because it restores full power and discards the level it read.',
+        'A comparator is the first component that PASSES A NUMBER ON, and other comparators do',
+        'arithmetic on that number: an item sorter that compares two chests through different',
+        'numbers of comparators gets different answers for equal chests.',
+        'DELIBERATE and recorded (DN-RS-13), because closing it means a source not decaying into',
+        'its first neighbour — the same one decision F1 defers, and it renumbers every circuit.',
+        'test/power-graph.test.ts asserts these exact readings so that taking it is loud.',
+      ],
+    })
+  }
+
   const held = measureButtonHold(60)
   if (held.stillPowered) {
     findings.push({
@@ -610,6 +657,9 @@ export const buildStatsReport = (): ReadonlyArray<string> => {
     ...[1, 2, 3, 4].map(
       (delay, index) => `  palette delay = ${String(delay)}: lamp lights at tick ${String(arrivals[index] ?? -1)}`,
     ),
+    '',
+    '3-2. what does a comparator do to the number it passes on?  (lever - C - dust - C - dust - …)',
+    `  four comparators in a row read: ${measureComparatorLadder(4).join(', ')}   (vanilla: 15, 15, 15, 15)`,
     '',
     '3-1. is a repeater a diode?  (lever - wire - repeater - wire, plus a stub on the flank)',
     `  input wire the tick before the repeater turns on: ${String(diode.inputBefore)}`,
