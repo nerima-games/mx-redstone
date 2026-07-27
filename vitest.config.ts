@@ -43,18 +43,39 @@ export default defineConfig({
       all: true,
       reporter: ['text', 'json', 'html', 'lcov'],
       reportsDirectory: './coverage',
-      // NO THRESHOLD YET — deliberate.
+      // THE 99% GATE, ON. `docs/testing.md` §4 row 7 and §6.
       //
-      // The reference repository (takeokunn/ts-minecraft) enforces 99% on
-      // branches/functions/lines/statements. A threshold on a skeleton would be
-      // meaningless: it would be trivially satisfied by a handful of type-only
-      // modules and would say nothing about the real implementation.
+      // This block used to explain why there was NO threshold: a number imposed
+      // on a skeleton is trivially satisfied by type-only modules and says
+      // nothing about the implementation. That argument was about the skeleton
+      // and it has expired — `domain/` now carries the power graph, the
+      // comparator arithmetic, the piston push rule, the observer, the hopper,
+      // the dispenser and the weighted plate, and `stages/` carries the stage
+      // contract. The percentage is finally a statement about behaviour.
       //
-      // Coverage is collected and reported (`pnpm test:coverage`) so the number
-      // is always visible. The 99% gate is turned on — here and in the CI
-      // workflow — when this repository reaches its completion criteria.
+      // It is 99 rather than the measured 100 for the reason the reference
+      // repository (takeokunn/ts-minecraft) uses 99: the gate exists to catch a
+      // REGRESSION, and a threshold pinned to the exact current number turns
+      // every unrelated refactor into a red build, which teaches people to
+      // lower the number instead of writing the test. One percent of this
+      // package is a little over one branch arm — enough to land a commit, not
+      // enough to land a feature untested.
       //
-      //   thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
+      // Turning it on cost ONE test, and that is a fact about the code rather
+      // than about the testing. Branches sat at 99.31% with a single arm
+      // uncovered: the `0` in `sourcesOf`'s rear reading, i.e. a comparator
+      // with neither a `containerSignal` nor an `inputFrom`. That arm is not
+      // dead — it is the state a comparator is in the moment a player places
+      // it — so it got a test that asserts the rule (`test/power-graph.test.ts`,
+      // "an edge is not a rear") rather than one that asserts the number.
+      //
+      // The reason there was only one is DN-RS-11: this file was written under
+      // the rule "do not leave a branch that can never run", which is why
+      // `sourcesOf` is an if-chain and not a `switch` with an unreachable
+      // `default`. A repository that keeps that rule arrives at the gate
+      // already passing. That is the argument for the rule, recorded here
+      // because this is where the bill came due.
+      thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
     },
   },
   esbuild: {

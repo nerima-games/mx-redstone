@@ -1052,6 +1052,35 @@ describe('comparators — the only component whose output is a NUMBER', () => {
     }),
   )
 
+  it.effect('a comparator with NEITHER a container reading NOR `inputFrom` reads a rear of 0 — an edge is not a rear', () =>
+    Effect.sync(() => {
+      // The mirror of the `sideInputs` claim below: a NAMED side is read
+      // without an edge, and an UNNAMED rear is not read even with one. Both
+      // follow from the same rule — `adjacency` bounds where power FLOWS, and
+      // what a comparator LOOKS AT is named on the component.
+      //
+      // It matters because it is the state a comparator is in the instant a
+      // player places it, before anything has been attached behind it. If
+      // touching a live wire were enough to feed the rear, every comparator
+      // dropped beside a powered line would fire on placement, and the
+      // `containerSignal` contract above — the reading REPLACES the rear —
+      // would have nothing to replace.
+      const board = line([
+        ['lever', { kind: 'lever', active: true }],
+        ['w0', wire()],
+        ['comparator', { kind: 'comparator', outputTo: 'out' }],
+        ['out', wire()],
+      ])
+
+      const settled = settle(board)
+      // The wire behind it is live, so the board really does have power to
+      // offer; the comparator simply is not asking for it.
+      expect(powerAt(settled.power, 'w0')).toBe(14)
+      expect(powerAt(settled.power, 'comparator')).toBe(0)
+      expect(powerAt(settled.power, 'out')).toBe(0)
+    }),
+  )
+
   it.effect('REGRESSION: `containerSignal` REPLACES the rear reading rather than adding to it', () =>
     Effect.sync(() => {
       // In the world the cell behind a comparator holds either a container or a

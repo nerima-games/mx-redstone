@@ -60,9 +60,18 @@ jobs:
       - name: Test
         run: pnpm test
 
-      # Coverage is reported but not yet thresholded — see vitest.config.ts.
-      # The 99% gate is added when this repository reaches its completion criteria.
-      - name: Coverage
+      # The 99% gate (docs/testing.md §4 row 7), and it is this step that
+      # enforces it. No extra flag is needed and none should be added: the
+      # thresholds live in vitest.config.ts, and `vitest run --coverage` exits
+      # non-zero by itself when any of the four falls below. Keeping the numbers
+      # in the config rather than here means `pnpm test:coverage` gates
+      # identically on a laptop and in CI, so the gate cannot be one that only
+      # ever fires after a push.
+      #
+      # NOTE: `pnpm verify` deliberately does NOT include this step — it runs
+      # `pnpm test` without coverage. Run `pnpm test:coverage` before pushing if
+      # you have touched a branch in domain/ or stages/.
+      - name: Coverage (99% gate)
         run: pnpm test:coverage
 
       - name: Upload coverage report

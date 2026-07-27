@@ -21,7 +21,8 @@
 ## 2. 今日のゲート
 
 ```console
-$ pnpm verify        # typecheck && lint && check:deps && test。CI と同じ内容
+$ pnpm verify        # typecheck && lint && check:deps && api:check && test
+$ pnpm test:coverage # 99% ゲート。verify には含まれないので別に走らせる
 ```
 
 | ゲート | 何を捕まえるか | 実測（2026-07-27） |
@@ -30,7 +31,8 @@ $ pnpm verify        # typecheck && lint && check:deps && test。CI と同じ内
 | `pnpm lint` | oxlint。**このリポジトリ唯一の lint / format 設定**（prettier も biome も `.editorconfig` も置かない） | `Found 0 warnings and 0 errors`（37 ファイル / 97 ルール）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | `pnpm check:deps` | 未許可 import / 推移閉包違反 / kit の実行時依存 / 循環 / 壁時計直読み | `OK — 37 file(s) scanned, allowed direct dependencies: @nerima-games/mc-sim, @nerima-games/mc-worldgen (plus @nerima-games/mc-kernel …)` |
 | `pnpm api:check` | `api-lock.md` と公開 API の乖離 | `OK — api-lock.md matches the public API` |
-| `pnpm test` | vitest | 11 ファイル / **180 テスト** pass |
+| `pnpm test` | vitest | 11 ファイル / **181 テスト** pass |
+| `pnpm test:coverage` | カバレッジ計測 + **99% ゲート**（4 指標すべて）。**`verify` には含まれない**ので別に走らせる | 100 / 100 / 100 / 100（§6） |
 
 **`apps/` は `SCAN_ROOTS` にも lint 対象にも入っている。** プレビューは `pnpm verify` で*実行*されないが、
 型検査・lint・依存ゲート・壁時計禁止はすべて適用される。
@@ -41,15 +43,17 @@ $ pnpm verify        # typecheck && lint && check:deps && test。CI と同じ内
 `pnpm test` 側で塞いである（[design-notes.md](./design-notes.md) DN-RS-7）。
 
 CI（`.github/workflows/ci.yaml`）は同じ 4 つを個別ステップとして走らせ、
-最後に `pnpm test:coverage` を実行して `coverage/` をアーティファクトとして残す。
+最後に `pnpm test:coverage` を **99% ゲートとして**実行し、`coverage/` をアーティファクトとして残す。
+**`pnpm verify` は CI と同じ内容ではない**——カバレッジを含まないので、`domain/` や `stages/` の分岐に
+触ったら `pnpm test:coverage` も走らせること（§6）。
 
 ## 3. 現在のテストスイート
 
-11 ファイル / 180 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
+11 ファイル / 181 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
 
 | ファイル | テスト数 | 対象 |
 | --- | ---: | --- |
-| `test/power-graph.test.ts` | 58 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター（ダイオード） / **コンパレータ** / **オブザーバ** / **感圧板** / **アクチュエータ** / 退化した盤面 / 収束と発振 / `sourcesOf` / ボタン / **参照実装から移植したオラクル 4 本**（§4-3）） |
+| `test/power-graph.test.ts` | 59 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター（ダイオード） / **コンパレータ** / **オブザーバ** / **感圧板** / **アクチュエータ** / 退化した盤面 / 収束と発振 / `sourcesOf` / ボタン / **参照実装から移植したオラクル 4 本**（§4-3）） |
 | `test/api-lock.test.ts` | 26 | `api-lock.md` 生成器の挙動（plan.md §6 Step 0-3） |
 | `test/stage-registration.test.ts` | 19 | §2.3-1 / §2.3-3 の回帰、固定レート tick、stage 挙動、ミラーした `DeltaTimeSecs` ブランドが kernel と一致すること |
 | `test/check-dependency-whitelist.test.ts` | 19 | 依存ポリシー、体験モジュール間ゼロエッジ、推移閉包、kit の dev 専用、壁時計禁止、**他リポジトリの席から読んだ roster** |
@@ -156,7 +160,7 @@ plan.md §6 Step 2 の完了条件は 2 つある。
 | 4 | 参照実装のテスト資産（**2,658 行**）をオラクルとして移植 | **一巡した。4 本を移植し、残りは理由つきで見送った**（§4-3、[porting.md](./porting.md) §3-1） |
 | 5 | **回路盤サンドボックスプレビューが操作可能** | ✅（§4-1） |
 | 6 | スティッキーピストン / 引き寄せ | ❌（意図的にスコープ外、DN-RS-10） |
-| 7 | 99% カバレッジゲートが有効 | ❌（完成時に有効化、§6） |
+| 7 | 99% カバレッジゲートが有効 | ✅（`vitest.config.ts` の `thresholds` + CI の `Coverage (99% gate)` ステップ。実測 100/100/100/100、§6） |
 
 ### 4-3. 完成条件 #4 — 移植して分かった 2 つのこと
 
@@ -358,38 +362,61 @@ plan.md §3.12 が要求する「部品を置いて動かすサンドボック�
 この 3 つが揃っているので、「fixture 回路 → 期待状態」は**毎回同じ答えを返す**。
 1 つでも崩すと、シナリオテストは flaky テストに変わる。
 
-## 6. カバレッジ — 99% ゲートは完成時に入れる
+## 6. カバレッジ — 99% ゲートは有効である
 
-**現在、閾値は設定していない。これは意図的である。**
-
-- 参照実装（`takeokunn/ts-minecraft`）は branches / functions / lines / statements のすべてに **99%** を強制している。
-- しかし**スケルトンに閾値を課しても意味がない**。型定義とごく小さな純粋関数だけのリポジトリなら
-  簡単に満たせてしまい、実装の品質について何も語らない数字になる。
-  現状のテストは「まだ書かれていない実装」については何も言っていない。
-- 計測とレポートは常に動かしている（`pnpm test:coverage`）ので、数字はいつでも見える。
-  CI は毎回 `coverage/` をアーティファクトとして残す（`.github/workflows/ci.yaml`、保持 7 日）。
-
-**99% ゲートは完成条件（§4）に到達した時点で、`vitest.config.ts` と CI ワークフローの両方で有効化する。**
-`vitest.config.ts:46-57` に有効化する行がコメントとして既に置いてあり、その上に理由も書いてある。
+**閾値は 4 指標すべてに設定してある。** 参照実装（`takeokunn/ts-minecraft`）と同じ 99% である。
 
 ```typescript
-// NO THRESHOLD YET — deliberate.
-//   thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
+// vitest.config.ts
+thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
 ```
 
-CI 側にも同じ注記がある（`.github/workflows/ci.yaml` の `Coverage` ステップ:
-「Coverage is reported but not yet thresholded — see vitest.config.ts.」）。
-**2 箇所に書いてあるのは、片方だけ有効にしても意味がないから**である。
+現在の実測値は **statements 100 / branch 100 / functions 100 / lines 100**（181 テスト、2026-07-27）。
+
+閾値を置かなかった理由は「スケルトンに課しても意味がない」であり、その前提はもう成り立たない。
+`domain/` は電力グラフ・コンパレータ演算・ピストン押し出し・オブザーバ・ホッパー・ディスペンサ・
+重量感圧板を持ち、`stages/` は stage 契約を持つので、パーセンテージがようやく
+**実装の挙動についての主張**になった。
+
+実測が 100 でも閾値を 100 にしないのは、ゲートが守るのは**退行**だからである。
+現在値ぴったりに固定すると無関係なリファクタのたびに赤くなり、
+「テストを書く」ではなく「数字を下げる」を学習させてしまう。1% はこのパッケージでは分岐 1 本強にあたる
+——コミット 1 つ分の余裕であって、機能 1 つをテスト無しで入れられる幅ではない。
+
+`vitest.config.ts` と CI ワークフロー（`Coverage (99% gate)` ステップ）の**両方**で有効にしてある。
+閾値そのものは `vitest.config.ts` にしか書かない——`vitest run --coverage` が自力で非ゼロ終了するので
+CI 側に追加のフラグは要らず、そうしておけば手元の `pnpm test:coverage` と CI が同じ判定をする。
+**「push して初めて落ちるゲート」を作らないための配置**である。
+
+なお `pnpm verify` はカバレッジを含まない（`pnpm test` であって `pnpm test:coverage` ではない）。
+`domain/` や `stages/` の分岐に触ったら `pnpm test:coverage` も走らせること。
 
 計測対象は `index.ts` / `domain/**/*.ts` / `stages/**/*.ts`（`vitest.config.ts:31`）。
 `scripts/` と `test/` は対象外。
 
-### 6-1. 閾値を「今」入れないことと、実装が閾値に備えていることは別
+### 6-1. 有効化に要したテストは 1 本だった（そしてそれが DN-RS-11 の請求書である）
 
-閾値は未設定だが、**実装のほうは既に「到達不能な分岐を作らない」という規律で書かれている**。
-`domain/power-graph.ts` に 2 箇所その判断が記録されている（[design-notes.md](./design-notes.md) DN-RS-11）。
+有効化の直前、branch は **99.31%** で、未到達の分岐は**全体でちょうど 1 本**だった。
+`sourcesOf` の背面読み取り `component.inputFrom === undefined ? 0 : …` の `0` 側、つまり
+**`containerSignal` も `inputFrom` も持たないコンパレータ**である。
 
-同じ理由で `domain/position-key.ts` は計測対象から除外してある（`vitest.config.ts:32-42`）。
+これは死んだ分岐ではない。**プレイヤーがコンパレータを置いた直後の状態そのもの**であり、
+「隣接しているだけの導線は背面にならない」という規則がここに掛かっている。
+なので数字ではなく規則を主張するテストを 1 本足した
+（`test/power-graph.test.ts` の「an edge is not a rear」。すぐ下の `sideInputs` のテスト——
+**名前が付いた側面は辺が無くても読まれる**——のちょうど鏡像になっている）。
+
+**1 本で済んだ理由は、テストの側ではなくコードの側にある。**
+このリポジトリは最初から「到達不能な分岐を残さない」という規律（DN-RS-11）で書かれている。
+`sourcesOf` が閉じた union に対して `switch` ではなく if 連鎖なのはそのためで、
+`switch` にすれば oxlint の `default-case` が要求する `default` 節が
+**型として到達不能なまま永久にレポートに赤く残る**。
+その規律を守ったリポジトリは、ゲートの前に立った時点ですでに通っている——
+**これが DN-RS-11 を守る理由であり、請求書が来たのがここだった**というだけである。
+
+### 6-2. 除外している 1 件と、除外しなくてよかった 1 件
+
+`domain/position-key.ts` は計測対象から除外してある（`vitest.config.ts:32-42`）。
 型エイリアス 1 行だけで実行可能な文が 0 のファイルを、v8 provider は 100% ではなく **0%** と報告するため、
 headline の数字が無意味になる。
 
@@ -401,6 +428,19 @@ headline の数字が無意味になる。
 
 **除外は「測れないもの」に限り、「測ると都合が悪いもの」には使わない。**
 このファイルは kernel 公開時に削除される（[versioning.md](./versioning.md) §6）ので、除外も一緒に消える。
+
+**除外していない同種のファイルが 1 つある。`domain/block-ref.ts` である。**
+これも型エイリアス 1 行のファイルで、レポートの自分の行は同じく `0 | 0 | 0 | 0` と出る。
+それでも headline は 100 のままで、閾値も通る——**合計は「覆われた数 / 総数」で計算され、
+文が 0 本のファイルは 0/0 を足すだけだから**である。
+
+つまり上の「headline の数字が無意味になる」は**行の見た目についての話であって、
+ゲートについての話ではない**。`position-key.ts` の除外は headline を守るためではなく、
+**レポートを読む人が赤い行を無視する習慣を付けないため**にある——
+無視してよい赤があると、無視してはいけない赤も同じ扱いを受ける。
+`block-ref.ts` は現にその赤い行として残っているので、除外リストを揃えるか、
+両方残して「0/0 は合計に効かない」をここで一度説明しておくかのどちらかになる。
+**後者を選んだ**。除外リストは短いほうがよく、この段落があれば次の読み手は 2 度目に驚かない。
 
 ## 7. 参照実装のテストはオラクルである
 
