@@ -107,7 +107,7 @@ plan.md §8 のリスク表も同じことを別角度から言っている。
 
 > 参照実装を仕様書として使い、テスト資産を各 Step で**先に**移植。ゼロから仕様を再発明しない
 
-**参照実装のテストは、すべてのソースファイルの隣にある。** 実測値:
+**参照実装のテストは、すべてのソースファイルの隣にある。** 実測値（2026-07-27 に `wc -l`）:
 
 | テスト | LOC |
 | --- | ---: |
@@ -122,11 +122,34 @@ plan.md §8 のリスク表も同じことを別角度から言っている。
 | `redstone-observer-world-effects.test.ts` | 116 |
 | `redstone-hopper-world-effects.test.ts` | 106 |
 | `redstone-*-world-effects.test.ts` 小計 | **965** |
+| 上 2 小計（本書が以前「テスト資産」と呼んでいた数） | **2,093** |
+| `packages/app/application/frame/stages/interaction-stage-redstone.test.ts` | 253 |
+| `packages/entity/test/redstone/test-utils.ts`（共有ヘルパ） | 26 |
+| `packages/entity/test/redstone-simulation.test.ts` | 171 |
+| `packages/entity/test/redstone-position-utils.test.ts` | 115 |
+| **合計** | **2,658** |
 
-さらに `packages/app/application/frame/stages/interaction-stage-redstone.test.ts` と、
-共有ヘルパの `packages/entity/test/redstone/test-utils.ts` がある。
+### 3-0. 2,093 は算数としては正しく、名前としては誤りである
 
-**テスト 2,093 行に対してソース 1,664 行。**
+**本書は以前この表の上 2 小計だけを合計し、それを「参照実装のテスト資産」と呼んでいた。**
+2,093 という数の**足し算は合っている**（1,128 + 965）。誤っているのは**何を数えたか**である。
+
+- `interaction-stage-redstone.test.ts`（253）と `test-utils.ts`（26）は、
+  **本書の同じ節が表の直下の散文で名指ししていながら、表には足していなかった。**
+- `packages/entity/test/redstone-simulation.test.ts`（171）と
+  `packages/entity/test/redstone-position-utils.test.ts`（115）は**本書がどこにも書いていなかった**。
+  `redstone/` サブディレクトリの外に平置きされている 2 ファイルで、
+  参照実装の `vitest.config.ts:17` の `packages/*/test/**/*.test.ts` に**一致するので実際に実行されている**。
+  同名の入れ子版の複製ではない——平置き版だけが `makeDefaultState`（「トーチは既定で点灯」）と
+  `BIAS` / `Y_STRIDE` / `XZ_STRIDE` の境界を持ち、入れ子版だけが `updateRepeaters` /
+  `updateComparators` を持つ。どちらも他方の部分集合ではない。
+
+**これは §2-1 が plan.md について指摘したのと同じ失敗である**——数そのものではなく、
+数が答えている質問のほうがずれている。2-1 と同じ扱いにする: 黙って直さず、
+古い数と新しい数の両方をこの表に残す。[testing.md](./testing.md) §4 の完成条件 #4 の数字は
+**2,658 に訂正した**。うち 565 行は本節 3-1 の理由で移植しない。
+
+**テスト 2,658 行に対してソース 1,664 行。**
 つまりこのリポジトリの移植において、参照実装の主たる資産はソースではなくテストである。
 
 推奨手順:
@@ -139,6 +162,66 @@ plan.md §8 のリスク表も同じことを別角度から言っている。
    `RedstoneComponentType` の 12 値 Schema は、本構成の分割線と一致しない。
 4. `redstone-*-world-effects.test.ts` の 965 行は mc-sim / mc-worldgen のモックを大量に含む。
    親リポジトリの公開 API が確定するまで、これらは最後に回す。
+
+### 3-1. ファイル別の移植台帳
+
+**移植したのは 4 本である。** 少ないのは怠慢ではなく測定結果であり、理由は 2 つに分かれる。
+
+- 参照実装の主張の大半は、**すでに別の語彙でこのリポジトリに書かれている**。
+  トーチの 1 tick 反転、ランプが導通しないこと、リピーターがダイオードであること、
+  コンパレータの `>=`、オブザーバの初回武装、ディスペンサの立ち上がりエッジ——
+  どれも `test/power-graph.test.ts` か部品ごとのファイルに既にある。
+- 残りは**幾何・インベントリ・エンティティ**についての主張で、
+  このリポジトリはそのどれも持っていない（[design-notes.md](./design-notes.md) DN-RS-17）。
+
+移植した 4 本はいずれも「**参照実装が主張しており、かつここが主張していなかった**」ものである。
+全部 `test/power-graph.test.ts` の `ported oracles` 節にある。
+
+| 参照実装 | 主張 | 扱い |
+| --- | --- | --- |
+| `redstone-lamp-world-effects.test.ts:75-87` | ランプは**自セル**の電力では点かない | **移植**（`isLit` に `\|\| powerAt(power, key) > 0` を足すと落ちる。他のどのテストも落ちない） |
+| `redstone-simulation.test.ts:423-433` | リピーターは**前面（出力セル）**の電力で ON にならない | **移植**（`sourcesOf` のリピーター分岐が `outputTo` も読むと落ちる） |
+| `redstone-simulation.test.ts:99-107` | `neighborsOf` は対称である | **移植**（主張の翻訳。ここでは隣接はデータなので対称性は呼び出し側の不変条件であり、破れたときに何が起きるかを固定した） |
+| `redstone-simulation.test.ts:171-188` | セルは**最強**の値を取る。BFS が先に届いた値ではない | **移植**（ただし fixture は書き直した。下記） |
+
+**`171-188` は fixture をそのまま写すと主張を運ばない。** 参照実装の fixture は
+両端の**レバー 2 個**で、強さが等しい。強さが等しいと sweep はレベル同期するので
+「先に書いた者勝ち」と「最大を取る」は全セルで一致し、max-guard は一度も質問されない。
+既存の `two sources feeding one wire give it the stronger of the two` がまさにその fixture で、
+**max-guard を削除しても通る**。falsifiable にするには強さも距離も異なる 2 ソースが要り、
+それは `emits`（重量感圧板、DN-RS-17）を持つこのリポジトリにしか組めない——
+参照実装に重量板は無い。**主張を移植するとは、fixture ではなく主張を移植することである。**
+
+移植しなかったもの、ファイル別:
+
+| 参照実装 | 何を主張しているか | 移植しない理由 |
+| --- | --- | --- |
+| `redstone-simulation.test.ts` `neighborsOf` / `normalizeComponentPosition` | ボクセル 6 面の隣接、座標の floor | **幾何。** ここに幾何は無い（`domain/power-graph.ts:23-27`）。座標型は mc-kernel の資産 |
+| 同 `decayButtonTimers`（3 例） | ボタンの残 tick が 1→0 で `active` が false になる | **ここに countdown は無い。** 残り時間は状態で、`stages/registration.ts` の持ち物（`sourcesOf` の頭注）。§4 の未実装項目。現在の挙動は `test/power-graph.test.ts` の `buttons` 節が名指ししている |
+| 同 `updatePistons`（4 例） | 通電でピストンが `pistonExtended` になる | **`piston` は `ComponentKind` ではない。** `domain/piston.ts` は押し出し計画であって伸縮状態を持たない。§4 の finding を参照 |
+| 同 `computeNeedsPropagation`（5 例） | dirty フラグと「期限切れボタンの残留電力」で再伝播が要る | **最適化の主張。** ここは固定レートで無条件に tick する（DN-RS-3）ので、対応する概念が無い |
+| 同 `sortedPowerSnapshot` / `RedstonePowerLevel.toNumber` | 読み出しの決定性、ブランドの往復 | 決定性は上の 4 本目に**畳み込んで移植した**。ブランドの往復変換は主張を運ばない |
+| 同 `canConduct` の表 | Piston と PressurePlate は導通、Lamp は不導通 | **既にある**（`CONDUCTS_POWER`、DN-RS-5）。Dispenser を導通させる 1 行だけは**意図的に違える**（DN-RS-16） |
+| 同 `isPowerSource` の表 | active なレバー / トーチ / 感圧板は電源 | **既にある**（`sourcesOf` 節）。「ticks > 0 のボタン」だけは上の countdown と同じ話 |
+| 同 `updateRepeaters` / `updateComparators` / subtract mode | 背面 `>=` 側面、subtract は最強側面を引く、コンパレータは実測強度で seed する | **既にある**（`test/comparator.test.ts` 13 本 + `comparators` 節）。「実測強度」は §1164 のラダーが 4 段で固定している |
+| `redstone-service.test.ts`（17 例） | サービス API の Option 返し、`removeComponent`、stale key | **境界。** このリポジトリに部品ストアは無い。盤面は世界の所有者が組む |
+| 同 `button emits temporary power and decays` | press(2) → 14, 14, 0 | countdown 未実装（上と同じ）。**§4 の finding** |
+| `redstone-service-snapshot.test.ts`（11 例） | tick カウンタ、キャッシュ、`setComponent` の再配置 | **境界**（同上）。`torch inversion (NOT gate)` の往復は下記 |
+| 同 `torch inversion (NOT gate)`:127-158 | 入力が消えるとトーチは**点き直す** | **主張を運ばない。** `propagateTick` は (board, previous) の純関数なので、点き直した後の状態は**一度も通電されなかったトーチと同一**である。両半分は既に別々に固定されている（`:277` と `:308`）。この往復を落とす production の変異は存在しない |
+| 同 `repeater delay: 2-tick` | リピーターの遅延段数 | **意図的に未実装。** `delayTicks` は「受け取って読まれない」状態だったので削除した。`test/power-graph.test.ts:546` がコンパイル時と挙動の両方で固定している |
+| 同 `stacked wires never conduct vertically` | 上下のワイヤは導通しない | **幾何** |
+| `redstone-piston-world-effects.test.ts`（19 例） | 押し出し、facing、腕の描画、エンティティの押し退け | **境界。** `planPush` は純関数で世界を書かない。列は呼び出し側が読む |
+| 同 `refuses trains longer than the 12-block limit` | 13 個で拒否 | **既にある**（`test/piston.test.ts:98`、`PISTON_PUSH_LIMIT`） |
+| 同 `does not push again while extended` | ピストンはエッジ駆動である | **移植先が無い。§4 の finding** |
+| 同 sticky retraction（4 例） | 引き戻し | **意図的にスコープ外**（DN-RS-10） |
+| `redstone-lamp-world-effects.test.ts` の残り（5 例） | 冗長な書き込みをしない、ランプでないセルに触らない | **境界。** ここは `isLit` という述語しか持たず、ブロックを書き換えるのは `redstone:effects` |
+| `redstone-observer-world-effects.test.ts`（5 例） | 初回武装、変化で発火、静止は発火しない、facing、非オブザーバ無視 | **既にある**（`test/observer.test.ts` 9 本）。facing は幾何。「非オブザーバ無視」は `observeChanges` が sighting しか受け取らないので主張を運ばない |
+| `redstone-dispenser-world-effects.test.ts`（7 例） | 立ち上がりエッジ、再武装、TNT、矢、空のチェスト | エッジ 3 例は**既にある**（`test/dispenser.test.ts` 7 本）。TNT / 矢 / チェストは**境界**（DN-RS-17: `inventoryAt`、`SpawnRequest<S>`、ダメージ数値） |
+| `redstone-hopper-world-effects.test.ts`（4 例） | ドロップをチェストへ移す、溢れを再 spawn | **境界**（同上）。そもそも参照実装はロックも搬送周期も持たない（`:11-14`）ので、`test/hopper.test.ts` の期待値はバニラ由来であって参照由来ではない |
+| `interaction-stage-redstone.test.ts`（12 例） | キー入力 → サービス呼び出しの配線、`pistonFacingFromDirection` | **境界。** 入力はこのリポジトリの資産ではない（plan.md §4.2） |
+| `packages/entity/test/redstone-position-utils.test.ts`（18 例） | `BIAS` / `Y_STRIDE` / `XZ_STRIDE`、±32767 の往復 | **座標キーの符号化は kernel の資産。** `domain/position-key.ts` は仮置きで、kernel 公開時に削除される（§4） |
+| `packages/entity/test/redstone-simulation.test.ts`（18 例） | 平置き版。`makeDefaultState`（トーチは既定で点灯）ほか | 「トーチは既定で点灯」は**既にある**（`a torch with no attachment is a permanent source`）。残りは入れ子版と重複 |
+| `packages/entity/test/redstone/test-utils.ts` | 共有ヘルパ | テストではない。26 行の fixture 工場 |
 
 ## 4. 移植時に持ち込んではいけないもの
 

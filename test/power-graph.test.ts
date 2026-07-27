@@ -1431,3 +1431,230 @@ describe('hoppers and dispensers — actuators, which conduct nothing', () => {
     }),
   )
 })
+
+/**
+ * Oracles transcribed from the reference implementation (`takeokunn/ts-minecraft`).
+ *
+ * docs/porting.md §3 is the ledger of what was taken and what was declined, with
+ * the reason for each. Every test below carries the reference's `path:line` so a
+ * future reader can check the transcription rather than guess at it — the rule
+ * docs/testing.md §3-2 states for anything that pins a design premise.
+ *
+ * These four are the claims the reference makes that this file did not already
+ * make. They are NOT the reference's whole redstone suite: most of it is either
+ * already pinned here in a different vocabulary, or is about geometry, inventory
+ * and entities, which this repository does not have (DN-RS-17). The declines are
+ * the interesting half and they are written down, per file, in porting.md §3-1.
+ */
+describe('ported oracles — claims taken from the reference implementation', () => {
+  it.effect('REGRESSION: a lamp is not lit by power at its OWN cell, only by a cell that drives it', () =>
+    Effect.sync(() => {
+      // Ported from `packages/app/application/frame/stages/
+      // redstone-lamp-world-effects.test.ts:75-87`, which is the reference's own
+      // REGRESSION: "does NOT light from power at the lamp's own cell". Its fix
+      // note reads 「Before the fix this read getPowerAt(lampPos)=15 and lit the
+      // lamp」.
+      //
+      // This repository can reach the same state by a different route and so has
+      // to make the same promise. A lamp IS in `RECEIVES_POWER`, so it holds a
+      // decayed level of its own, and `isLit` is handed a power map by the
+      // caller — the preview's step button passes one back in, and
+      // `settle({ from })` accepts one wholesale. A map carrying an entry for a
+      // lamp that nothing drives is therefore representable, and the accessor
+      // must read the BOARD, not the entry.
+      //
+      // Distinct from the two lamp tests above: `a lit lamp does not light the
+      // lamp behind it` fixes the leak between lamps (DN-RS-5 §5-1), and `a lamp
+      // beside the LAST wire` fixes the opposite direction (own entry 0, still
+      // lit). Neither one ever hands `isLit` an entry for an undriven lamp, so
+      // neither sees an `|| powerAt(power, key) > 0` added to it.
+      const board = line([
+        ['w0', wire()],
+        ['lamp', { kind: 'lamp' }],
+      ])
+
+      // Nothing on this board generates: the wire is dark and the lamp is dark.
+      expect(propagateTick(board, emptyPowerMap).size).toBe(0)
+
+      // Now assert against a map that says the lamp itself carries full power.
+      const stale: ReadonlyMap<string, number> = new Map([['lamp', MAX_POWER_LEVEL]])
+      expect(powerAt(stale, 'lamp')).toBe(MAX_POWER_LEVEL)
+      expect(drivenPowerAt(board, stale, 'lamp')).toBe(0)
+      expect(isLit(board, stale, 'lamp')).toBe(false)
+      expect(isPowered(board, stale, 'lamp')).toBe(false)
+    }),
+  )
+
+  it.effect('REGRESSION: a repeater is not turned on by power at its OUTPUT cell — a diode does not conduct backwards', () =>
+    Effect.sync(() => {
+      // Ported from `packages/entity/test/redstone/redstone-simulation.test.ts:
+      // 423-433` — "does not activate from power at its own or front cell". The
+      // reference powers both the repeater's cell and the cell it faces and
+      // asserts `changed` is false.
+      //
+      // The forward half of the diode is pinned above (`a repeater does not
+      // power its own input cell`, `powers nothing on its flanks`). This is the
+      // BACKWARD half, and it is a different rule in a different function:
+      // `conductsInto` decides where a repeater PUSHES, and `sourcesOf` decides
+      // what it READS. A repeater that read its output would be turned on by the
+      // circuit it was placed to isolate — power arriving at the front would
+      // appear behind, which is the one thing a player uses a repeater to
+      // prevent.
+      //
+      // Steady state, not a transient: the lever here is independent of the
+      // repeater, so the front cell stays powered for as long as the test runs
+      // and the repeater has to keep refusing it.
+      const board = graph(
+        [
+          ['rear', wire()],
+          ['repeater', { kind: 'repeater', inputFrom: 'rear', outputTo: 'front' }],
+          ['front', wire()],
+          ['lever', { kind: 'lever', active: true }],
+        ],
+        [
+          ['rear', 'repeater'],
+          ['repeater', 'front'],
+          ['front', 'lever'],
+        ],
+      )
+
+      const settled = settle(board)
+      expect(settled.oscillating).toBe(false)
+      expect(powerAt(settled.power, 'front')).toBe(14)
+      expect(powerAt(settled.power, 'repeater')).toBe(0)
+      expect(powerAt(settled.power, 'rear')).toBe(0)
+
+      // The repeater never becomes a source, however long the front stays live.
+      let power = emptyPowerMap
+      for (let tick = 0; tick < 20; tick += 1) {
+        power = propagateTick(board, power)
+        expect(sourcesOf(board, power).has('repeater')).toBe(false)
+        expect(powerAt(power, 'rear')).toBe(0)
+      }
+    }),
+  )
+
+  it.effect('REGRESSION: an adjacency row is DIRECTED — naming a cell does not let power arrive from it', () =>
+    Effect.sync(() => {
+      // The reference's `neighborsOf` is computed from the six faces of a voxel
+      // and it proves its own symmetry: `packages/entity/test/redstone/
+      // redstone-simulation.test.ts:99-107` — "is symmetric: if B is a neighbor
+      // of A, A is a neighbor of B".
+      //
+      // This repository cannot make that claim and must not pretend to.
+      // `adjacency` is supplied by the caller (`domain/power-graph.ts:23-27`:
+      // the real adjacency belongs to mc-kernel's coordinate types), so symmetry
+      // is the CALLER's invariant. Porting the claim means porting what happens
+      // when it does not hold, because the answer is not obvious and every
+      // fixture in this file is symmetric — `line` and `graph` both insert both
+      // directions, so nothing here would notice a `neighboursOf` that quietly
+      // symmetrised the map on the way past.
+      //
+      // The answer: power flows out of `adjacency[A]`, so an edge listed only in
+      // A's row carries A to B and nothing back. Listing it only in B's row
+      // carries nothing at all. A caller that draws its edge list once, in one
+      // direction, gets a one-way board rather than a crash — which is the
+      // failure mode worth naming, because a half-wired board looks wired.
+      const forwards: CircuitBoard = {
+        components: new Map<string, Component>([
+          ['lever', { kind: 'lever', active: true }],
+          ['w0', wire()],
+        ]),
+        adjacency: new Map([
+          ['lever', ['w0']],
+          ['w0', []],
+        ]),
+      }
+      expect(powerAt(propagateTick(forwards, emptyPowerMap), 'w0')).toBe(14)
+
+      // The same two cells, the same one edge, written from the other end.
+      const backwards: CircuitBoard = {
+        components: new Map<string, Component>([
+          ['lever', { kind: 'lever', active: true }],
+          ['w0', wire()],
+        ]),
+        adjacency: new Map([
+          ['lever', []],
+          ['w0', ['lever']],
+        ]),
+      }
+      const power = propagateTick(backwards, emptyPowerMap)
+      expect(powerAt(power, 'lever')).toBe(MAX_POWER_LEVEL)
+      expect(powerAt(power, 'w0')).toBe(0)
+    }),
+  )
+
+  it.effect('REGRESSION: a cell takes the STRONGEST level offered, not the one the sweep reached first', () =>
+    Effect.sync(() => {
+      // Ported from `packages/entity/test/redstone/redstone-simulation.test.ts:
+      // 171-188` — "a wire reachable from two sources takes the MAX power". Its
+      // comment states the claim exactly: 「not whichever BFS path reaches it
+      // first — this exercises the `power <= currentKnown` max-guard, the core
+      // of correct multi-source propagation」.
+      //
+      // The reference's own fixture is two LEVERS at opposite ends of a run, and
+      // transcribing that fixture would carry the words and not the claim: with
+      // two equal sources the sweep is level-synchronised, so first-writer-wins
+      // and take-the-max agree at every cell and the guard is never asked a
+      // question. `two sources feeding one wire give it the stronger of the two`
+      // above is that fixture, and it passes with the guard deleted.
+      //
+      // Making the claim falsifiable needs sources of UNEQUAL strength at
+      // UNEQUAL distance, which this repository can build and the reference
+      // could not: `emits` (the weighted pressure plate, DN-RS-17) is the only
+      // way to place a source at something other than 15, and the reference has
+      // no weighted plate. So the port is the claim in this repository's own
+      // vocabulary rather than the reference's fixture.
+      //
+      // The plate is NEAR and WEAK, the lever is FAR and STRONG. A sweep that
+      // kept the first level written would hand `w3` the plate's 4 and lock the
+      // lever's 11 out — a wire run that goes dark in the middle because
+      // somebody stood on a plate at the far end.
+      const cells: ReadonlyArray<readonly [string, Component]> = [
+        ['lever', { kind: 'lever', active: true }],
+        ['w0', wire()],
+        ['w1', wire()],
+        ['w2', wire()],
+        ['w3', wire()],
+        ['plate', { kind: 'pressure-plate', active: true, emits: 5 }],
+      ]
+      const edges: ReadonlyArray<readonly [string, string]> = [
+        ['lever', 'w0'],
+        ['w0', 'w1'],
+        ['w1', 'w2'],
+        ['w2', 'w3'],
+        ['w3', 'plate'],
+      ]
+
+      const power = propagateTick(graph(cells, edges), emptyPowerMap)
+
+      expect(powerAt(power, 'plate')).toBe(5)
+      expect(powerAt(power, 'w0')).toBe(14)
+      expect(powerAt(power, 'w1')).toBe(13)
+      expect(powerAt(power, 'w2')).toBe(12)
+      // The contested cell. The plate offers 4 and reaches it in one step; the
+      // lever offers 11 and reaches it in five.
+      expect(powerAt(power, 'w3')).toBe(11)
+
+      // …and none of it depends on the order the caller built its Maps.
+      //
+      // The second half of the port, from the same file at :318-337 ("multiple
+      // entries → deterministically sorted by numeric key", whose fixture
+      // inserts in reverse 「Intentionally … to test sorting」) and from
+      // `redstone-service.test.ts:149-164`. The reference buys determinism by
+      // SORTING its readout; this repository has no readout to sort, so the
+      // claim is made about the values. docs/testing.md §5 rests the scenario
+      // tests on determinism and names three reasons it holds — fixed rate, no
+      // wall clock, no seed — none of which is iteration order, and iteration
+      // order is the one an mc-worldgen chunk walk will actually vary.
+      const backwards = propagateTick(
+        graph([...cells].reverse(), [...edges].reverse()),
+        emptyPowerMap,
+      )
+      for (const [key] of cells) {
+        expect(powerAt(backwards, key)).toBe(powerAt(power, key))
+      }
+      expect(backwards.size).toBe(power.size)
+    }),
+  )
+})
