@@ -13,7 +13,7 @@ export default defineConfig({
         singleFork: false,
       },
     },
-    include: ['test/**/*.{test,spec}.ts'],
+    include: ['test/**/*.test.ts'],
     exclude: ['**/node_modules/**', '**/dist/**', '**/coverage/**', '**/.git/**'],
     testTimeout: 10000,
     hookTimeout: 10000,
@@ -79,7 +79,7 @@ export default defineConfig({
     },
   },
   esbuild: {
-    target: 'node22',
+    target: 'node24',
     format: 'esm',
     platform: 'node',
   },

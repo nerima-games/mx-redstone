@@ -12,6 +12,7 @@
 # Dependencies
 node_modules/
 .pnpm-store/
+.corepack/
 
 # Build outputs (none yet — the build pipeline is added at completion)
 dist/
