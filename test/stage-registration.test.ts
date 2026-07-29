@@ -7,10 +7,15 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
+import {
+  RedstoneWorldRuntime,
+  RedstoneWorldRuntimeLayer,
+} from '../application/world-runtime'
 import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from '../domain/frame-contract'
 import { MAX_POWER_LEVEL, powerAt, type CircuitBoard, type Component } from '../domain/power-graph'
 import {
   makeRedstoneFrameState,
+  makeRuntimeRedstoneStages,
   makeRedstoneStages,
   MAX_TICKS_PER_FRAME,
   redstoneModule,
@@ -308,8 +313,13 @@ describe('the module contract has caught up with this file’s shape', () => {
    */
   it.effect('REGRESSION: exports a real GameModule, not "stages alone, the Layer comes later"', () =>
     Effect.gen(function* () {
-      const module: GameModule<never, never, never> = redstoneModule
-      const stages = yield* module.frameStages
+      const module: GameModule<
+        RedstoneWorldRuntime,
+        never,
+        never,
+        never
+      > = redstoneModule
+      const stages = yield* module.frameStages.pipe(Effect.provide(module.layers))
 
       expect(stageIds(stages)).toStrictEqual(Object.values(REDSTONE_STAGE_IDS))
     }),
@@ -317,22 +327,18 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   it.effect('its frameStages IS the registration Effect this file already exported', () =>
     Effect.gen(function* () {
-      expect(redstoneModule.frameStages).toBe(makeRedstoneStages)
+      expect(redstoneModule.frameStages).toBe(makeRuntimeRedstoneStages)
+      expect(redstoneModule.layers).toBe(RedstoneWorldRuntimeLayer)
 
       // ...and it is re-entrant: two builds share no state, which is why it was
       // an Effect in the first place (plan.md §3.8 on app-scope singletons).
-      const first = yield* redstoneModule.frameStages
-      const second = yield* redstoneModule.frameStages
+      const first = yield* redstoneModule.frameStages.pipe(Effect.provide(redstoneModule.layers))
+      const second = yield* redstoneModule.frameStages.pipe(Effect.provide(redstoneModule.layers))
       expect(first).not.toBe(second)
     }),
   )
 
-  // `RRegister` defaults to `never`, which is what lets this repository keep
-  // writing three parameters. When these stages start acquiring mc-sim's
-  // services they acquire them HERE — in `frameStages` — and the fourth
-  // parameter appears; `RIn` stays `never`, because this repository builds
-  // nothing mc-sim has to supply.
-  it.effect('needs nothing to register today, and says so in the type', () =>
+  it.effect('keeps registration bootable for hosts that have not wired the runtime layer yet', () =>
     Effect.gen(function* () {
       const noRequirement: Effect.Effect<unknown, never, never> = redstoneModule.frameStages
       expect(yield* noRequirement).toBeDefined()

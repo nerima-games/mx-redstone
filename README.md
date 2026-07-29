@@ -117,7 +117,7 @@ $ corepack prepare pnpm@11 --activate
 
 ## 現状
 
-**実装前の叩き台（first cut）である。** 契約と設計上の防御を先に置き、中身はこれから埋める。
+電力グラフに加え、ホストから世界スナップショットを同期して frame stage を実行する runtime port を持つ。
 
 - **実行時依存は `effect` だけ。** 組織内でまだ何も公開されていないため、
   `@nerima-games/mc-sim` にも `@nerima-games/mc-worldgen` にも依存できない（ボトムアップの publish-then-pin、plan.md §6）。
@@ -128,9 +128,11 @@ $ corepack prepare pnpm@11 --activate
   **この 2 ファイルは `index.ts` から re-export していない。** 所有していない語彙（`StageId` /
   `DeltaTimeSecs` / `StageRegistration`）を公開 API に載せると、上記の削除が
   すべての消費者にとっての破壊的変更になるためである。
-- **`redstone:effects` stage の `run` は `Effect.void`。** ピストン伸縮・ランプ点灯・ディスペンサ発射・
-  ホッパー移送・オブザーバのパルスは、すべて mc-sim / mc-worldgen への書き込みであり、
-  書き込み先がまだ存在しない。**判断のほうは全部書いてある**——どの
+- **`RedstoneWorldRuntime` は dimension 単位の完全スナップショットを受け取る。**
+  `redstone:power` が 6 近傍の回路盤を進め、`redstone:effects` がランプの on/off 変化だけを蓄積する。
+  ホストは stage 実行後に `drainLampTransitions` を呼び、結果を世界へ反映する。
+  ピストン伸縮・ディスペンサ発射・ホッパー移送・オブザーバのパルスは、すべて mc-sim / mc-worldgen
+  への書き込みであり、書き込み先がまだ存在しない。**判断のほうは全部書いてある**——どの
   オブザーバが発火したか、どのディスペンサが立ち上がりを見たか、どのホッパーがロックされているか、
   コンテナの読みがいくつか——ので、足りないのは書き込み口だけである。
 - **部品は 11 種**（wire / torch / lever / button / repeater / comparator / observer /
@@ -165,7 +167,7 @@ $ corepack prepare pnpm@11 --activate
   （[docs/testing.md](./docs/testing.md) §4-1）。
   部品を置き、レバーを倒し、**1 tick ずつ進めて**電力 0–15 の伝播を見る端末アプリである。
   **見せないもの**も明確で、プレイヤーも世界も無く、隣接は 2D の 4 近傍であり、
-  ピストンの実移動はプレビュー内の代役である（`redstone:effects` は今も `Effect.void`）。
+  ピストンの実移動はプレビュー内の代役である。
   依存は 0 個、壁時計の読み取りも 0 箇所。
   **初回実行で 7 件の欠陥を出した**（`pnpm preview --stats`）。うち 3 件——
   リピーターが自分をラッチして落ちない / `settle` が非循環回路を発振と誤判定する /
@@ -179,7 +181,7 @@ $ corepack prepare pnpm@11 --activate
   （`vitest.config.ts` にコメントとして置いてある）。
 
 `pnpm verify` は green（typecheck エラーなし / oxlint 0 件 / check:deps OK /
-api-lock 一致 / vitest 6 ファイル 111 テスト）。
+api-lock 一致 / vitest 12 ファイル 186 テスト）。
 
 ## ドキュメント
 
@@ -189,7 +191,7 @@ api-lock 一致 / vitest 6 ファイル 111 テスト）。
 | --- | --- |
 | [docs/architecture.md](./docs/architecture.md) | 4 階層、全 16 リポジトリの依存グラフ、名詞/動詞ルール、体験モジュール間エッジがゼロである理由 |
 | [docs/responsibility.md](./docs/responsibility.md) | 責務と、**明示的な非スコープ**（どれが誰のものか） |
-| [docs/public-api.md](./docs/public-api.md) | **公開 API は stage 登録だけ。** 電力グラフが内部でなければならない理由 |
+| [docs/public-api.md](./docs/public-api.md) | **公開 API は stage 登録と意味的 runtime port。** 電力グラフが内部でなければならない理由 |
 | [docs/design-notes.md](./docs/design-notes.md) | 設計注意 DN-RS-1〜11。参照実装の `path:line` と回帰テスト名つき |
 | [docs/porting.md](./docs/porting.md) | 移植元の**実測 LOC**、plan.md との差異、移植順序 |
 | [docs/testing.md](./docs/testing.md) | 検証ゲート、fixture 回路テスト、完成条件、99% カバレッジゲートの投入時期 |

@@ -25,14 +25,17 @@
  * below is bounded anyway, because relying on somebody else's clamp is how you
  * discover it was removed.
  */
-import { Effect, Layer, Ref } from 'effect'
-import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
+import { Effect, Option, Ref } from 'effect'
 import {
-  emptyPowerMap,
-  propagateTick,
-  type CircuitBoard,
-  type PowerMap,
-} from '../domain/power-graph'
+  collectLampTransitions,
+  makeRedstoneWorldState,
+  RedstoneWorldRuntime,
+  RedstoneWorldRuntimeLayer,
+  redstoneWorldStateFor,
+  type RedstoneWorldState,
+} from '../application/world-runtime'
+import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
+import { propagateTick, type CircuitBoard } from '../domain/power-graph'
 import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
 
 /** Vanilla redstone runs at 10 Hz: one tick every two game ticks. */
@@ -60,14 +63,7 @@ export const emptyCircuitBoard: CircuitBoard = {
   adjacency: new Map(),
 }
 
-export type RedstoneFrameState = {
-  readonly board: Ref.Ref<CircuitBoard>
-  readonly power: Ref.Ref<PowerMap>
-  /** Seconds of unconsumed simulation time. */
-  readonly tickAccumulatorSecs: Ref.Ref<number>
-  /** Redstone ticks executed since this state was created. Diagnostics only. */
-  readonly tickCount: Ref.Ref<number>
-}
+export type RedstoneFrameState = RedstoneWorldState
 
 /**
  * An Effect rather than a constant, so a test, a preview and the game can each
@@ -75,14 +71,7 @@ export type RedstoneFrameState = {
  * reference's worst bug sources: a second world load inherited the first
  * world's refs and deadlocked.
  */
-export const makeRedstoneFrameState: Effect.Effect<RedstoneFrameState> = Effect.gen(function* () {
-  const board = yield* Ref.make<CircuitBoard>(emptyCircuitBoard)
-  const power = yield* Ref.make<PowerMap>(emptyPowerMap)
-  const tickAccumulatorSecs = yield* Ref.make(0)
-  const tickCount = yield* Ref.make(0)
-
-  return { board, power, tickAccumulatorSecs, tickCount }
-})
+export const makeRedstoneFrameState: Effect.Effect<RedstoneFrameState> = makeRedstoneWorldState
 
 /**
  * How many redstone ticks a frame of `dt` seconds is worth, and what is left
@@ -154,11 +143,10 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
   {
     id: REDSTONE_STAGE_IDS.effects,
     after: [REDSTONE_STAGE_IDS.power],
-    // FIRST CUT: piston extension/retraction (domain/piston.ts), lamp lighting,
-    // dispensers, droppers, hoppers and observers are applied here, each as a
-    // write through mc-sim. They are separated from `power` so that the graph
-    // stays a pure function — the reference's five `redstone-*-world-effects.ts`
-    // files are the shape this stage grows into.
+    // Lamp transitions are recorded here after power settles for the frame.
+    // Piston extension/retraction (domain/piston.ts), dispensers, droppers,
+    // hoppers and observers will also be applied here through their host ports.
+    // Keeping effects separate leaves the graph a pure function.
     //
     // The DECISIONS those effects need are now all written and tested:
     // `domain/observer.ts` says which observers fired, `domain/dispenser.ts`
@@ -182,7 +170,7 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
     // draining one and a dispenser drawing from one are all blocked on
     // `inventoryAt`. When this stage acquires mc-sim's services in
     // `frameStages`, that is the first thing to ask for.
-    run: () => Effect.void,
+    run: () => collectLampTransitions(state),
   },
 ]
 
@@ -196,27 +184,33 @@ export const makeRedstoneStages: Effect.Effect<ReadonlyArray<StageRegistration>>
   redstoneStages,
 )
 
+/** Registers stages over the same service instance that the host syncs and drains. */
+export const makeRuntimeRedstoneStages: Effect.Effect<
+  ReadonlyArray<StageRegistration>
+> = Effect.flatMap(
+  Effect.serviceOption(RedstoneWorldRuntime),
+  Option.match({
+    onNone: () => makeRedstoneStages,
+    onSome: (runtime) => Effect.succeed(redstoneStages(redstoneWorldStateFor(runtime))),
+  }),
+)
+
 /**
  * mx-redstone as a `GameModule` (plan.md §4.1).
  *
- * This used to say "not yet a `GameModule`: that type carries a
- * `Layer.Layer<ROut, E, RIn>`, and `RIn` cannot be named until mc-sim's public
- * API exists". The diagnosis was half right, and the half that was wrong is the
- * interesting one.
- *
- * The Layer was never the obstacle. plan.md §3.12 is explicit that this
- * repository's only public API is stage registration — the power graph is
- * internal — so mx-redstone provides no service and its Layer is empty. The
- * obstacle was that `frameStages` was an ARRAY, and these stages are built from
- * `Ref`s allocated in an Effect. Publishing mc-sim would not have changed that;
- * the vertical-slice spike making `frameStages` an Effect did.
- *
- * `RIn` is `never` and stays `never`. When `redstone:effects` starts writing
- * pistons and lamps through mc-sim, it will acquire those services in
- * `frameStages` — the `RRegister` parameter — because this repository does not
- * BUILD anything mc-sim has to supply, it CALLS things mc-sim supplies.
+ * Its Layer provides the runtime port used by a host to replace dimension
+ * snapshots and drain lamp transitions. Registration uses that same service
+ * when the host supplies it. `serviceOption` retains a state-private fallback
+ * for older hosts that still evaluate `frameStages` before composing layers;
+ * those hosts keep booting but cannot use the new synchronization port until
+ * they wire the Layer into registration.
  */
-export const redstoneModule: GameModule<never, never, never> = {
-  layers: Layer.empty,
-  frameStages: makeRedstoneStages,
+export const redstoneModule: GameModule<
+  RedstoneWorldRuntime,
+  never,
+  never,
+  never
+> = {
+  layers: RedstoneWorldRuntimeLayer,
+  frameStages: makeRuntimeRedstoneStages,
 }

@@ -13,8 +13,8 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 58
-supporting declarations: 8
+exported declarations: 66
+supporting declarations: 12
 
 ## Exported
 
@@ -127,6 +127,16 @@ const HOPPER_TRANSFER_PERIOD_TICKS = 4;
 
 ```ts
 const LIGHT_PLATE_CAPACITY = 15;
+```
+
+### LampTransition  `type`
+
+```ts
+type LampTransition = {
+    readonly dimension: string;
+    readonly position: RedstonePosition;
+    readonly lit: boolean;
+};
 ```
 
 ### MAX_POWER_LEVEL  `const`
@@ -242,14 +252,67 @@ const REDSTONE_STAGE_IDS: {
 const REDSTONE_TICK_SECS = 0.1;
 ```
 
+### RedstoneComponentSnapshot  `type`
+
+```ts
+type RedstoneComponentSnapshot = {
+    readonly position: RedstonePosition;
+    readonly kind: ComponentKind;
+    readonly active?: boolean;
+    readonly emits?: PowerLevel;
+    readonly invertedBy?: RedstonePosition;
+    readonly inputFrom?: RedstonePosition;
+    readonly sideInputs?: ReadonlyArray<RedstonePosition>;
+    readonly mode?: ComparatorMode;
+    readonly containerSignal?: PowerLevel;
+    readonly outputTo?: RedstonePosition;
+};
+```
+
 ### RedstoneFrameState  `type`
 
 ```ts
-type RedstoneFrameState = {
-    readonly board: Ref.Ref<CircuitBoard>;
-    readonly power: Ref.Ref<PowerMap>;
-    readonly tickAccumulatorSecs: Ref.Ref<number>;
-    readonly tickCount: Ref.Ref<number>;
+type RedstoneFrameState = RedstoneWorldState;
+```
+
+### RedstonePosition  `type`
+
+```ts
+type RedstonePosition = {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+};
+```
+
+### RedstoneWorldRuntime  `class`
+
+```ts
+class RedstoneWorldRuntime extends RedstoneWorldRuntime_base {
+}
+```
+
+### RedstoneWorldRuntimeLayer  `const`
+
+```ts
+const RedstoneWorldRuntimeLayer: Layer.Layer<RedstoneWorldRuntime>;
+```
+
+### RedstoneWorldRuntimeService  `type`
+
+```ts
+type RedstoneWorldRuntimeService = {
+    readonly syncSnapshot: (snapshot: RedstoneWorldSnapshot) => Effect.Effect<void>;
+    readonly drainLampTransitions: Effect.Effect<ReadonlyArray<LampTransition>>;
+};
+```
+
+### RedstoneWorldSnapshot  `type`
+
+```ts
+type RedstoneWorldSnapshot = {
+    readonly dimension: string;
+    readonly components: ReadonlyArray<RedstoneComponentSnapshot>;
 };
 ```
 
@@ -358,6 +421,12 @@ const makeRedstoneFrameState: Effect.Effect<RedstoneFrameState>;
 const makeRedstoneStages: Effect.Effect<ReadonlyArray<StageRegistration>>;
 ```
 
+### makeRuntimeRedstoneStages  `const`
+
+```ts
+const makeRuntimeRedstoneStages: Effect.Effect<ReadonlyArray<StageRegistration>>;
+```
+
 ### observeChanges  `const`
 
 ```ts
@@ -391,7 +460,7 @@ const propagateTick: (board: CircuitBoard, previous: PowerMap) => PowerMap;
 ### redstoneModule  `const`
 
 ```ts
-const redstoneModule: GameModule<never, never, never>;
+const redstoneModule: GameModule<RedstoneWorldRuntime, never, never, never>;
 ```
 
 ### redstoneStages  `const`
@@ -451,6 +520,12 @@ const DeltaTimeSecs: Brand.Brand.Constructor<DeltaTimeSecs>;
 type DeltaTimeSecs = number & Brand.Brand<'DeltaTimeSecs'>;
 ```
 
+### DimensionSnapshot  `type`
+
+```ts
+type DimensionSnapshot = ReadonlyMap<PositionKey, RedstoneComponentSnapshot>;
+```
+
 ### FrameServices  `type`
 
 ```ts
@@ -466,10 +541,36 @@ interface GameModule<ROut, E, RIn, RRegister = never> {
 }
 ```
 
+### ObservedLamp  `type`
+
+```ts
+type ObservedLamp = LampTransition;
+```
+
 ### PositionKey  `type`
 
 ```ts
 type PositionKey = string;
+```
+
+### RedstoneWorldRuntime_base  `const`
+
+```ts
+const RedstoneWorldRuntime_base: Context.TagClass<RedstoneWorldRuntime, "@nerima-games/mx-redstone/RedstoneWorldRuntime", RedstoneWorldRuntimeService>;
+```
+
+### RedstoneWorldState  `type`
+
+```ts
+type RedstoneWorldState = {
+    readonly dimensions: Ref.Ref<ReadonlyMap<string, DimensionSnapshot>>;
+    readonly board: Ref.Ref<CircuitBoard>;
+    readonly power: Ref.Ref<PowerMap>;
+    readonly observedLamps: Ref.Ref<ReadonlyMap<PositionKey, ObservedLamp>>;
+    readonly pendingLampTransitions: Ref.Ref<ReadonlyArray<LampTransition>>;
+    readonly tickAccumulatorSecs: Ref.Ref<number>;
+    readonly tickCount: Ref.Ref<number>;
+};
 ```
 
 ### StageId  `const`

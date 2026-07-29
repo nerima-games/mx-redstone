@@ -21,7 +21,7 @@ import { propagateTick } from '../domain/power-graph'
 import { REDSTONE_STAGE_IDS } from '../stages/stage-ids'
 
 describe('public API surface', () => {
-  it.effect('re-exports the stage registration contract — the only thing plan.md §3.12 makes public', () =>
+  it.effect('re-exports stage registration and the semantic world runtime port', () =>
     Effect.sync(() => {
       const contract = [
         'redstoneStages',
@@ -31,6 +31,9 @@ describe('public API surface', () => {
         // `stages/registration.ts` on why the array was the obstacle.
         'redstoneModule',
         'makeRedstoneFrameState',
+        'makeRuntimeRedstoneStages',
+        'RedstoneWorldRuntime',
+        'RedstoneWorldRuntimeLayer',
         'REDSTONE_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
       ]
