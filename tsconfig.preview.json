@@ -17,6 +17,6 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["apps/**/*.ts", "index.ts", "domain/**/*.ts", "stages/**/*.ts"],
+  "include": ["apps/**/*.ts", "src/**/*.ts"],
   "exclude": ["node_modules", "coverage", "dist"]
 }

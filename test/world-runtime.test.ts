@@ -8,10 +8,10 @@ import {
   type RedstoneComponentSnapshot,
   type RedstoneWorldRuntimeService,
   type RedstoneWorldSnapshot,
-} from '../application/world-runtime'
-import { DeltaTimeSecs, type StageRegistration } from '../domain/frame-contract'
-import { makeRuntimeRedstoneStages } from '../stages/registration'
-import { REDSTONE_STAGE_IDS } from '../stages/stage-ids'
+} from '../src/application/world-runtime'
+import { DeltaTimeSecs, type StageRegistration } from '../src/domain/frame-contract'
+import { makeRuntimeRedstoneStages } from '../src/stages/registration'
+import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 
 const component = (
   x: number,

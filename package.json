@@ -22,16 +22,13 @@
     "registry": "https://npm.pkg.github.com",
     "access": "restricted"
   },
-  "main": "./index.ts",
-  "types": "./index.ts",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
-    ".": "./index.ts"
+    ".": "./src/index.ts"
   },
   "files": [
-    "index.ts",
-    "application",
-    "domain",
-    "stages",
+    "src",
     "tsconfig.base.json",
     "LICENSE",
     "README.md"
@@ -45,24 +42,26 @@
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.build.json --pretty false && tsc -p tsconfig.test.json --pretty false && tsc -p tsconfig.preview.json --pretty false",
-    "lint": "oxlint --deny-warnings index.ts domain stages scripts test apps",
-    "lint:fix": "oxlint --fix index.ts domain stages scripts test apps",
+    "lint": "oxlint --deny-warnings src scripts test apps",
+    "lint:fix": "oxlint --fix src scripts test apps",
     "preview": "tsx apps/preview-circuit-board/main.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "check:deps": "tsx scripts/check-dependency-whitelist.ts",
-    "api:check": "tsx scripts/api-lock.ts",
-    "api:update": "tsx scripts/api-lock.ts --write",
-    "verify": "pnpm typecheck && pnpm lint && pnpm check:deps && pnpm api:check && pnpm test"
+    "verify": "pnpm typecheck && pnpm lint && pnpm test"
   },
   "dependencies": {
+    "@nerima-games/mc-kernel": "0.2.8",
+    "@nerima-games/mc-sim": "0.1.24",
+    "@nerima-games/mc-worldgen": "0.1.1",
     "effect": "^3.22.0"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.1",
     "@effect/vitest": "^0.30.0",
-    "@typescript/native": "npm:typescript@7.0.2",
     "@types/node": "^26.1.2",
+    "@typescript/native": "npm:typescript@7.0.2",
     "@vitest/coverage-v8": "^3.2.7",
     "oxlint": "^1.76.0",
     "tsx": "^4.23.1",

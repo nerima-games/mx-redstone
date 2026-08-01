@@ -28,7 +28,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       enabled: false,
-      include: ['index.ts', 'domain/**/*.ts', 'stages/**/*.ts'],
+      include: ['src/index.ts', 'src/domain/**/*.ts', 'src/stages/**/*.ts'],
       exclude: [
         '**/*.d.ts',
         '**/*.config.ts',
@@ -38,7 +38,7 @@ export default defineConfig({
         // such a file as 0% rather than 100%, which would make the headline
         // number meaningless. It is a placeholder for mc-kernel's coordinate
         // vocabulary and is deleted when kernel is published.
-        'domain/position-key.ts',
+        'src/domain/position-key.ts',
       ],
       all: true,
       reporter: ['text', 'json', 'html', 'lcov'],

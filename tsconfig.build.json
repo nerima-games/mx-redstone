@@ -8,7 +8,7 @@
   // "mc-playground-kit is a devDependency" mean something: the circuit-board
   // preview may reach for kit, the shipped simulation may not (plan.md §2.3-2).
   "extends": "./tsconfig.base.json",
-  "include": ["index.ts", "domain/**/*.ts", "stages/**/*.ts"],
+  "include": ["src/index.ts", "src/domain/**/*.ts", "src/application/**/*.ts", "src/stages/**/*.ts"],
   "exclude": [
     "node_modules",
     "coverage",

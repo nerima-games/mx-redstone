@@ -35,7 +35,7 @@
  * a regression reaching a person; these lines are what stop it reaching a person
  * who is only looking at the picture.
  */
-import { planPush, PISTON_PUSH_LIMIT } from '../../domain/piston'
+import { planPush, PISTON_PUSH_LIMIT } from '../../src/domain/piston'
 import {
   emptyPowerMap,
   isLit,
@@ -46,9 +46,9 @@ import {
   settleTickLimitFor,
   type CircuitBoard,
   type PowerMap,
-} from '../../domain/power-graph'
-import type { PositionKey } from '../../domain/position-key'
-import { REDSTONE_TICK_SECS, ticksForFrame } from '../../stages/registration'
+} from '../../src/domain/power-graph'
+import type { PositionKey } from '../../src/domain/position-key'
+import { REDSTONE_TICK_SECS, ticksForFrame } from '../../src/stages/registration'
 import {
   circuitBoardOf,
   keyOf,

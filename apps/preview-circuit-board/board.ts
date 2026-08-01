@@ -46,9 +46,9 @@
  *     precisely so that a caller — a test, or this app — can supply two blocks
  *     without anybody having to write down twenty-two.
  */
-import { planPush, type BlockCapabilityLookup, type BlockRef } from '../../domain/piston'
-import { powerAt, type CircuitBoard, type Component, type PowerMap } from '../../domain/power-graph'
-import type { PositionKey } from '../../domain/position-key'
+import { planPush, type BlockCapabilityLookup, type BlockRef } from '../../src/domain/piston'
+import { powerAt, type CircuitBoard, type Component, type PowerMap } from '../../src/domain/power-graph'
+import type { PositionKey } from '../../src/domain/position-key'
 
 // ---------------------------------------------------------------------------
 // Geometry

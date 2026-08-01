@@ -119,9 +119,23 @@
     "no-restricted-imports": [
       "warn",
       {
-        "name": "effect",
-        "message": "Please use named imports from 'effect' package",
-        "importNames": ["default"]
+        "paths": [
+          {
+            "name": "effect",
+            "message": "Please use named imports from 'effect' package",
+            "importNames": ["default"]
+          }
+        ],
+        "patterns": [
+          {
+            "regex": "^@nerima-games/(mx-gameplay|mx-ui|mx-multiplayer)(/.*)?$",
+            "message": "Tier3 experience modules do not depend on each other laterally (DEPENDENCY_POLICY.md §2). Talk through mc-sim or mc-worldgen instead."
+          },
+          {
+            "regex": "^@nerima-games/(mc-audio|mc-meshing|mc-noise|mc-physics|mc-save|mc-render|mc-playground-kit|mc-compose|mc-dev-meta)(/.*)?$",
+            "message": "mx-redstone (Tier3, DEPENDENCY_POLICY.md) may depend only on mc-sim, mc-worldgen, and mc-kernel (universally importable). mc-playground-kit may only ever be a devDependency, taken from test/ or scripts/, never from shipped src/."
+          }
+        ]
       }
     ],
     "prefer-template": "warn",
@@ -135,5 +149,5 @@
     "no-param-reassign": "off",
     "no-plusplus": "off"
   },
-  "ignore": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
+  "ignorePatterns": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
 }

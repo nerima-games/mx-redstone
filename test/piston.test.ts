@@ -14,7 +14,7 @@ import {
   planPush,
   type BlockCapabilityLookup,
   type BlockRef,
-} from '../domain/piston'
+} from '../src/domain/piston'
 
 /** A lookup standing in for kernel's capability table. */
 const immovableSet = (blocks: ReadonlyArray<BlockRef>): BlockCapabilityLookup => {

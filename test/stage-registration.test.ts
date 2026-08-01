@@ -10,9 +10,9 @@ import { Effect, Ref } from 'effect'
 import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
-} from '../application/world-runtime'
-import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from '../domain/frame-contract'
-import { MAX_POWER_LEVEL, powerAt, type CircuitBoard, type Component } from '../domain/power-graph'
+} from '../src/application/world-runtime'
+import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from '../src/domain/frame-contract'
+import { MAX_POWER_LEVEL, powerAt, type CircuitBoard, type Component } from '../src/domain/power-graph'
 import {
   makeRedstoneFrameState,
   makeRuntimeRedstoneStages,
@@ -22,13 +22,13 @@ import {
   redstoneStages,
   REDSTONE_TICK_SECS,
   ticksForFrame,
-} from '../stages/registration'
+} from '../src/stages/registration'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
   OWN_STAGE_PREFIX,
   REDSTONE_STAGE_IDS,
   UPSTREAM_STAGE_IDS,
-} from '../stages/stage-ids'
+} from '../src/stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
 
 const allAfterEdges = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
