@@ -238,6 +238,13 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 ロック中の未確定遷移は破棄し、解除後は背面入力を設定遅延の先頭から評価し直す。
 トーチは30 tick内の8回目の消灯でburnoutし、80 tick出力を停止してから再評価する。
 
+### `domain/target-block.ts` — すべて内部（可視）
+
+`TargetHit` / `targetSignal`
+
+ターゲット面の正規化座標を入力し、中心からの Chebyshev 距離を 1–15 の信号強度へ写像する純粋規則である。
+命中なしは 0、中心は 15、辺と角は 1 とし、範囲外座標は面の境界へ clamp する。
+
 ### `domain/piston.ts` — すべて内部（可視）
 
 `BlockRef` / `BlockCapabilityLookup` / `PISTON_PUSH_LIMIT` / `PushPlan` / `PushRefusal` /

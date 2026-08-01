@@ -48,6 +48,7 @@ export * from './domain/piston'
 export * from './domain/power-graph'
 export * from './domain/timed-power-graph'
 export * from './domain/pressure-plate'
+export * from './domain/target-block'
 export * from './stages/registration'
 export * from './stages/stage-ids'
 

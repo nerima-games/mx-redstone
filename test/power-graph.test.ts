@@ -88,6 +88,9 @@ const graph = (
 }
 
 const wire = (): Component => ({ kind: 'wire' })
+const TARGET_CYCLE_SIGNAL = 8
+const TARGET_CYCLE_DECAYED_SIGNAL = 7
+const EMPTY_POWER_SIZE = 0
 
 describe('wire propagation', () => {
   it.effect('a lever applies 15 to adjacent dust, which loses one per further cell', () =>
@@ -165,6 +168,43 @@ describe('wire propagation', () => {
       expect(powerAt(forward.power, 'w1')).toBe(14)
       expect(powerAt(forward.power, 'w2')).toBe(13)
       expect(powerAt(forward.power, 'w3')).toBe(14)
+    }),
+  )
+
+  it.effect('REGRESSION: a target feeds a cycle at its hit strength without latching it', () =>
+    Effect.sync(() => {
+      const active = graph(
+        [
+          ['target', { active: true, emits: TARGET_CYCLE_SIGNAL, kind: 'target' }],
+          ['w0', wire()],
+          ['w1', wire()],
+          ['w2', wire()],
+        ],
+        [
+          ['target', 'w0'],
+          ['w0', 'w1'],
+          ['w1', 'w2'],
+          ['w2', 'w0'],
+        ],
+      )
+      const powered = settle(active)
+
+      expect(powerAt(powered.power, 'w0')).toBe(TARGET_CYCLE_SIGNAL)
+      expect(powerAt(powered.power, 'w1')).toBe(TARGET_CYCLE_DECAYED_SIGNAL)
+      expect(powerAt(powered.power, 'w2')).toBe(TARGET_CYCLE_DECAYED_SIGNAL)
+
+      const inactive = {
+        ...active,
+        components: new Map(active.components).set('target', {
+          active: false,
+          emits: TARGET_CYCLE_SIGNAL,
+          kind: 'target',
+        } as const),
+      }
+      const released = settle(inactive, { from: powered.power })
+
+      expect(released.oscillating).toBe(false)
+      expect(released.power.size).toBe(EMPTY_POWER_SIZE)
     }),
   )
 

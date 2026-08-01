@@ -138,10 +138,12 @@ $ corepack prepare pnpm@11 --activate
   への書き込みであり、書き込み先がまだ存在しない。**判断のほうは全部書いてある**——どの
   オブザーバが発火したか、どのディスペンサが立ち上がりを見たか、どのホッパーがロックされているか、
   コンテナの読みがいくつか——ので、足りないのは書き込み口だけである。
-- **部品は 11 種**（wire / torch / lever / button / repeater / comparator / observer /
-  pressure-plate / hopper / dispenser / lamp）。ただし**完全なのはコンパレータとオブザーバだけ**である。
+- **部品は 12 種**（wire / torch / lever / button / repeater / comparator / observer /
+  pressure-plate / target / hopper / dispenser / lamp）。ただし**完全なのはコンパレータ、オブザーバ、
+  ターゲットの信号規則だけ**である。
   ホッパー・ディスペンサ・感圧板は**レッドストーンの規則**（ロックの反転、搬送周期、
-  立ち上がりエッジ、占有数 → 信号強度）だけがここにあり、
+  立ち上がりエッジ、占有数 → 信号強度）だけがここにあり、ターゲットは命中面上の位置から
+  1–15 の信号強度を決定する純粋規則までを所有する。
   アイテムと entity に触る部分は境界の向こうにある。
   **境界は「あとで」ではなく名指ししてある**——[docs/design-notes.md](./docs/design-notes.md)
   DN-RS-17 に、足りない型とクエリが「どのファイルの何行目に無いか」まで表になっている。

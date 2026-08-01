@@ -122,6 +122,7 @@ export type ComponentKind =
   | 'comparator'
   | 'observer'
   | 'pressure-plate'
+  | 'target'
   | 'piston'
   | 'hopper'
   | 'dispenser'
@@ -137,7 +138,7 @@ export type ComponentKind =
 export type Component = {
   readonly kind: ComponentKind
   /**
-   * Levers, buttons, observers and pressure plates: whether it is currently on.
+   * Levers, buttons, observers, pressure plates and targets: whether it is currently on.
    *
    * One field for four components because it means one thing in all four: THE
    * OWNER OF THE WORLD SAYS THIS IS ON RIGHT NOW. What differs is who the owner
@@ -275,6 +276,14 @@ export type PowerMap = ReadonlyMap<PositionKey, PowerLevel>
 
 export const emptyPowerMap: PowerMap = new Map<PositionKey, PowerLevel>()
 
+const EXTERNAL_SOURCE_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
+  'lever',
+  'button',
+  'observer',
+  'pressure-plate',
+  'target',
+])
+
 export const powerAt = (map: PowerMap, key: PositionKey): PowerLevel => map.get(key) ?? 0
 
 const neighboursOf = (board: CircuitBoard, key: PositionKey): ReadonlyArray<PositionKey> =>
@@ -322,15 +331,10 @@ export const sourcesOf = (board: CircuitBoard, previous: PowerMap): PowerMap => 
   const sources = new Map<PositionKey, PowerLevel>()
 
   for (const [key, component] of board.components) {
-    if (
-      component.kind === 'lever' ||
-      component.kind === 'button' ||
-      component.kind === 'observer' ||
-      component.kind === 'pressure-plate'
-    ) {
-      // The four components whose truth is declared from outside. `emits` lets
-      // a weighted plate report a count rather than a yes; everything else
-      // omits it and gets full power.
+    if (EXTERNAL_SOURCE_KINDS.has(component.kind)) {
+      // The components whose truth is declared from outside. `emits` lets a
+      // weighted plate report a count and a target report hit accuracy;
+      // everything else omits it and gets full power.
       if (component.active === true) {
         sources.set(key, component.emits ?? MAX_POWER_LEVEL)
       }
@@ -453,6 +457,7 @@ const CONDUCTS_POWER: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
   'comparator',
   'observer',
   'pressure-plate',
+  'target',
 ])
 
 /**

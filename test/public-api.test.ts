@@ -101,6 +101,7 @@ describe('public API surface', () => {
         'plateSignal',
         'LIGHT_PLATE_CAPACITY',
         'HEAVY_PLATE_CAPACITY',
+        'targetSignal',
         // pistons — the capability lookup is a parameter, never a local set
         'PISTON_PUSH_LIMIT',
         'planPush',
