@@ -9,6 +9,10 @@ import type {
   PowerMap,
 } from '../domain/power-graph'
 import { emptyPowerMap, isLit } from '../domain/power-graph'
+import {
+  emptyTimedCircuitState,
+  type TimedCircuitState,
+} from '../domain/timed-power-graph'
 
 export type RedstonePosition = {
   readonly x: number
@@ -21,6 +25,8 @@ export type RedstoneComponentSnapshot = {
   readonly kind: ComponentKind
   readonly active?: boolean
   readonly emits?: PowerLevel
+  readonly delayTicks?: number
+  readonly pulseTicks?: number
   readonly invertedBy?: RedstonePosition
   readonly inputFrom?: RedstonePosition
   readonly sideInputs?: ReadonlyArray<RedstonePosition>
@@ -49,6 +55,8 @@ export type RedstoneWorldState = {
   readonly dimensions: Ref.Ref<ReadonlyMap<string, DimensionSnapshot>>
   readonly board: Ref.Ref<CircuitBoard>
   readonly power: Ref.Ref<PowerMap>
+  readonly timedCircuit: Ref.Ref<TimedCircuitState>
+  readonly pendingButtonPresses: Ref.Ref<ReadonlySet<PositionKey>>
   readonly observedLamps: Ref.Ref<ReadonlyMap<PositionKey, ObservedLamp>>
   readonly pendingLampTransitions: Ref.Ref<ReadonlyArray<LampTransition>>
   readonly tickAccumulatorSecs: Ref.Ref<number>
@@ -58,6 +66,8 @@ export type RedstoneWorldState = {
 export type RedstoneWorldRuntimeService = {
   /** Replaces only the named dimension; snapshots of other dimensions remain installed. */
   readonly syncSnapshot: (snapshot: RedstoneWorldSnapshot) => Effect.Effect<void>
+  /** Starts or restarts this button's configured pulse on the next redstone tick. */
+  readonly pressButton: (dimension: string, position: RedstonePosition) => Effect.Effect<void>
   /** Atomically returns and clears transitions produced by `redstone:effects`. */
   readonly drainLampTransitions: Effect.Effect<ReadonlyArray<LampTransition>>
 }
@@ -79,6 +89,8 @@ const componentAt = (
   kind: component.kind,
   ...(component.active === undefined ? {} : { active: component.active }),
   ...(component.emits === undefined ? {} : { emits: component.emits }),
+  ...(component.delayTicks === undefined ? {} : { delayTicks: component.delayTicks }),
+  ...(component.pulseTicks === undefined ? {} : { pulseTicks: component.pulseTicks }),
   ...(component.invertedBy === undefined
     ? {}
     : { invertedBy: redstoneNodeId(dimension, component.invertedBy) }),
@@ -137,6 +149,8 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
   const dimensions = yield* Ref.make<ReadonlyMap<string, DimensionSnapshot>>(new Map())
   const board = yield* Ref.make<CircuitBoard>({ components: new Map(), adjacency: new Map() })
   const power = yield* Ref.make<PowerMap>(emptyPowerMap)
+  const timedCircuit = yield* Ref.make<TimedCircuitState>(emptyTimedCircuitState)
+  const pendingButtonPresses = yield* Ref.make<ReadonlySet<PositionKey>>(new Set())
   const observedLamps = yield* Ref.make<ReadonlyMap<PositionKey, ObservedLamp>>(new Map())
   const pendingLampTransitions = yield* Ref.make<ReadonlyArray<LampTransition>>([])
   const tickAccumulatorSecs = yield* Ref.make(0)
@@ -145,6 +159,8 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
     dimensions,
     board,
     power,
+    timedCircuit,
+    pendingButtonPresses,
     observedLamps,
     pendingLampTransitions,
     tickAccumulatorSecs,
@@ -220,6 +236,12 @@ export const makeRedstoneWorldRuntime: Effect.Effect<RedstoneWorldRuntimeService
   const state = yield* makeRedstoneWorldState
   const runtime: RedstoneWorldRuntimeService = {
     syncSnapshot: (snapshot) => syncRedstoneSnapshot(state, snapshot),
+    pressButton: (dimension, position) =>
+      Ref.update(state.pendingButtonPresses, (pending) => {
+        const next = new Set(pending)
+        next.add(redstoneNodeId(dimension, position))
+        return next
+      }),
     drainLampTransitions: Ref.getAndSet(state.pendingLampTransitions, []),
   }
   runtimeStates.set(runtime, state)

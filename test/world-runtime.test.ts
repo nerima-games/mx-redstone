@@ -19,10 +19,12 @@ const component = (
   active?: boolean,
   y = 0,
   z = 0,
+  timing: Pick<RedstoneComponentSnapshot, 'delayTicks' | 'pulseTicks'> = {},
 ): RedstoneComponentSnapshot => ({
   position: { x, y, z },
   kind,
   ...(active === undefined ? {} : { active }),
+  ...timing,
 })
 
 const snapshot = (
@@ -193,6 +195,51 @@ describe('RedstoneWorldRuntime', () => {
         yield* runFrame(stages)
         expect(yield* runtime.drainLampTransitions).toStrictEqual([
           { dimension: 'nether', position: { x: 2, y: 0, z: 0 }, lit: true },
+        ])
+      }),
+    ),
+  )
+
+  it.effect('runs button pulses and configured repeater delays through the runtime stage', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(
+          snapshot('overworld', [
+            component(0, 'button', undefined, 0, 0, { pulseTicks: 4 }),
+            component(1, 'wire'),
+            {
+              ...component(2, 'repeater', undefined, 0, 0, { delayTicks: 2 }),
+              inputFrom: { x: 1, y: 0, z: 0 },
+              outputTo: { x: 3, y: 0, z: 0 },
+            },
+            component(3, 'lamp'),
+          ]),
+        )
+
+        yield* runtime.pressButton('overworld', { x: 0, y: 0, z: 0 })
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([
+          { dimension: 'overworld', position: { x: 3, y: 0, z: 0 }, lit: true },
+        ])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([
+          { dimension: 'overworld', position: { x: 3, y: 0, z: 0 }, lit: false },
         ])
       }),
     ),

@@ -679,18 +679,16 @@ readonly outputTo?: PositionKey    // リピーター: 駆動する唯一のセ�
 | **`neighboursOf` を filter する**（`[outputTo]` を直接返さない） | `adjacency` が**グラフそのもの**である。`outputTo` は自分の辺を 1 本**選ぶ**のであって、新しい辺を**作らない**。さもなければ呼び出し側は遠いセルを名指しして電力をテレポートでき、出力セルを削除された盤面のリピーターは存在しない座標に給電し続ける |
 | **トーチは `invertedBy` を除外**（`outputTo` を持たない） | トーチはバニラでも無指向（隣接する全ダストを点ける）。制約は「支持ブロックを除く」という 1 点だけなので、除外で足りる。リピーターに同じ形（`inputFrom` だけ除外）を使うと側面が残る |
 
-### 遅延は形の問題ではないので、ここでは直っていない
+### 遅延とパルスの状態は純粋な伝播の外に置く
 
-`Component.delayTicks` は**削除した**。受け取って保存して一度も読まれない
-フィールドは、無いフィールドより悪い。バニラの 1–4 tick 遅延を実装するには
-「N tick 前の入力」が要り、`propagateTick` は設計上 (board, previous power map) の純関数——
-すなわち履歴 1 tick ぶんしか持たない。これは**tick の状態の形**の変更であって
-部品レコードの変更ではないので、フィールドは機構と一緒に戻ってくる。
+`Component.delayTicks` と `Component.pulseTicks` は盤面に規則を宣言するが、残り時間は
+`TimedCircuitState` が持つ。`advanceTimedCircuit(board, state, pressedButtons)` はリピーターの
+1–4 tick 遅延とボタンのパルスを進め、その tick で有効な盤面を `propagateTick` に渡す。
+したがって `propagateTick(board, previous)` の 1 tick 伝播契約は互換性のため変わらない。
 
-同じ理由でボタンのパルスもここには無い（DN-RS-4 の隣、`sourcesOf` のコメントに全文がある）。
-**残り時間は状態である。** 電力マップに置く場所が無く、盤面はこのモジュールが書き換えてよい入力ではない。
-`active` は世界の所有者の申告であり、レバーのそれはプレイヤーが、ボタンのそれは**時間**が下ろす。
-レッドストーン時間が進んでいることを知っているのは `stages/registration.ts` である。
+runtime では `stages/registration.ts` が dimension ごとの `TimedCircuitState` を保持し、
+`RedstoneWorldRuntime.pressButton` の入力を次の redstone tick で消費する。押下中の再押下は
+残り時間を `pulseTicks`（既定 10 tick）へ戻す。盤面スナップショット自体は書き換えない。
 
 **回帰テスト**: `test/power-graph.test.ts`
 `describe('repeaters — a diode, which means both ends are named')` ほか
@@ -703,7 +701,8 @@ readonly outputTo?: PositionKey    // リピーター: 駆動する唯一のセ�
 | `a repeater with no output named drives nothing — an unwired repeater is inert in both directions` | 既定値の選択そのもの |
 | `a named output that is not a declared edge drives nothing — adjacency is still the graph` | 隣接に無いセルを名指しても何も駆動しない |
 | `REGRESSION: a torch does not power the cell it inverts, so an inverter is steady rather than a 2-tick blinker` | レバー OFF で 20 tick、トーチは 15 のまま、支持セルは 0 のまま |
-| `REGRESSION: \`Component\` carries no delay field, and every repeater costs exactly one tick` | `@ts-expect-error` による**コンパイル時**の不在確認と、直列 N 個が N tick である実測 |
+| `legacy propagation keeps its one-tick repeater contract when delay metadata is present` | 旧 API は `delayTicks` を解釈せず、従来どおり各リピーターを 1 tick で伝播する |
+| `test/timed-power-graph.test.ts` の repeater / button 節 | 1–4 tick の境界、遷移キャンセル、パルス停止、再押下、挿入順非依存を固定する |
 
 ---
 
@@ -841,7 +840,8 @@ plan.md §3.11 が「disaster」と呼ぶ per-tick 全走査は**ロードされ
 ### 15-3. だから `Component` に `watching` は無い
 
 グラフはブロックを読めない。読めないセルを名指すフィールドは
-**受け取って保存して一度も読まれない**——DN-RS-12 が `delayTicks` を削除した理由そのものである。
+**受け取って保存して一度も読まれない**状態にしてはならない。DN-RS-12 の `delayTicks` は
+`advanceTimedCircuit` が解釈するため、この条件を満たす。
 オブザーバがどのセルを見ているかは、それが生む `active` の隣、世界の所有者のところにある。
 
 パルス長 `OBSERVER_PULSE_TICKS = 2`（参照実装 `:17` と一致）は**規則**なのでここにあり、

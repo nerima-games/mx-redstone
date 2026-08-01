@@ -165,6 +165,10 @@ export type Component = {
    * value beside the thing it is cached from.
    */
   readonly emits?: PowerLevel
+  /** Repeaters: transition delay in redstone ticks, clamped to 1–4. */
+  readonly delayTicks?: number
+  /** Buttons: pulse duration in redstone ticks. Omitted means a stone button's 10 ticks. */
+  readonly pulseTicks?: number
   /**
    * Torches: the cell whose power inverts this torch. In the world this is the
    * block the torch is attached to.
@@ -248,15 +252,8 @@ export type Component = {
    * placed to ISOLATE them) is silent, and the failure it causes (a repeater
    * that does nothing) is visible on the first tick.
    *
-   * NOT MODELLED: vanilla's 1–4 tick repeater delay. A `delayTicks` field used
-   * to sit here, was never read by anything, and has been removed rather than
-   * left as a promise the graph does not keep. Honouring it needs memory — the
-   * input from N ticks ago — and `propagateTick` is by design a pure function of
-   * (board, previous power map), which holds exactly one tick of history. Adding
-   * that memory is a change to the tick's state shape, not a change to this
-   * record, so the field will come back with the mechanism and not before. Every
-   * repeater currently costs exactly one tick; `test/power-graph.test.ts` pins
-   * that, and `settleTickLimitFor` depends on it.
+   * Stateful delay is implemented by `advanceTimedCircuit`. The legacy
+   * `propagateTick` API intentionally retains its one-tick repeater behaviour.
    */
   readonly outputTo?: PositionKey
 }

@@ -207,20 +207,13 @@ porting.md §3-0 に旧値と新値の両方を残した——**§2-1 が plan.m
 
 **これが「主張を移植する」と「テストを移植する」の差である。**
 
-#### 移植が露出させた production の穴 2 つ（どちらも埋めていない）
+#### 移植が露出させた production の穴（残り 1 つ）
 
-移植は本来テストを増やす作業だが、参照実装が**主張していて、ここには置き場所すら無い**ものが 2 つ出た。
-どちらも「テストが足りない」ではなく「規則が無い」なので、テストを書いても嘘になる。記録だけする。
+ボタンのパルス長は `advanceTimedCircuit` と `RedstoneWorldRuntime.pressButton` に実装し、
+`test/timed-power-graph.test.ts` と `test/world-runtime.test.ts` で停止と再押下まで固定した。
+未解決なのは次の 1 点である。
 
-1. **ボタンのパルス長。** 参照実装は `decayButtonTimers`（`redstone-simulation.test.ts:244-285`）と
-   `redstone-service.test.ts:32-53`（press(2) → 14, 14, 0）でボタンの自動解放を固定している。
-   ここには countdown が無い——`sourcesOf` の頭注が「残り時間は状態であり、
-   それを持つのは `stages/registration.ts` だ」と書いたきり、`stages/registration.ts` に
-   解放は書かれていない。[porting.md](./porting.md) §4 が `DEFAULT_BUTTON_TICKS = 20`
-   （バニラの石ボタン 1.0 秒）を**未実装**として既に挙げている。
-   現在の挙動は `test/power-graph.test.ts` の `buttons` 節が名指ししているので、
-   実装したときは**そのテストが落ちる**——それが正しい形である。
-2. **ピストンがエッジ駆動であること。** 参照実装の
+1. **ピストンがエッジ駆動であること。** 参照実装の
    `redstone-piston-world-effects.test.ts:165-181`（`does not push again while a piston remains extended`）と
    `redstone-simulation.test.ts:193-240`（`updatePistons`）は、ピストンが**通電レベルではなく
    立ち上がりエッジで**伸び、伸びたまま押し続けないことを主張している。

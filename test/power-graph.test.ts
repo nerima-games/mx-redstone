@@ -535,27 +535,14 @@ describe('repeaters — a diode, which means both ends are named', () => {
     }),
   )
 
-  it.effect('REGRESSION: `Component` carries no delay field, and every repeater costs exactly one tick', () =>
+  it.effect('legacy propagation keeps its one-tick repeater contract when delay metadata is present', () =>
     Effect.sync(() => {
-      // `delayTicks?: number` used to sit on `Component`. It was accepted,
-      // stored and never read: a repeater set to 1, 2, 3 or 4 delivered on the
-      // same tick, because `sourcesOf` only asks whether the input carries
-      // power. It is absent now rather than silently doing nothing.
-      //
-      // Honouring it needs the input from N ticks ago, and `propagateTick` is by
-      // design a pure function of (board, previous power map) — one tick of
-      // history. That is a change to the tick's STATE SHAPE, not to this record,
-      // so the field returns with the mechanism and not before.
-      //
-      // The compile-time half of the pin: the excess-property check rejects the
-      // literal today, and if `delayTicks` ever comes back the `@ts-expect-error`
-      // goes unused and `pnpm typecheck` fails.
-      // @ts-expect-error `delayTicks` is deliberately not part of `Component`.
+      // Stateful callers use `advanceTimedCircuit`; this legacy API deliberately
+      // keeps the original one-tick-per-repeater behavior.
       const unmodelled: Component = { kind: 'repeater', delayTicks: 4 }
       expect(unmodelled.kind).toBe('repeater')
 
-      // The behavioural half: N repeaters in series cost exactly N ticks, and
-      // there is no way to ask any of them for more.
+      // N repeaters in series still cost exactly N legacy propagation ticks.
       const chain = (length: number): CircuitBoard =>
         line([
           ['lever', { kind: 'lever', active: true }],

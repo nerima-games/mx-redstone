@@ -143,6 +143,9 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 
 現状 `redstone:effects` はランプの on/off 変化を runtime port に蓄積する。
 ホストは stage 実行後に `drainLampTransitions` で変化を取り出し、世界へ適用する。
+ボタンは `pressButton(dimension, position)` で次tickのパルスを予約する。`pulseTicks` の既定値は
+10で、パルス中の再入力は残り時間を設定値へ戻す。リピーターの `delayTicks` は1–4に丸められ、
+入力のONとOFFの双方へ同じtick遅延を適用する。
 ピストン、ディスペンサ、ホッパー等の世界更新は、書き込み先サービスの公開後に追加する。
 
 ## 5. `index.ts` の全エクスポート
@@ -201,7 +204,7 @@ mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしてお�
 | --- | --- | --- |
 | `RedstoneWorldRuntime` | **契約** | Effect service tag |
 | `RedstoneWorldRuntimeLayer` | **契約** | runtime port の Layer |
-| `RedstoneWorldRuntimeService` | **契約** | dimension snapshot の置換とランプ変化の drain |
+| `RedstoneWorldRuntimeService` | **契約** | dimension snapshot の置換、ボタン入力、ランプ変化の drain |
 | `RedstoneWorldSnapshot` / `RedstoneComponentSnapshot` / `RedstonePosition` | **契約** | compose/gameplay 型に依存しない意味型 |
 | `LampTransition` | **契約** | ホストが世界へ適用するランプの on/off 変化 |
 
@@ -222,6 +225,14 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 `settle` / `isLit`
 
 1 つも契約ではない（§2）。
+
+### `domain/timed-power-graph.ts` — すべて内部（可視）
+
+`DEFAULT_BUTTON_PULSE_TICKS` / `RepeaterTimer` / `ButtonTimer` / `TimedCircuitState` /
+`emptyTimedCircuitState` / `advanceTimedCircuit`
+
+`propagateTick` の互換契約を変えずに、tickをまたぐ遅延とパルスを値として保持するAPIである。
+同じ盤面・状態・押下集合には同じ次状態を返し、壁時計や反復順序を参照しない。
 
 ### `domain/piston.ts` — すべて内部（可視）
 

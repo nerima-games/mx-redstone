@@ -35,7 +35,8 @@ import {
   type RedstoneWorldState,
 } from '../application/world-runtime'
 import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
-import { propagateTick, type CircuitBoard } from '../domain/power-graph'
+import type { CircuitBoard } from '../domain/power-graph'
+import { advanceTimedCircuit } from '../domain/timed-power-graph'
 import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
 
 /** Vanilla redstone runs at 10 Hz: one tick every two game ticks. */
@@ -130,13 +131,14 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
         // Each tick reads the PREVIOUS map: that one-tick lag is what makes a
         // torch invert and therefore what makes every clock circuit work. See
         // domain/power-graph.ts.
-        yield* Ref.update(state.power, (previous) => {
-          let power = previous
-          for (let tick = 0; tick < ticks; tick += 1) {
-            power = propagateTick(board, power)
-          }
-          return power
-        })
+        const pressedButtons = yield* Ref.getAndSet(state.pendingButtonPresses, new Set())
+        const timed = yield* Ref.get(state.timedCircuit)
+        let next = timed
+        for (let tick = 0; tick < ticks; tick += 1) {
+          next = advanceTimedCircuit(board, next, tick === 0 ? pressedButtons : new Set())
+        }
+        yield* Ref.set(state.timedCircuit, next)
+        yield* Ref.set(state.power, next.power)
         yield* Ref.update(state.tickCount, (count) => count + ticks)
       }),
   },

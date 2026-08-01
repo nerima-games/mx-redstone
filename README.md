@@ -131,6 +131,8 @@ $ corepack prepare pnpm@11 --activate
 - **`RedstoneWorldRuntime` は dimension 単位の完全スナップショットを受け取る。**
   `redstone:power` が 6 近傍の回路盤を進め、`redstone:effects` がランプの on/off 変化だけを蓄積する。
   ホストは stage 実行後に `drainLampTransitions` を呼び、結果を世界へ反映する。
+  ボタン入力は `pressButton(dimension, position)` でキューへ積み、次の redstone tick から
+  `pulseTicks`（既定 10 tick）だけ通電する。再入力は残り時間を設定値へ戻す。
   ピストン伸縮・ディスペンサ発射・ホッパー移送・オブザーバのパルスは、すべて mc-sim / mc-worldgen
   への書き込みであり、書き込み先がまだ存在しない。**判断のほうは全部書いてある**——どの
   オブザーバが発火したか、どのディスペンサが立ち上がりを見たか、どのホッパーがロックされているか、
@@ -147,13 +149,11 @@ $ corepack prepare pnpm@11 --activate
   値を次の部品へ渡す唯一の部品なので、「ソースは最初の隣接セルへ減衰する」という
   既記録の乖離が、到達距離ではなく**数そのもの**を 1 段につき 1 ずつ壊す。
   バニラのコンパレータは値を減らさない（DN-RS-13）。
-- **リピーターの遅延（バニラ 1–4 tick）とボタンのパルス長は未実装であり、型にも無い。**
-  `Component.delayTicks` は「受け取って保存して一度も読まれない」フィールドだったので**削除した**。
-  どちらも「N tick 前の入力」「残り時間」という**状態**を要求するが、`propagateTick` は設計上
-  (board, previous power map) の純関数であり履歴を 1 tick ぶんしか持たない。
-  tick の状態の形を変える話であって、部品レコードを 1 行増やす話ではない
-  （[docs/design-notes.md](./docs/design-notes.md) DN-RS-12）。
-  ボタンの解放は呼び出し側——dt を tick に換算し盤面 `Ref` を持つ `stages/registration.ts`——の仕事である。
+- **リピーター遅延とボタンパルスは状態付きtick APIで実装する。**
+  `advanceTimedCircuit(board, state, pressedButtons)` はリピーターの 1–4 tick 遅延、ボタンの残り時間、
+  0–15 の電力マップを一緒に進める。`propagateTick(board, previous)` は既存利用者との互換性のため
+  1 tick の純粋伝播APIとして残す。時間状態は runtime の `redstone:power` stage が所有し、
+  frame の分割や盤面の挿入順序には依存しない。
 - **ワイヤの到達距離は 14 マスであって 15 ではない**（バニラは 15）。ソースが電力マップのセルを 1 つ占有し、
   最初のワイヤが既に 14 になるためである。**記録された差異**であり、閉じるには
   「ソースは最初の隣接セルへ減衰しない」という変更が要る——全回路の全レベルが変わる。

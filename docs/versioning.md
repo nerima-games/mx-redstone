@@ -2,7 +2,7 @@
 
 ## 1. 現状
 
-- **バージョン: `0.1.0`。**
+- **バージョン: `0.1.4`。**
 - **publish パイプラインは無い。** `package.json` の `exports` は TypeScript ソース（`./index.ts`）を直接指しており、
   `tsconfig.base.json:59` が `noEmit: true` なので `dist/` は存在しない。
 - **実行時依存は `effect` のみ。** `@nerima-games/*` は 1 つも入っていない。
