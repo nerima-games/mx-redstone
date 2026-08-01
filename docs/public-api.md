@@ -228,13 +228,15 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 
 ### `domain/timed-power-graph.ts` — すべて内部（可視）
 
-`DEFAULT_BUTTON_PULSE_TICKS` / `RepeaterTimer` / `ButtonTimer` / `TimedCircuitState` /
+`DEFAULT_BUTTON_PULSE_TICKS` / `TORCH_BURNOUT_TOGGLE_LIMIT` / `TORCH_BURNOUT_WINDOW_TICKS` /
+`TORCH_BURNOUT_COOLDOWN_TICKS` / `RepeaterTimer` / `ButtonTimer` / `TorchTimer` / `TimedCircuitState` /
 `emptyTimedCircuitState` / `advanceTimedCircuit`
 
 `propagateTick` の互換契約を変えずに、tickをまたぐ遅延とパルスを値として保持するAPIである。
 同じ盤面・状態・押下集合には同じ次状態を返し、壁時計や反復順序を参照しない。
 リピーターの `sideInputs` は前tickの電力を読み、いずれかが通電中なら現在出力を保持する。
 ロック中の未確定遷移は破棄し、解除後は背面入力を設定遅延の先頭から評価し直す。
+トーチは30 tick内の8回目の消灯でburnoutし、80 tick出力を停止してから再評価する。
 
 ### `domain/piston.ts` — すべて内部（可視）
 

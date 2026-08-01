@@ -339,7 +339,7 @@ export const sourcesOf = (board: CircuitBoard, previous: PowerMap): PowerMap => 
       // permanently, which is the standard way to write a constant source.
       const inputPower =
         component.invertedBy === undefined ? 0 : powerAt(previous, component.invertedBy)
-      if (inputPower === 0) {
+      if (inputPower === 0 && component.active !== false) {
         sources.set(key, MAX_POWER_LEVEL)
       }
       continue

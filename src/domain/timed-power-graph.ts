@@ -10,6 +10,9 @@ import {
 } from './power-graph'
 
 export const DEFAULT_BUTTON_PULSE_TICKS = 10
+export const TORCH_BURNOUT_TOGGLE_LIMIT = 8
+export const TORCH_BURNOUT_WINDOW_TICKS = 30
+export const TORCH_BURNOUT_COOLDOWN_TICKS = 80
 
 export type RepeaterTimer = {
   readonly output: boolean
@@ -22,16 +25,25 @@ export type ButtonTimer = {
   readonly inputActive: boolean
 }
 
+export type TorchTimer = {
+  readonly burnoutRemainingTicks: number
+  readonly output: boolean
+  readonly recentOffTicks: ReadonlyArray<number>
+}
+
 export type TimedCircuitState = {
   readonly power: PowerMap
   readonly repeaters: ReadonlyMap<PositionKey, RepeaterTimer>
   readonly buttons: ReadonlyMap<PositionKey, ButtonTimer>
+  /** Optional so states constructed before torch burnout support remain valid. */
+  readonly torches?: ReadonlyMap<PositionKey, TorchTimer>
 }
 
 export const emptyTimedCircuitState: TimedCircuitState = {
+  buttons: new Map(),
   power: emptyPowerMap,
   repeaters: new Map(),
-  buttons: new Map(),
+  torches: new Map(),
 }
 
 const repeaterDelay = (component: Component): number =>
@@ -79,6 +91,40 @@ const advanceOrHoldRepeater = (
   return advanceRepeater(previousTimer, requested, repeaterDelay(component))
 }
 
+const advanceTorch = (
+  options: {
+    readonly previous: TorchTimer | undefined
+    readonly previousOutput: boolean
+    readonly requestedOutput: boolean
+  },
+): TorchTimer => {
+  const { previous, previousOutput, requestedOutput } = options
+  if ((previous?.burnoutRemainingTicks ?? 0) > 1) {
+    return {
+      burnoutRemainingTicks: (previous?.burnoutRemainingTicks ?? 0) - 1,
+      output: false,
+      recentOffTicks: [],
+    }
+  }
+
+  const recentOffTicks = (previous?.recentOffTicks ?? [])
+    .map((age) => age + 1)
+    .filter((age) => age < TORCH_BURNOUT_WINDOW_TICKS)
+  if (previousOutput && !requestedOutput) {
+    recentOffTicks.push(0)
+  }
+
+  if (recentOffTicks.length >= TORCH_BURNOUT_TOGGLE_LIMIT) {
+    return {
+      burnoutRemainingTicks: TORCH_BURNOUT_COOLDOWN_TICKS,
+      output: false,
+      recentOffTicks: [],
+    }
+  }
+
+  return { burnoutRemainingTicks: 0, output: requestedOutput, recentOffTicks }
+}
+
 /** Advances all timers exactly once, then computes this tick's 0–15 power map. */
 export const advanceTimedCircuit = (
   board: CircuitBoard,
@@ -87,6 +133,7 @@ export const advanceTimedCircuit = (
 ): TimedCircuitState => {
   const repeaters = new Map<PositionKey, RepeaterTimer>()
   const buttons = new Map<PositionKey, ButtonTimer>()
+  const torches = new Map<PositionKey, TorchTimer>()
   const components = new Map<PositionKey, Component>(board.components)
 
   for (const [key, component] of board.components) {
@@ -116,12 +163,24 @@ export const advanceTimedCircuit = (
         inputActive: component.active === true,
       })
       components.set(key, { ...component, active })
+      continue
+    }
+
+    if (component.kind === 'torch') {
+      const requested =
+        component.invertedBy === undefined || powerAt(previous.power, component.invertedBy) === 0
+      const prior = previous.torches?.get(key)
+      const previousOutput = prior?.output ?? powerAt(previous.power, key) > 0
+      const timer = advanceTorch({ previous: prior, previousOutput, requestedOutput: requested })
+      torches.set(key, timer)
+      components.set(key, { ...component, active: timer.output })
     }
   }
 
   return {
+    buttons,
     power: propagateTick({ ...board, components }, previous.power),
     repeaters,
-    buttons,
+    torches,
   }
 }
