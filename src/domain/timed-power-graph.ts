@@ -58,6 +58,27 @@ const advanceRepeater = (
   return { output, pendingOutput: requestedOutput, remainingTicks: remaining }
 }
 
+const repeaterIsLocked = (component: Component, previous: PowerMap): boolean =>
+  (component.sideInputs ?? []).some((side) => powerAt(previous, side) > 0)
+
+const holdRepeater = (previous: RepeaterTimer | undefined): RepeaterTimer => ({
+  output: previous?.output ?? false,
+  remainingTicks: 0,
+})
+
+const advanceOrHoldRepeater = (
+  component: Component,
+  previousPower: PowerMap,
+  previousTimer: RepeaterTimer | undefined,
+  requested: boolean,
+): RepeaterTimer => {
+  if (repeaterIsLocked(component, previousPower)) {
+    return holdRepeater(previousTimer)
+  }
+
+  return advanceRepeater(previousTimer, requested, repeaterDelay(component))
+}
+
 /** Advances all timers exactly once, then computes this tick's 0–15 power map. */
 export const advanceTimedCircuit = (
   board: CircuitBoard,
@@ -72,7 +93,8 @@ export const advanceTimedCircuit = (
     if (component.kind === 'repeater') {
       const requested =
         component.inputFrom !== undefined && powerAt(previous.power, component.inputFrom) > 0
-      const timer = advanceRepeater(previous.repeaters.get(key), requested, repeaterDelay(component))
+      const prior = previous.repeaters.get(key)
+      const timer = advanceOrHoldRepeater(component, previous.power, prior, requested)
       repeaters.set(key, timer)
       components.set(key, {
         kind: 'observer',

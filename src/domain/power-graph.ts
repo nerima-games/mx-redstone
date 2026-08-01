@@ -190,14 +190,17 @@ export type Component = {
    */
   readonly inputFrom?: PositionKey
   /**
-   * Comparators: the cells beside it, whose power it compares the rear against.
+   * Repeaters and comparators: the cells beside the component.
    *
-   * A list rather than two named fields because a comparator has two sides in
+   * A powered side locks a repeater at its current output. A comparator reads
+   * the strongest side and compares it with its rear input.
+   *
+   * A list rather than two named fields because either component has two sides in
    * vanilla and the number is a property of the world's geometry, which this
    * file refuses to know. A caller working on a 2D preview grid supplies two; a
    * caller reading voxel faces might one day supply four for a vertical
-   * placement. Omitted or empty means nothing is beside it, so `compare` passes
-   * the rear through and `subtract` subtracts nothing.
+   * placement. Omitted or empty means no lock for a repeater, while `compare`
+   * passes the rear through and `subtract` subtracts nothing for a comparator.
    *
    * Like `outputTo`, these SELECT edges rather than create them — a side that is
    * not a declared neighbour is still read, because reading is not conducting

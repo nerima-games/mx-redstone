@@ -103,6 +103,105 @@ describe('timed redstone', () => {
     }),
   )
 
+  it.effect('a powered side locks the current output and discards a pending transition', () =>
+    Effect.sync(() => {
+      const board = line([
+        ['rearLever', { kind: 'lever', active: true }],
+        ['rear', { kind: 'wire' }],
+        ['repeater', { kind: 'repeater', inputFrom: 'rear', outputTo: 'out', sideInputs: ['lock'], delayTicks: 3 }],
+        ['out', { kind: 'wire' }],
+        ['lock', { kind: 'lever', active: false }],
+      ])
+      let state = ticks(board, 2)
+      expect(state.repeaters.get('repeater')).toMatchObject({ pendingOutput: true, remainingTicks: 2 })
+
+      const locked: CircuitBoard = {
+        ...board,
+        components: new Map(board.components).set('lock', { kind: 'lever', active: true }),
+      }
+      state = advanceTimedCircuit(locked, state)
+      state = advanceTimedCircuit(locked, state)
+      expect(state.repeaters.get('repeater')).toStrictEqual({ output: false, remainingTicks: 0 })
+
+      const unlocked: CircuitBoard = {
+        ...locked,
+        components: new Map(locked.components).set('lock', { kind: 'lever', active: false }),
+      }
+      state = advanceTimedCircuit(unlocked, state)
+      expect(state.repeaters.get('repeater')).toStrictEqual({ output: false, remainingTicks: 0 })
+      state = ticks(unlocked, 2, state)
+      expect(state.repeaters.get('repeater')).toMatchObject({ output: false, remainingTicks: 1 })
+      state = advanceTimedCircuit(unlocked, state)
+      expect(state.repeaters.get('repeater')).toStrictEqual({ output: true, remainingTicks: 0 })
+    }),
+  )
+
+  it.effect('samples the side from the previous tick before locking a powered repeater', () =>
+    Effect.sync(() => {
+      const board: CircuitBoard = {
+        components: new Map([
+          ['rear', { kind: 'lever', active: false }],
+          ['side', { kind: 'lever', active: true }],
+          ['repeater', { kind: 'repeater', inputFrom: 'rear', outputTo: 'out', sideInputs: ['side'], delayTicks: 1 }],
+          ['out', { kind: 'wire' }],
+        ]),
+        adjacency: new Map([
+          ['rear', []],
+          ['side', []],
+          ['repeater', []],
+          ['out', []],
+        ]),
+      }
+      const powered: TimedCircuitState = {
+        power: new Map([['repeater', 15], ['out', 15]]),
+        repeaters: new Map([['repeater', { output: true, remainingTicks: 0 }]]),
+        buttons: new Map(),
+      }
+
+      const beforeLockArrives = advanceTimedCircuit(board, powered)
+      expect(beforeLockArrives.repeaters.get('repeater')?.output).toBe(false)
+      const locked = advanceTimedCircuit(board, {
+        ...beforeLockArrives,
+        repeaters: new Map([['repeater', { output: true, remainingTicks: 0 }]]),
+      })
+      expect(locked.repeaters.get('repeater')).toStrictEqual({ output: true, remainingTicks: 0 })
+    }),
+  )
+
+  it.effect('side-lock cycles are insertion-order independent and missing side cells are unpowered', () =>
+    Effect.sync(() => {
+      const cells: ReadonlyArray<readonly [string, Component]> = [
+        ['a', { kind: 'repeater', inputFrom: 'missing-rear-a', sideInputs: ['b'], outputTo: 'a-out' }],
+        ['b', { kind: 'repeater', inputFrom: 'missing-rear-b', sideInputs: ['a'], outputTo: 'b-out' }],
+        ['a-out', { kind: 'wire' }],
+        ['b-out', { kind: 'wire' }],
+        ['ordinary', { kind: 'repeater', inputFrom: 'rear', outputTo: 'ordinary-out' }],
+        ['rear', { kind: 'lever', active: true }],
+        ['ordinary-out', { kind: 'wire' }],
+      ]
+      const makeBoard = (entries: typeof cells): CircuitBoard => ({
+        components: new Map(entries),
+        adjacency: new Map(entries.map(([key]) => [key, []])),
+      })
+      const initial: TimedCircuitState = {
+        power: new Map([['a', 15], ['b', 15]]),
+        repeaters: new Map([
+          ['a', { output: true, remainingTicks: 0 }],
+          ['b', { output: true, remainingTicks: 0 }],
+        ]),
+        buttons: new Map(),
+      }
+
+      const forward = ticks(makeBoard(cells), 2, initial)
+      const reverse = ticks(makeBoard([...cells].reverse()), 2, initial)
+      expect([...forward.power].sort()).toStrictEqual([...reverse.power].sort())
+      expect([...forward.repeaters].sort()).toStrictEqual([...reverse.repeaters].sort())
+      expect(forward.repeaters.get('a')?.output).toBe(true)
+      expect(forward.repeaters.get('b')?.output).toBe(true)
+      expect(forward.repeaters.get('ordinary')?.output).toBe(true)
+    }),
+  )
+
   it.effect('emits an exact button pulse, stops, and explicit retrigger restarts it', () =>
     Effect.sync(() => {
       const board = line([
