@@ -291,4 +291,84 @@ describe('RedstoneWorldRuntime', () => {
       }),
     ),
   )
+
+  it.effect('emits deterministic trigger and powered-component transitions', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        const circuit = (active: boolean) => snapshot('overworld', [
+          component(0, 'lever', active),
+          component(1, 'dispenser', undefined, 0, 0),
+          component(0, 'dropper', undefined, 1, 0),
+          component(0, 'note-block', undefined, 0, 1),
+          component(-1, 'powered-rail', undefined, 0, 0),
+          component(0, 'door', undefined, -1, 0),
+          component(0, 'trapdoor', undefined, 0, -1),
+        ])
+
+        yield* runtime.syncSnapshot(circuit(true))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toStrictEqual([
+          { dimension: 'overworld', position: { x: 0, y: 0, z: 1 }, kind: 'note-block' },
+          { dimension: 'overworld', position: { x: 0, y: 1, z: 0 }, kind: 'dropper' },
+          { dimension: 'overworld', position: { x: 1, y: 0, z: 0 }, kind: 'dispenser' },
+        ])
+        expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([
+          { dimension: 'overworld', position: { x: -1, y: 0, z: 0 }, kind: 'powered-rail', powered: true },
+          { dimension: 'overworld', position: { x: 0, y: -1, z: 0 }, kind: 'door', powered: true },
+          { dimension: 'overworld', position: { x: 0, y: 0, z: -1 }, kind: 'trapdoor', powered: true },
+        ])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toStrictEqual([])
+        expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([])
+
+        yield* runtime.syncSnapshot(circuit(false))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toStrictEqual([])
+        expect(yield* runtime.drainPoweredComponentTransitions).toHaveLength(3)
+
+        yield* runtime.syncSnapshot(circuit(true))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toHaveLength(3)
+      }),
+    ),
+  )
+
+  it.effect('does not conduct power through an actuator', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', true),
+          component(1, 'dropper'),
+          component(2, 'lamp'),
+        ]))
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toHaveLength(1)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+      }),
+    ),
+  )
+
+  it.effect('uses snapshot powered state as the restoration baseline', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', true),
+          { ...component(1, 'door'), powered: true },
+        ]))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([])
+
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', false),
+          { ...component(1, 'door'), powered: true },
+        ]))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([
+          { dimension: 'overworld', position: { x: 1, y: 0, z: 0 }, kind: 'door', powered: false },
+        ])
+      }),
+    ),
+  )
 })

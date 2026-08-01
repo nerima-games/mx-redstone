@@ -126,6 +126,11 @@ export type ComponentKind =
   | 'piston'
   | 'hopper'
   | 'dispenser'
+  | 'dropper'
+  | 'note-block'
+  | 'powered-rail'
+  | 'door'
+  | 'trapdoor'
 
 /**
  * One placed component.

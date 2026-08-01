@@ -33,11 +33,15 @@ export {
 } from './application/world-runtime'
 export type {
   LampTransition,
+  PoweredComponentKind,
+  PoweredComponentTransition,
   PoweredPistonTransition,
   RedstoneComponentSnapshot,
   RedstonePosition,
+  RedstoneTriggerEvent,
   RedstoneWorldRuntimeService,
   RedstoneWorldSnapshot,
+  TriggeredComponentKind,
 } from './application/world-runtime'
 
 export * from './domain/comparator'
