@@ -75,7 +75,7 @@ oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装�
 
 そのため禁止は **`scripts/check-dependency-whitelist.ts` 側で実装**している。
 コメント・文字列リテラル・正規表現リテラルの中身はマスクされるので誤検知しない。
-oxlint が該当ルールを実装したら oxlint.json 側へ移す。
+oxlint が該当ルールを実装したら .oxlintrc.json 側へ移す。
 
 固定レートのシミュレーションが壁時計を読んだ瞬間、それは再現しなくなる。
 このリポジトリではこの規則は「望ましい」ではなく**検証手法の前提条件**である
@@ -106,7 +106,7 @@ $ corepack prepare pnpm@11 --activate
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` を型検査 |
-| `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
+| `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | `pnpm lint:fix` | oxlint の自動修正 |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:watch` | vitest watch |

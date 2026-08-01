@@ -92,7 +92,7 @@ export type FrameServices = never
  *
  * Reproduced verbatim from plan.md §4.1, `interface` and all — hence the
  * `@typescript-eslint/consistent-type-definitions` exemption noted in
- * oxlint.json. Keeping the spec and the code character-identical is worth more
+ * .oxlintrc.json. Keeping the spec and the code character-identical is worth more
  * than local style consistency.
  */
 export interface StageRegistration {

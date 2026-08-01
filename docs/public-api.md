@@ -61,7 +61,7 @@ interface StageRegistration {
 
 `domain/frame-contract.ts:98-102` は plan.md からこの `interface` を字面ごと再掲している。
 oxlint は `@typescript-eslint/consistent-type-definitions: ["warn", "type"]` を設定しているが、
-この 1 箇所だけ `interface` のままなのは意図的で、`oxlint.json` のコメントに免除理由が書いてある
+この 1 箇所だけ `interface` のままなのは意図的で、`.oxlintrc.json` のコメントに免除理由が書いてある
 ——**仕様とコードが同じ字面であることのほうが、ローカルなスタイル統一より価値が高い**。
 
 ### 3-1. `after` は制約であって位置ではない
