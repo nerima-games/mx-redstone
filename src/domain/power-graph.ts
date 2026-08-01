@@ -275,6 +275,8 @@ export type CircuitBoard = {
    * geometry.
    */
   readonly adjacency: ReadonlyMap<PositionKey, ReadonlyArray<PositionKey>>
+  /** Optional runtime index. Literal boards fall back to a complete component scan. */
+  readonly componentKeysByKind?: ReadonlyMap<ComponentKind, ReadonlyArray<PositionKey>>
 }
 
 export type PowerMap = ReadonlyMap<PositionKey, PowerLevel>
@@ -289,7 +291,35 @@ const EXTERNAL_SOURCE_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>
   'target',
 ])
 
+const SOURCE_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
+  ...EXTERNAL_SOURCE_KINDS,
+  'torch',
+  'repeater',
+  'comparator',
+])
+
 export const powerAt = (map: PowerMap, key: PositionKey): PowerLevel => map.get(key) ?? 0
+
+export const componentEntriesForKinds = (
+  board: CircuitBoard,
+  kinds: ReadonlySet<ComponentKind>,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): Iterable<readonly [PositionKey, Component]> => {
+  if (board.componentKeysByKind === undefined) {
+    return [...board.components]
+      .map(([key, component]) => [key, overrides?.get(key) ?? component] as const)
+      .filter(([, component]) => kinds.has(component.kind))
+  }
+
+  const entries: Array<readonly [PositionKey, Component]> = []
+  for (const kind of kinds) {
+    for (const key of board.componentKeysByKind.get(kind) ?? []) {
+      const component = overrides?.get(key) ?? board.components.get(key)
+      if (component !== undefined) entries.push([key, component])
+    }
+  }
+  return entries
+}
 
 const neighboursOf = (board: CircuitBoard, key: PositionKey): ReadonlyArray<PositionKey> =>
   board.adjacency.get(key) ?? []
@@ -332,10 +362,14 @@ const neighboursOf = (board: CircuitBoard, key: PositionKey): ReadonlyArray<Posi
 const torchShouldEmit = (component: Component, inputPower: PowerLevel): boolean =>
   inputPower === 0 && component.active !== false
 
-export const sourcesOf = (board: CircuitBoard, previous: PowerMap): PowerMap => {
+export const sourcesOf = (
+  board: CircuitBoard,
+  previous: PowerMap,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): PowerMap => {
   const sources = new Map<PositionKey, PowerLevel>()
 
-  for (const [key, component] of board.components) {
+  for (const [key, component] of componentEntriesForKinds(board, SOURCE_KINDS, overrides)) {
     if (EXTERNAL_SOURCE_KINDS.has(component.kind)) {
       // The components whose truth is declared from outside. `emits` lets a
       // weighted plate report a count and a target report hit accuracy;
@@ -498,8 +532,12 @@ const CONDUCTS_POWER: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
  * Everything else — wire, lever, button — drives all of its edges, which is what
  * makes a wire a wire.
  */
-const conductsInto = (board: CircuitBoard, key: PositionKey): ReadonlyArray<PositionKey> => {
-  const component = board.components.get(key)
+const conductsInto = (
+  board: CircuitBoard,
+  key: PositionKey,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): ReadonlyArray<PositionKey> => {
+  const component = overrides?.get(key) ?? board.components.get(key)
   if (component === undefined || !CONDUCTS_POWER.has(component.kind)) {
     return []
   }
@@ -533,9 +571,15 @@ const conductsInto = (board: CircuitBoard, key: PositionKey): ReadonlyArray<Posi
  * A lamp's own entry in the returned map is a DECAYED level, so it is not the
  * right thing to test for litness — see `isLit`.
  */
-export const propagateTick = (board: CircuitBoard, previous: PowerMap): PowerMap => {
+export const propagateTick = (
+  board: CircuitBoard,
+  previous: PowerMap,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): PowerMap => {
   const power = new Map<PositionKey, PowerLevel>()
-  const sources = [...sourcesOf(board, previous)].sort(([, left], [, right]) => right - left)
+  const sources = [...sourcesOf(board, previous, overrides)].sort(
+    ([, left], [, right]) => right - left,
+  )
 
   const queue: Array<PositionKey> = []
   for (const [key, level] of sources) {
@@ -549,14 +593,14 @@ export const propagateTick = (board: CircuitBoard, previous: PowerMap): PowerMap
   // read would be `PositionKey | undefined` and would need an unreachable
   // `undefined` guard, i.e. a branch that can never be covered.
   for (const key of queue) {
-    const component = board.components.get(key)
+    const component = overrides?.get(key) ?? board.components.get(key)
     const outgoing = powerAt(power, key) - (component?.kind === 'wire' ? 1 : 0)
     if (outgoing <= 0) {
       continue
     }
 
-    for (const neighbour of conductsInto(board, key)) {
-      const neighbourKind = board.components.get(neighbour)?.kind
+    for (const neighbour of conductsInto(board, key, overrides)) {
+      const neighbourKind = (overrides?.get(neighbour) ?? board.components.get(neighbour))?.kind
       if (neighbourKind === undefined || !RECEIVES_POWER.has(neighbourKind)) {
         continue
       }
@@ -635,11 +679,7 @@ const DELAYED_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
  */
 export const settleTickLimitFor = (board: CircuitBoard): number => {
   let delayed = 0
-  for (const component of board.components.values()) {
-    if (DELAYED_KINDS.has(component.kind)) {
-      delayed += 1
-    }
-  }
+  for (const _entry of componentEntriesForKinds(board, DELAYED_KINDS)) delayed += 1
   return delayed + 2
 }
 

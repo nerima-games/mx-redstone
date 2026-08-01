@@ -161,10 +161,14 @@ export const circuitBoardFromSnapshots = (
 ): CircuitBoard => {
   const components = new Map<PositionKey, Component>()
   const adjacency = new Map<PositionKey, ReadonlyArray<PositionKey>>()
+  const componentKeysByKind = new Map<ComponentKind, Array<PositionKey>>()
 
   for (const [dimension, snapshot] of dimensions) {
     for (const [nodeId, component] of snapshot) {
       components.set(nodeId, componentAt(dimension, component))
+      const indexedKeys = componentKeysByKind.get(component.kind) ?? []
+      indexedKeys.push(nodeId)
+      componentKeysByKind.set(component.kind, indexedKeys)
       const neighbours: Array<PositionKey> = []
       for (const offset of FACE_OFFSETS) {
         const neighbour = redstoneNodeId(dimension, {
@@ -180,7 +184,7 @@ export const circuitBoardFromSnapshots = (
     }
   }
 
-  return { components, adjacency }
+  return { adjacency, componentKeysByKind, components }
 }
 
 export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.gen(function* () {

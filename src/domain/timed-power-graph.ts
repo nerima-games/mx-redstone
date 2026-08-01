@@ -1,13 +1,20 @@
-import type { PositionKey } from './position-key'
 import {
-  emptyPowerMap,
-  MAX_POWER_LEVEL,
-  powerAt,
-  propagateTick,
   type CircuitBoard,
   type Component,
+  MAX_POWER_LEVEL,
   type PowerMap,
+  componentEntriesForKinds,
+  emptyPowerMap,
+  powerAt,
+  propagateTick,
 } from './power-graph'
+import type { PositionKey } from './position-key'
+
+const TIMED_COMPONENT_KINDS: ReadonlySet<Component['kind']> = new Set([
+  'repeater',
+  'button',
+  'torch',
+])
 
 export const DEFAULT_BUTTON_PULSE_TICKS = 10
 export const TORCH_BURNOUT_TOGGLE_LIMIT = 8
@@ -137,9 +144,9 @@ export const advanceTimedCircuit = (
   const repeaters = new Map<PositionKey, RepeaterTimer>()
   const buttons = new Map<PositionKey, ButtonTimer>()
   const torches = new Map<PositionKey, TorchTimer>()
-  const components = new Map<PositionKey, Component>(board.components)
+  const components = new Map<PositionKey, Component>()
 
-  for (const [key, component] of board.components) {
+  for (const [key, component] of componentEntriesForKinds(board, TIMED_COMPONENT_KINDS)) {
     if (component.kind === 'repeater') {
       const requested =
         component.inputFrom !== undefined && powerAt(previous.power, component.inputFrom) > 0
@@ -180,7 +187,7 @@ export const advanceTimedCircuit = (
 
   return {
     buttons,
-    power: propagateTick({ ...board, components }, previous.power),
+    power: propagateTick(board, previous.power, components),
     repeaters,
     torches,
   }
