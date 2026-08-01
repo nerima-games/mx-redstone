@@ -28,7 +28,7 @@
  * is silent, which is why the scenario tests live in `test/power-graph.ts` and
  * assert exact levels.
  */
-import type { PositionKey } from '../../domain/position-key'
+import type { PositionKey } from '../../src/domain/position-key'
 import { keyOf, makePart, type Coord, type Facing, type Part, type PartKind } from './board'
 
 export type BuiltScenario = {

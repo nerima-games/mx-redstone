@@ -515,14 +515,14 @@ tick が壁時計と無関係だからである（[testing.md](./testing.md) §5
 oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装しておらず、
 `no-restricted-globals` は `oxlint --rules` の一覧に出るが実装されていない。
 3 ルールすべてを設定した状態でも `Date.now()` を含むファイルの診断が 0 件であることが
-0.12.0 で実測確認されている（`oxlint.json` の冒頭コメント、`scripts/check-dependency-whitelist.ts:43-49`）。
+0.12.0 で実測確認されている（`.oxlintrc.json` の冒頭コメント、`scripts/check-dependency-whitelist.ts:43-49`）。
 
 そのため禁止は `findBannedTimeSources`（`check-dependency-whitelist.ts:847-875`）にある。
 コメント・文字列リテラル・正規表現リテラルの中身は `maskSource` でマスクされるので誤検知しない。
 クロック Port の実装アダプタだけは実クロックを読む必要があるため、
 `mc-kernel-allow-time-source` コメントで除外できる。
 
-oxlint が該当ルールを実装したら `oxlint.json` 側へ移す。
+oxlint が該当ルールを実装したら `.oxlintrc.json` 側へ移す。
 
 **回帰テスト**: `test/check-dependency-whitelist.test.ts`
 `describe('§4.3: the clock is injected, never read from a global')`
@@ -578,7 +578,7 @@ kernel は 14 リポジトリからピン留めされるので、**間違った�
 > uncoverable branch sitting permanently in the report, which is exactly the kind of noise
 > that makes a coverage threshold something people learn to ignore.
 
-oxlint の `default-case` は `oxlint.json` で `restriction` カテゴリの一部として有効になっている。
+oxlint の `default-case` は `.oxlintrc.json` で `restriction` カテゴリの一部として有効になっている。
 閉じた union に対する網羅 `switch` に `default` を足すと、その節は**型として到達不能**になる。
 テストでは絶対に踏めないので、カバレッジレポートに永久に赤い分岐が 1 つ残る。
 

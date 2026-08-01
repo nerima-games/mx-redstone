@@ -52,7 +52,7 @@
  * above is the whole of the work.
  */
 import { Layer } from 'effect'
-import type { FrameServices } from '../domain/frame-contract'
+import type { FrameServices } from '../src/domain/frame-contract'
 
 /**
  * Everything a stage of this repository may assume is present when it runs.

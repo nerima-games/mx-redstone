@@ -36,8 +36,8 @@
  * (`stages/registration.ts:11-27`), and a preview that advanced circuits on a
  * wall clock would show a different circuit on a faster machine.
  */
-import type { BlockRef } from '../../domain/block-ref'
-import { OBSERVER_PULSE_TICKS, observeChanges, type Sightings } from '../../domain/observer'
+import type { BlockRef } from '../../src/domain/block-ref'
+import { OBSERVER_PULSE_TICKS, observeChanges, type Sightings } from '../../src/domain/observer'
 import {
   emptyPowerMap,
   isLit,
@@ -47,8 +47,8 @@ import {
   settleTickLimitFor,
   type CircuitBoard,
   type PowerMap,
-} from '../../domain/power-graph'
-import type { PositionKey } from '../../domain/position-key'
+} from '../../src/domain/power-graph'
+import type { PositionKey } from '../../src/domain/position-key'
 import {
   applyPistons,
   circuitBoardOf,

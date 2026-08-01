@@ -25,8 +25,8 @@
  * reads `process`, which is what lets `--once` produce a byte-identical frame
  * for the same circuit and the same tick.
  */
-import { isLit, MAX_POWER_LEVEL, powerAt } from '../../domain/power-graph'
-import type { PositionKey } from '../../domain/position-key'
+import { isLit, MAX_POWER_LEVEL, powerAt } from '../../src/domain/power-graph'
+import type { PositionKey } from '../../src/domain/position-key'
 import { mix, padEnd, padStart, type Rgb, type Style } from './ansi'
 import { coordOf, FACING_GLYPH, isGraphKind, keyOf, type Coord, type Part } from './board'
 import { boardOf, watchedCells, type Sandbox } from './sandbox'

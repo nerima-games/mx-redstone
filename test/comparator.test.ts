@@ -20,8 +20,8 @@ import {
   comparatorOutput,
   containerSignalStrength,
   type ContainerSlot,
-} from '../domain/comparator'
-import { MAX_POWER_LEVEL } from '../domain/signal-level'
+} from '../src/domain/comparator'
+import { MAX_POWER_LEVEL } from '../src/domain/signal-level'
 
 const LEVELS = Array.from({ length: MAX_POWER_LEVEL + 1 }, (_, level) => level)
 

@@ -76,38 +76,23 @@
     "no-sync": "warn",
 
     // Style
-    "array-bracket-spacing": "warn",
-    "block-spacing": "warn",
-    "brace-style": ["warn", "1tbs", { "allowSingleLine": true }],
-    "camelcase": "warn",
-    "comma-dangle": ["warn", "always-multiline"],
-    "comma-spacing": "warn",
-    "comma-style": "warn",
-    "computed-property-spacing": "warn",
-    "eol-last": "warn",
-    "func-call-spacing": "warn",
-    "indent": "off",
-    "key-spacing": "warn",
-    "keyword-spacing": "warn",
-    "linebreak-style": ["warn", "unix"],
-    "lines-between-class-members": "warn",
+    // NOTE on the pure-formatting rules previously listed here (array-bracket-spacing,
+    // block-spacing, brace-style, camelcase, comma-dangle, comma-spacing, comma-style,
+    // computed-property-spacing, eol-last, func-call-spacing, indent, key-spacing,
+    // keyword-spacing, linebreak-style, lines-between-class-members, no-mixed-spaces-and-tabs,
+    // no-new-object, no-tabs, no-trailing-spaces, no-whitespace-before-property,
+    // object-curly-spacing, one-var, operator-linebreak, padded-blocks, quote-props,
+    // semi-spacing, space-before-blocks, space-infix-ops, space-unary-ops, spaced-comment):
+    // this file was never actually loaded by oxlint before this fix (oxlint only
+    // auto-discovers `.oxlintrc.json`, not `oxlint.json`), so nobody noticed that oxlint
+    // 1.76.0 has removed all of these from its `eslint` plugin rule set entirely (verified
+    // empirically: `oxlint --rules --format=json` on 1.76.0 lists 847 rules total and none
+    // of the names above appear under any plugin/scope). Loading the config with any of
+    // them present is a hard parse error ("Rule 'x' not found in plugin 'eslint'"), not a
+    // warning, so they have been deleted rather than carried forward. There is still no
+    // prettier/biome/.editorconfig in this repo; formatting is presently unenforced.
     "no-array-method-this-argument": "warn",
     "no-bitwise": "warn",
-    "no-mixed-spaces-and-tabs": "error",
-    "no-new-object": "warn",
-    "no-tabs": "error",
-    "no-trailing-spaces": "warn",
-    "no-whitespace-before-property": "warn",
-    "object-curly-spacing": ["warn", "always"],
-    "one-var": ["warn", "never"],
-    "operator-linebreak": "warn",
-    "padded-blocks": ["warn", "never"],
-    "quote-props": ["warn", "as-needed"],
-    "semi-spacing": "warn",
-    "space-before-blocks": "warn",
-    "space-infix-ops": "warn",
-    "space-unary-ops": "warn",
-    "spaced-comment": "warn",
 
     // Restriction
     "default-case": "warn",
@@ -119,9 +104,23 @@
     "no-restricted-imports": [
       "warn",
       {
-        "name": "effect",
-        "message": "Please use named imports from 'effect' package",
-        "importNames": ["default"]
+        "paths": [
+          {
+            "name": "effect",
+            "message": "Please use named imports from 'effect' package",
+            "importNames": ["default"]
+          }
+        ],
+        "patterns": [
+          {
+            "regex": "^@nerima-games/(mx-gameplay|mx-ui|mx-multiplayer)(/.*)?$",
+            "message": "Tier3 experience modules do not depend on each other laterally (DEPENDENCY_POLICY.md §2). Talk through mc-sim or mc-worldgen instead."
+          },
+          {
+            "regex": "^@nerima-games/(mc-audio|mc-meshing|mc-noise|mc-physics|mc-save|mc-render|mc-playground-kit|mc-compose|mc-dev-meta)(/.*)?$",
+            "message": "mx-redstone (Tier3, DEPENDENCY_POLICY.md) may depend only on mc-sim, mc-worldgen, and mc-kernel (universally importable). mc-playground-kit may only ever be a devDependency, taken from test/ or scripts/, never from shipped src/."
+          }
+        ]
       }
     ],
     "prefer-template": "warn",
@@ -135,5 +134,5 @@
     "no-param-reassign": "off",
     "no-plusplus": "off"
   },
-  "ignore": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
+  "ignorePatterns": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
 }

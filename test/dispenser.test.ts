@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { dispenserEdges, type PowerEdgeMemory } from '../domain/dispenser'
+import { dispenserEdges, type PowerEdgeMemory } from '../src/domain/dispenser'
 
 const powered = (entries: ReadonlyArray<readonly [string, boolean]>): ReadonlyMap<string, boolean> =>
   new Map(entries)

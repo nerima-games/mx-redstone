@@ -15,10 +15,10 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import * as redstone from '../index'
-import { planPush } from '../domain/piston'
-import { propagateTick } from '../domain/power-graph'
-import { REDSTONE_STAGE_IDS } from '../stages/stage-ids'
+import * as redstone from '../src/index'
+import { planPush } from '../src/domain/piston'
+import { propagateTick } from '../src/domain/power-graph'
+import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 
 describe('public API surface', () => {
   it.effect('re-exports stage registration and the semantic world runtime port', () =>
