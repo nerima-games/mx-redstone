@@ -1,14 +1,15 @@
 # 公開 API
 
-## 1. 公開 API は stage 登録だけである
+## 1. 公開 API は stage 登録と意味的 runtime port である
 
 plan.md §3.12 は本リポジトリの公開 API を 1 行で書いている。
 
 > **主要な公開 API**: stage 登録のみ（電力グラフは内部実装）
 
-これは要約ではなく仕様である。**mc-compose が mx-redstone について知ってよいのは
-「`ReadonlyArray<StageRegistration>` を返す Effect が 1 つある」ことだけ**であり、
-`CircuitBoard` も `PowerMap` も `planPush` も、他リポジトリから名前で参照してはならない。
+電力グラフを内部実装とする制約は現在も変わらない。一方、stage が世界を読み書きするためには
+ホストとの境界が必要になった。そこで mc-compose が知ってよいものを、stage 登録に加えて
+`RedstoneWorldRuntime` の意味的 port に限定している。`CircuitBoard`、`PowerMap`、`planPush` は
+引き続き他リポジトリから名前で参照してはならない。
 
 `index.ts` はそれらを再エクスポートしている（`index.ts:30-33`）。矛盾ではない。
 理由は `index.ts:17-23` に書いてある:
@@ -60,7 +61,7 @@ interface StageRegistration {
 
 `domain/frame-contract.ts:98-102` は plan.md からこの `interface` を字面ごと再掲している。
 oxlint は `@typescript-eslint/consistent-type-definitions: ["warn", "type"]` を設定しているが、
-この 1 箇所だけ `interface` のままなのは意図的で、`oxlint.json` のコメントに免除理由が書いてある
+この 1 箇所だけ `interface` のままなのは意図的で、`.oxlintrc.json` のコメントに免除理由が書いてある
 ——**仕様とコードが同じ字面であることのほうが、ローカルなスタイル統一より価値が高い**。
 
 ### 3-1. `after` は制約であって位置ではない
@@ -140,8 +141,9 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 この境界があるから電力グラフ全体がワールドなしでテストできる。
 `the two registered stages split at the purity boundary: power, then effects` が順序と `after` を固定している。
 
-現状 `redstone:effects` の `run` は `Effect.void` である（`stages/registration.ts:162`）。
-親リポジトリが未公開で書き込み先が存在しないため。
+現状 `redstone:effects` はランプの on/off 変化を runtime port に蓄積する。
+ホストは stage 実行後に `drainLampTransitions` で変化を取り出し、世界へ適用する。
+ピストン、ディスペンサ、ホッパー等の世界更新は、書き込み先サービスの公開後に追加する。
 
 ## 5. `index.ts` の全エクスポート
 
@@ -184,13 +186,26 @@ mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしてお�
 
 | エクスポート | 区分 | 備考 |
 | --- | --- | --- |
-| `makeRedstoneStages` | **契約** | mc-compose が呼ぶ唯一のもの |
+| `makeRuntimeRedstoneStages` | **契約** | 同じ Effect context の `RedstoneWorldRuntime` と状態を共有する stage 登録 |
+| `makeRedstoneStages` | 内部（可視） | runtime port を持たない単体利用・互換経路 |
 | `redstoneStages` | 内部（可視） | 状態を外から渡す版。テストとプレビュー用 |
 | `makeRedstoneFrameState` | 内部（可視） | 再入可能な初期化（[design-notes.md](./design-notes.md) DN-RS-8） |
 | `RedstoneFrameState` | 内部（可視） | `Ref` 4 本の束。形は変わる |
 | `ticksForFrame` | 内部（可視） | 固定レート換算。純粋なのでテスト可能 |
 | `REDSTONE_TICK_SECS` / `MAX_TICKS_PER_FRAME` | 内部（可視） | チューニング値 |
 | `emptyCircuitBoard` | 内部（可視） | プレビューの初期盤面 |
+
+### `application/world-runtime.ts`
+
+| エクスポート | 区分 | 備考 |
+| --- | --- | --- |
+| `RedstoneWorldRuntime` | **契約** | Effect service tag |
+| `RedstoneWorldRuntimeLayer` | **契約** | runtime port の Layer |
+| `RedstoneWorldRuntimeService` | **契約** | dimension snapshot の置換とランプ変化の drain |
+| `RedstoneWorldSnapshot` / `RedstoneComponentSnapshot` / `RedstonePosition` | **契約** | compose/gameplay 型に依存しない意味型 |
+| `LampTransition` | **契約** | ホストが世界へ適用するランプの on/off 変化 |
+
+snapshot から `CircuitBoard` を構築する関数、内部 state、node ID はバレルへ公開しない。
 
 ### `stages/stage-ids.ts`
 
@@ -237,8 +252,8 @@ interface GameModule<ROut, E, RIn, RRegister = never> {
 ここには長らく「`RIn` を書けないので実装していない」と書いてあった。
 **診断は半分間違っていて、間違っていた側が重要だった。**
 
-Layer は障害ではなかった。plan.md §3.12 が「主要な公開API: stage登録のみ（電力グラフは内部実装）」と
-明言しているとおり、mx-redstone はサービスを公開しない。だから `layers` は空であり、最初から空だった。
+Layer は runtime port を提供する。電力グラフ自体は公開せず、ホストが同期する snapshot と
+ホストが適用する effect だけを意味型として公開する。
 
 本当の障害は **`frameStages` が配列だったこと**である。本リポジトリの stage は Effect の中で確保した
 `Ref`（盤面・電力マップ・tick アキュムレータ）から組み立てられるので、`ReadonlyArray` 型のフィールドに
@@ -248,15 +263,15 @@ Layer は障害ではなかった。plan.md §3.12 が「主要な公開API: sta
 （mc-kernel `docs/freeze-checklist.md` (b)）。
 
 ```typescript
-export const makeRedstoneStages: Effect.Effect<ReadonlyArray<StageRegistration>>
+export const makeRuntimeRedstoneStages:
+  Effect.Effect<ReadonlyArray<StageRegistration>>
 
-export const redstoneModule: GameModule<never, never, never> = {
-  layers: Layer.empty,
-  frameStages: makeRedstoneStages,
+export const redstoneModule: GameModule<RedstoneWorldRuntime, never, never, never> = {
+  layers: RedstoneWorldRuntimeLayer,
+  frameStages: makeRuntimeRedstoneStages,
 }
 ```
 
-`RIn` は `never` のままである。`redstone:effects` がピストンやランプを mc-sim 越しに書き始めるとき、
-それらのサービスは `frameStages` の中で — つまり `RRegister` パラメータで — 取得される。
-本リポジトリは mc-sim が供給しなければならないものを**構築**するのではなく、
-mc-sim が供給するものを**呼ぶ**だけだからである。
+`RIn` と `RRegister` は `never` のままである。ホストが module Layer と stage 登録を同じ Effect context で
+実行すれば runtime port を共有する。サービスを登録 context に提供しない旧ホストでは独立 state に
+フォールバックして起動互換性を保つが、snapshot 同期を利用するには同じ Layer を提供する必要がある。

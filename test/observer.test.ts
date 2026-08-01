@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { OBSERVER_PULSE_TICKS, observeChanges, type Sightings } from '../domain/observer'
+import { OBSERVER_PULSE_TICKS, observeChanges, type Sightings } from '../src/domain/observer'
 
 const seen = (entries: ReadonlyArray<readonly [string, string]>): Sightings => new Map(entries)
 

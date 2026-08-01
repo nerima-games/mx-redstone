@@ -23,6 +23,12 @@ plan.md §6 Step 3:
 > 界面が安定した（API ロック 4 週間無変更）リポジトリから GitHub Packages 等へ npm 公開 + changesets 運用に切り替え。
 > それまでは dev-meta workspace 統合で開発。
 
+**上記は plan.md 執筆時点の計画としての引用であり、現行の org 標準ではない。**
+「API ロック 4 週間無変更」という日数計測ベースの自動フリーズゲートは api-lock.md 自体の廃止と共に撤去され、
+1.0.0 への昇格は自動ゲートなしの maintainer 裁量判断に一本化されている(RELEASE_STANDARD.md §4)。
+「界面が安定してから npm 公開に切り替える」という判断のタイミング自体は変わらないが、
+その判定手段が変わった。
+
 plan.md §8 のリスク表も同じことを別角度から書いている。
 
 > **新規構築初期は全界面が高 churn** → npm 公開を遅らせ dev-meta workspace で開発。bump 連鎖を構造的に回避
@@ -93,7 +99,9 @@ mx-redstone は最後から 4 番目のグループにいる。前にあるも�
 | kernel の能力アクセサ | `domain/piston.ts` の `BlockCapabilityLookup` |
 | mc-sim / mc-worldgen のサービス呼び出し | 未実装（`redstone:effects` の `run` は `Effect.void`） |
 
-npm 公開・バージョン bump 運用は**界面安定（API ロック 4 週間無変更）まで開始しない**（plan.md §6 Step 0-2, Step 3）。
+npm 公開・バージョン bump 運用は**界面が実際に上位階層(mc-compose)に消費され、動作確認が完了するまで開始しない**。
+1.0.0 への昇格を含め、日数計測ベースの自動フリーズゲート(旧「API ロック 4 週間無変更」)は採用せず、
+maintainer(take)による裁量判断のみで行う(RELEASE_STANDARD.md §4.2)。
 それまでは `mc-dev-meta` の `workspace:*` 解決で開発する。
 
 ## 5. このリポジトリにおける「破壊的変更」とは何か

@@ -14,8 +14,8 @@ import {
   LIGHT_PLATE_CAPACITY,
   plateSignal,
   type PlateWeighing,
-} from '../domain/pressure-plate'
-import { MAX_POWER_LEVEL } from '../domain/signal-level'
+} from '../src/domain/pressure-plate'
+import { MAX_POWER_LEVEL } from '../src/domain/signal-level'
 
 const BINARY: PlateWeighing = { kind: 'binary' }
 const LIGHT: PlateWeighing = { kind: 'weighted', capacity: LIGHT_PLATE_CAPACITY }

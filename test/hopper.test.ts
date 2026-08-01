@@ -17,8 +17,8 @@ import {
   HOPPER_TRANSFER_PERIOD_TICKS,
   hopperTransferDue,
   isHopperLocked,
-} from '../domain/hopper'
-import { REDSTONE_TICK_SECS } from '../stages/registration'
+} from '../src/domain/hopper'
+import { REDSTONE_TICK_SECS } from '../src/stages/registration'
 
 describe('hopper locking — the one component power switches OFF', () => {
   it.effect('REGRESSION: a POWERED hopper is locked; this is the inverse of every other component', () =>

@@ -15,13 +15,13 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import * as redstone from '../index'
-import { planPush } from '../domain/piston'
-import { propagateTick } from '../domain/power-graph'
-import { REDSTONE_STAGE_IDS } from '../stages/stage-ids'
+import * as redstone from '../src/index'
+import { planPush } from '../src/domain/piston'
+import { propagateTick } from '../src/domain/power-graph'
+import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 
 describe('public API surface', () => {
-  it.effect('re-exports the stage registration contract — the only thing plan.md §3.12 makes public', () =>
+  it.effect('re-exports stage registration and the semantic world runtime port', () =>
     Effect.sync(() => {
       const contract = [
         'redstoneStages',
@@ -31,6 +31,9 @@ describe('public API surface', () => {
         // `stages/registration.ts` on why the array was the obstacle.
         'redstoneModule',
         'makeRedstoneFrameState',
+        'makeRuntimeRedstoneStages',
+        'RedstoneWorldRuntime',
+        'RedstoneWorldRuntimeLayer',
         'REDSTONE_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
       ]

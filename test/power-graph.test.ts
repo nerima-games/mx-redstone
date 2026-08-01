@@ -42,7 +42,7 @@ import {
   sourcesOf,
   type CircuitBoard,
   type Component,
-} from '../domain/power-graph'
+} from '../src/domain/power-graph'
 
 /**
  * Build a straight run: `cells[0]` — `cells[1]` — … Adjacency is undirected.

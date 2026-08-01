@@ -5,8 +5,8 @@
  *
  * mx-redstone is an EXPERIENCE MODULE: a verb (plan.md §2.3-1). It owns the rule
  * "power flows like this" — wire propagation, torches, levers, buttons,
- * repeaters, piston pushing — and owns no state. The blocks it reads and the
- * entities it shoves belong to mc-worldgen and mc-sim.
+ * repeaters, piston pushing — and owns only derived runtime state. The blocks
+ * it reads and the entities it shoves belong to mc-worldgen and mc-sim.
  *
  * ---------------------------------------------------------------------------
  * The public API is stage registration. Everything else is visible, not public.
@@ -26,6 +26,18 @@
  * a player is a write to mc-sim's entity state, observed later by whichever rule
  * cares — never a call into a sibling.
  */
+
+export {
+  RedstoneWorldRuntime,
+  RedstoneWorldRuntimeLayer,
+} from './application/world-runtime'
+export type {
+  LampTransition,
+  RedstoneComponentSnapshot,
+  RedstonePosition,
+  RedstoneWorldRuntimeService,
+  RedstoneWorldSnapshot,
+} from './application/world-runtime'
 
 export * from './domain/comparator'
 export * from './domain/dispenser'
