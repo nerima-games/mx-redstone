@@ -65,7 +65,7 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | 押されたブロックとプレイヤーの衝突解決 | `mc-physics`（**`mc-sim` 経由**） | 推移閉包禁止により mc-physics は直接 import できない |
 | 回路の永続化フォーマット | 現状スコープ外。必要になれば `mc-save` + `mc-sim` | [architecture.md](./architecture.md) §3-1 |
 | 落下ブロック・流体伝播・作物 | `mx-gameplay` | 体験モジュール間エッジはゼロ。観測は mc-sim / mc-worldgen 越しに行う |
-| スティッキーピストン・引き寄せ | 第一版のスコープ外（将来 mx-redstone） | 能力フラグが監査で確定していない。[design-notes.md](./design-notes.md) DN-RS-10 |
+| スライム／ハチミツによる隣接ブロック連結 | 対応する語彙・能力が mc-kernel に追加された後の mx-redstone | 現在は軸上の可動ブロック 1 個を引き戻す sticky 規則だけを実装し、未確定の連結能力は推測しない。[design-notes.md](./design-notes.md) DN-RS-10 |
 
 ### 2-1. 監査が「mx-redstone のもの」と名指ししたもの
 

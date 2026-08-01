@@ -251,6 +251,15 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 `PushOutcome` / `planPush` / `isPistonMovable` に加え、方向・伸縮状態を含む
 `PistonMovementPlan` / `planPistonTransition` / `validatePistonPlan` / `applyPistonPlan` を公開する。
 
+`planPistonTransition` は通常／スティッキーピストンの伸縮を計画する。伸長は最大 12 ブロックで、
+移動列は遠い側から順に並ぶ。スティッキー収縮は先端から 2 マス先の可動ブロック 1 個だけを
+1 マス先へ引き戻す。欠損セル、範囲外、移動不能ブロック、不正な移動列は拒否し、
+`applyPistonPlan` は検証済み plan を `PistonApplyPort.commit` の 1 回の atomic commit で適用する。
+runtime の powered transition は node ID 順で、観測した給電エッジごとに冪等である。
+
+スライム／ハチミツによる隣接ブロック連結は mc-kernel に対応する語彙・能力が無いため扱わない。
+ブロックに押されるエンティティの移動と衝突解決は mc-sim / mc-physics の責務である。
+
 `BlockCapabilityLookup` は kernel 公開時に kernel の能力アクセサへ差し替わる
 （[design-notes.md](./design-notes.md) DN-RS-1、[versioning.md](./versioning.md) §6）。
 

@@ -292,6 +292,55 @@ describe('RedstoneWorldRuntime', () => {
     ),
   )
 
+  it.effect('orders piston transitions by node id regardless of snapshot insertion order', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'piston', undefined, 0, 1),
+          component(0, 'piston', undefined, 0, -1),
+          component(0, 'lever', true),
+        ]))
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([
+          {
+            dimension: 'overworld', piston: { x: 0, y: 0, z: -1 },
+            facing: 'north', kind: 'normal', state: 'retracted', powered: true,
+          },
+          {
+            dimension: 'overworld', piston: { x: 0, y: 0, z: 1 },
+            facing: 'north', kind: 'normal', state: 'retracted', powered: true,
+          },
+        ])
+      }),
+    ),
+  )
+
+  it.effect('does not emit a false retraction after a failed extension leaves a stale snapshot', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        const circuit = (active: boolean) => snapshot('overworld', [
+          component(0, 'lever', active),
+          { ...component(1, 'piston'), pistonState: 'retracted' },
+        ])
+
+        yield* runtime.syncSnapshot(circuit(true))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toHaveLength(1)
+
+        yield* runtime.syncSnapshot(circuit(false))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([])
+
+        yield* runtime.syncSnapshot(circuit(true))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toMatchObject([{
+          state: 'retracted', powered: true,
+        }])
+      }),
+    ),
+  )
+
   it.effect('emits deterministic trigger and powered-component transitions', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {

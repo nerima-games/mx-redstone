@@ -280,7 +280,7 @@ export const collectPistonTransitions = (state: RedstoneWorldState): Effect.Effe
     const dimensions = yield* Ref.get(state.dimensions)
     const previous = yield* Ref.get(state.observedPistonStates)
     const current = new Map<PositionKey, PistonState>()
-    const changed: Array<PoweredPistonTransition> = []
+    const changed: Array<readonly [PositionKey, PoweredPistonTransition]> = []
 
     for (const [dimension, snapshot] of dimensions) {
       for (const [nodeId, component] of snapshot) {
@@ -288,23 +288,28 @@ export const collectPistonTransitions = (state: RedstoneWorldState): Effect.Effe
         const powered = isPowered(board, power, nodeId)
         const desired: PistonState = powered ? 'extended' : 'retracted'
         const observed = previous.get(nodeId) ?? component.pistonState ?? 'retracted'
+        const physicalState = component.pistonState ?? observed
         current.set(nodeId, desired)
-        if (observed !== desired) {
-          changed.push({
+        if (observed !== desired && physicalState !== desired) {
+          changed.push([nodeId, {
             dimension,
             piston: copyPosition(component.position),
             facing: component.pistonFacing ?? 'north',
             kind: component.pistonKind ?? 'normal',
-            state: observed,
+            state: physicalState,
             powered,
-          })
+          }])
         }
       }
     }
 
     yield* Ref.set(state.observedPistonStates, current)
     if (changed.length > 0) {
-      yield* Ref.update(state.pendingPistonTransitions, (pending) => [...pending, ...changed])
+      changed.sort(([left], [right]) => left.localeCompare(right))
+      yield* Ref.update(state.pendingPistonTransitions, (pending) => [
+        ...pending,
+        ...changed.map(([, transition]) => transition),
+      ])
     }
   })
 

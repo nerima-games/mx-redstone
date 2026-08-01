@@ -131,7 +131,11 @@ $ corepack prepare pnpm@11 --activate
 - **`RedstoneWorldRuntime` は dimension 単位の完全スナップショットを受け取る。**
   `redstone:power` が 6 近傍の回路盤を進め、`redstone:effects` がランプの on/off 変化だけを蓄積する。
   ホストは stage 実行後に `drainLampTransitions` と `drainPistonTransitions` を呼ぶ。
-  ピストン遷移は `planPistonTransition` で純粋に計画し、`applyPistonPlan` の単一 atomic commit で世界へ反映する。
+  ピストン遷移は node ID 順に、給電状態の変化ごとに一度だけ生成する。
+  `planPistonTransition` は通常／スティッキー両方の伸縮を純粋に計画し、最大 12 ブロックを遠い側から順に移動する。
+  スティッキー収縮は先端から 2 マス先の可動ブロック 1 個だけを 1 マス先へ引き戻す。
+  欠損セル、範囲外、移動不能ブロック、または不正な移動列は拒否し、`applyPistonPlan` の単一 atomic commit
+  以外では世界を変更しない。
   ボタン入力は `pressButton(dimension, position)` でキューへ積み、次の redstone tick から
   `pulseTicks`（既定 10 tick）だけ通電する。再入力は残り時間を設定値へ戻す。
   ピストン伸縮・ディスペンサ発射・ホッパー移送・オブザーバのパルスは、すべて mc-sim / mc-worldgen
@@ -163,8 +167,9 @@ $ corepack prepare pnpm@11 --activate
 - **ワイヤの到達距離はバニラ同様 15 マスである。** ソース隣接ワイヤが 15、以後 1 ずつ減衰し、
   15 個目が 1、16 個目が 0 になる。cycle や複数ソースでも最大レベル更新だけを採用するため、
   盤面の挿入順に依存せず有限に収束する。
-- **スティッキーピストンと引き寄せは未実装。** 工数ではなく、能力フラグが監査で確定していないためである。
-  推測したフラグは 14 リポジトリへ一度に配られる（[docs/design-notes.md](./docs/design-notes.md) DN-RS-10）。
+- **スティッキーピストンの軸上 1 ブロック引き寄せは実装済み。** スライム／ハチミツによる隣接ブロック連結は、
+  mc-kernel に対応する語彙・能力が無いため推測して実装しない。押されたエンティティの移動と衝突解決は
+  mc-sim / mc-physics の責務であり、このパッケージはブロック移動 plan だけを生成する。
 - **リピーターはダイオードである。** 背面から入り正面から出る。側面には出さず、自分の入力セルも駆動しない。
   トーチも取り付け先のセルを駆動しない。`Component` が `outputTo`（リピーターの出力）を持つのはこのためで、
   向きは kind の性質ではなく設置の性質だから述語では表現できない（DN-RS-12）。
@@ -181,8 +186,8 @@ $ corepack prepare pnpm@11 --activate
   **4 件を修正し、残る 3 件は現在の挙動を名指しするテストを置いた。**
   `--stats` の行は pin ではない（測るだけで期待値を記録しないので、直すと finding は静かに消える）。
   pin は `test/power-graph.test.ts` の側にある。
-- **ビルド／publish はまだない。** `exports` は TypeScript ソースを直接指しており、`noEmit: true` なので `dist` がない。
-  GitHub Packages への publish パイプラインは完成条件到達時に追加し、それまで `version` は `0.x` に留める。
+- **`dist` と自動 publish パイプラインはまだない。** `exports` は TypeScript ソースを直接指しており、
+  `noEmit: true` なので、検証済みのソースパッケージを GitHub Packages へ手動公開する。`version` は `0.x` に留める。
 - **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
   （`vitest.config.ts` にコメントとして置いてある）。
 

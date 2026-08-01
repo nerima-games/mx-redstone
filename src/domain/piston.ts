@@ -186,7 +186,7 @@ export type PistonMovementPlan = {
 }
 
 export type PistonPlanRefusal = {
-  readonly reason: 'collision' | 'duplicate' | 'immovable' | 'missing' | 'out-of-world' | 'too-long'
+  readonly reason: 'collision' | 'duplicate' | 'immovable' | 'invalid-transition' | 'missing' | 'out-of-world' | 'too-long'
   readonly position: PistonPosition
 }
 
@@ -304,8 +304,12 @@ export type PistonApplyPort<E = never> = {
   readonly commit: (plan: PistonMovementPlan) => Effect.Effect<void, E>
 }
 
-/** A plan has no duplicate cells and every move follows the piston's axis. */
+/** A plan has the same bounded, deterministic shape as the pure planner emits. */
 export const validatePistonPlan = (plan: PistonMovementPlan): PistonPlanRefusal | undefined => {
+  if (plan.fromState === plan.toState) {
+    return { reason: 'invalid-transition', position: plan.piston }
+  }
+
   const sources = new Set<string>()
   const targets = new Set<string>()
   for (const move of plan.moves) {
@@ -320,6 +324,36 @@ export const validatePistonPlan = (plan: PistonMovementPlan): PistonPlanRefusal 
     if (target !== positionKey(pistonPositionAt(move.from, plan.facing, direction))) {
       return { reason: 'collision', position: move.to }
     }
+  }
+
+  if (plan.toState === 'extended') {
+    if (plan.moves.length > PISTON_PUSH_LIMIT) {
+      return {
+        reason: 'too-long',
+        position: pistonPositionAt(plan.piston, plan.facing, PISTON_PUSH_LIMIT + 1),
+      }
+    }
+    for (const [index, move] of plan.moves.entries()) {
+      const expectedDistance = plan.moves.length - index
+      if (positionKey(move.from) !== positionKey(pistonPositionAt(plan.piston, plan.facing, expectedDistance))) {
+        return { reason: 'collision', position: move.from }
+      }
+    }
+    return undefined
+  }
+
+  if (plan.kind === 'normal' && plan.moves.length > 0) {
+    return { reason: 'invalid-transition', position: plan.moves[0]!.from }
+  }
+  if (plan.moves.length > 1) {
+    return { reason: 'invalid-transition', position: plan.moves[1]!.from }
+  }
+  const pull = plan.moves[0]
+  if (pull !== undefined && (
+    positionKey(pull.from) !== positionKey(pistonPositionAt(plan.piston, plan.facing, 2))
+    || positionKey(pull.to) !== positionKey(pistonPositionAt(plan.piston, plan.facing, 1))
+  )) {
+    return { reason: 'collision', position: pull.from }
   }
   return undefined
 }

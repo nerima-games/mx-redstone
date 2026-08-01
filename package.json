@@ -1,6 +1,6 @@
 {
   "name": "@nerima-games/mx-redstone",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "description": "Experience module for the nerima-games Minecraft-clone rebuild: the redstone mechanism — wire power propagation, torches, levers, buttons, repeaters and piston pushing.",
   "homepage": "https://github.com/nerima-games/mx-redstone#readme",

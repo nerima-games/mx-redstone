@@ -220,6 +220,55 @@ describe('positioned piston movement', () => {
     }),
   )
 
+  it.effect('rejects plans that bypass the push limit or deterministic movement shape', () =>
+    Effect.gen(function* () {
+      const piston = { x: 0, y: 0, z: 0 }
+      const moves = Array.from({ length: PISTON_PUSH_LIMIT + 1 }, (_, index) => {
+        const from = { x: PISTON_PUSH_LIMIT + 1 - index, y: 0, z: 0 }
+        return { block: `BLOCK_${String(index)}`, from, to: { ...from, x: from.x + 1 } }
+      })
+      let commits = 0
+      const result = yield* Effect.either(applyPistonPlan({
+        piston, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended', moves,
+      }, { commit: () => Effect.sync(() => { commits += 1 }) }))
+      expect(result).toMatchObject({
+        _tag: 'Left',
+        left: { reason: 'too-long', position: { x: PISTON_PUSH_LIMIT + 1, y: 0, z: 0 } },
+      })
+      expect(commits).toBe(0)
+
+      expect(validatePistonPlan({
+        piston, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended',
+        moves: [
+          { block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } },
+          { block: 'DIRT', from: { x: 2, y: 0, z: 0 }, to: { x: 3, y: 0, z: 0 } },
+        ],
+      })).toStrictEqual({ reason: 'collision', position: { x: 1, y: 0, z: 0 } })
+    }),
+  )
+
+  it.effect('accepts only the single two-to-one-cell pull shape for sticky retraction', () =>
+    Effect.sync(() => {
+      const base = {
+        piston: { x: 0, y: 0, z: 0 }, facing: 'east' as const, kind: 'sticky' as const,
+        fromState: 'extended' as const, toState: 'retracted' as const,
+      }
+      expect(validatePistonPlan({
+        ...base,
+        moves: [{ block: 'STONE', from: { x: 2, y: 0, z: 0 }, to: { x: 1, y: 0, z: 0 } }],
+      })).toBeUndefined()
+      expect(validatePistonPlan({
+        ...base,
+        moves: [{ block: 'STONE', from: { x: 3, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }],
+      })).toStrictEqual({ reason: 'collision', position: { x: 3, y: 0, z: 0 } })
+      expect(validatePistonPlan({
+        ...base,
+        kind: 'normal',
+        moves: [{ block: 'STONE', from: { x: 2, y: 0, z: 0 }, to: { x: 1, y: 0, z: 0 } }],
+      })).toStrictEqual({ reason: 'invalid-transition', position: { x: 2, y: 0, z: 0 } })
+    }),
+  )
+
   it.effect('covers retraction, refusal, validation, and successful atomic apply boundaries', () =>
     Effect.gen(function* () {
       const piston = { x: 0, y: 0, z: 0 }
