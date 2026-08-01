@@ -213,7 +213,7 @@ describe('stage behaviour', () => {
       yield* power?.run(DeltaTimeSecs(REDSTONE_TICK_SECS / 2)) ?? Effect.void
       const settled = yield* Ref.get(state.power)
       expect(powerAt(settled, 'lever')).toBe(MAX_POWER_LEVEL)
-      expect(powerAt(settled, 'w0')).toBe(14)
+      expect(powerAt(settled, 'w0')).toBe(MAX_POWER_LEVEL)
       expect(yield* Ref.get(state.tickCount)).toBe(1)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )

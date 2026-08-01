@@ -180,9 +180,8 @@ export type Component = {
    * The two read it differently and that difference is the comparator: a
    * repeater asks whether the rear carries anything and then emits full power,
    * while a comparator asks HOW MUCH and emits a function of it. A repeater is
-   * therefore immune to the level it receives and a comparator is not, which is
-   * the whole reason `MAX_POWER_LEVEL`'s recorded divergence from vanilla costs
-   * more here than anywhere else (DN-RS-13).
+   * therefore immune to the level it receives and a comparator is not. Source
+   * output must consequently enter adjacent dust unchanged (DN-RS-13).
    */
   readonly inputFrom?: PositionKey
   /**
@@ -511,8 +510,9 @@ const conductsInto = (board: CircuitBoard, key: PositionKey): ReadonlyArray<Posi
 /**
  * Advance the circuit by one redstone tick.
  *
- * Multi-source BFS with decay: sources start at their level and each conducting
- * step loses one. The queue is seeded in descending power order, so a cell is
+ * Multi-source BFS with decay: sources apply their level to the first receiving
+ * cell, and each subsequent wire step loses one. The queue is seeded in
+ * descending power order, so a cell is
  * reached at its final level first and the sweep is O(cells + edges) rather than
  * O(cells × sources).
  *
@@ -535,7 +535,8 @@ export const propagateTick = (board: CircuitBoard, previous: PowerMap): PowerMap
   // read would be `PositionKey | undefined` and would need an unreachable
   // `undefined` guard, i.e. a branch that can never be covered.
   for (const key of queue) {
-    const outgoing = powerAt(power, key) - 1
+    const component = board.components.get(key)
+    const outgoing = powerAt(power, key) - (component?.kind === 'wire' ? 1 : 0)
     if (outgoing <= 0) {
       continue
     }
