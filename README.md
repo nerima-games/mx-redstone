@@ -130,7 +130,8 @@ $ corepack prepare pnpm@11 --activate
   すべての消費者にとっての破壊的変更になるためである。
 - **`RedstoneWorldRuntime` は dimension 単位の完全スナップショットを受け取る。**
   `redstone:power` が 6 近傍の回路盤を進め、`redstone:effects` がランプの on/off 変化だけを蓄積する。
-  ホストは stage 実行後に `drainLampTransitions` を呼び、結果を世界へ反映する。
+  ホストは stage 実行後に `drainLampTransitions` と `drainPistonTransitions` を呼ぶ。
+  ピストン遷移は `planPistonTransition` で純粋に計画し、`applyPistonPlan` の単一 atomic commit で世界へ反映する。
   ボタン入力は `pressButton(dimension, position)` でキューへ積み、次の redstone tick から
   `pulseTicks`（既定 10 tick）だけ通電する。再入力は残り時間を設定値へ戻す。
   ピストン伸縮・ディスペンサ発射・ホッパー移送・オブザーバのパルスは、すべて mc-sim / mc-worldgen

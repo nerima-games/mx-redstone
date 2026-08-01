@@ -244,4 +244,51 @@ describe('RedstoneWorldRuntime', () => {
       }),
     ),
   )
+
+  it.effect('emits one powered piston transition per power edge', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', true),
+          {
+            ...component(1, 'piston'),
+            pistonFacing: 'east',
+            pistonKind: 'sticky',
+            pistonState: 'retracted',
+          },
+        ]))
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([{
+          dimension: 'overworld',
+          piston: { x: 1, y: 0, z: 0 },
+          facing: 'east',
+          kind: 'sticky',
+          state: 'retracted',
+          powered: true,
+        }])
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([])
+
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', false),
+          {
+            ...component(1, 'piston'),
+            pistonFacing: 'east',
+            pistonKind: 'sticky',
+            pistonState: 'extended',
+          },
+        ]))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([{
+          dimension: 'overworld',
+          piston: { x: 1, y: 0, z: 0 },
+          facing: 'east',
+          kind: 'sticky',
+          state: 'extended',
+          powered: false,
+        }])
+      }),
+    ),
+  )
 })

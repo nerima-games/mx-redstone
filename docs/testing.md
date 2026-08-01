@@ -58,7 +58,7 @@ CI（`.github/workflows/ci.yaml`）は同じ 4 つを個別ステップとして
 | `test/stage-registration.test.ts` | 19 | §2.3-1 / §2.3-3 の回帰、固定レート tick、stage 挙動、ミラーした `DeltaTimeSecs` ブランドが kernel と一致すること |
 | `test/check-dependency-whitelist.test.ts` | 19 | 依存ポリシー、体験モジュール間ゼロエッジ、推移閉包、kit の dev 専用、壁時計禁止、**他リポジトリの席から読んだ roster** |
 | `test/comparator.test.ts` | 13 | コンパレータの算術を**全数**（16 x 16 x 2）＋コンテナ充填率の写像 |
-| `test/piston.test.ts` | 9 | 能力フラグの構造的検査、押し出し計画 |
+| `test/piston.test.ts` | 14 | 能力フラグ、方向付き押し出し、sticky pull、atomic apply |
 | `test/observer.test.ts` | 9 | 変化検出、armed 規則、記憶が値であること（DN-RS-15） |
 | `test/dispenser.test.ts` | 7 | 立ち上がりエッジ、オブザーバとの非対称（DN-RS-15） |
 | `test/pressure-plate.test.ts` | 7 | スイッチ板と重量板の写像（DN-RS-17） |
@@ -217,8 +217,8 @@ porting.md §3-0 に旧値と新値の両方を残した——**§2-1 が plan.m
    `redstone-piston-world-effects.test.ts:165-181`（`does not push again while a piston remains extended`）と
    `redstone-simulation.test.ts:193-240`（`updatePistons`）は、ピストンが**通電レベルではなく
    立ち上がりエッジで**伸び、伸びたまま押し続けないことを主張している。
-   ここには対応するものが無い: `piston` は `ComponentKind` ですらなく、
-   `domain/piston.ts` は伸縮状態を持たない純粋な押し出し計画である。
+   `piston` component の state edge は runtime が `drainPistonTransitions` に一度だけ記録し、
+   `domain/piston.ts` が伸縮を純粋に計画する。
    **規則そのものは既にこのリポジトリにある**——`domain/dispenser.ts` の `dispenserEdges` が
    まさに「レベルではなくエッジ」であり、DN-RS-16 がディスペンサについて書いていることは
    ピストンにもそのまま当てはまる（どちらも受電も導通もしないアクチュエータである）。

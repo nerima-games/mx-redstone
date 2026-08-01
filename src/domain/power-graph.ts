@@ -122,6 +122,7 @@ export type ComponentKind =
   | 'comparator'
   | 'observer'
   | 'pressure-plate'
+  | 'piston'
   | 'hopper'
   | 'dispenser'
 
@@ -723,15 +724,15 @@ export const isLit = (board: CircuitBoard, power: PowerMap, key: PositionKey): b
 /**
  * Whether an actuator has power arriving at it.
  *
- * For the two components that act on power without carrying it — a dispenser
+ * For components that act on power without carrying it — a dispenser
  * fires on the rising edge of this, a hopper is LOCKED while it is true
  * (`domain/hopper.ts`; note the inversion) — and for `redstone:effects`, which
  * has to ask the same question about a piston.
  *
  * Deliberately NOT restricted by kind, unlike `isLit`. "Is power arriving here"
- * is a question about a cell, and a piston is not a `ComponentKind` at all
- * (`domain/piston.ts` moves the world; it does not carry power), so a kind check
- * would exclude the caller that needs it most.
+ * is a question about a cell. A piston is a `ComponentKind` so the runtime can
+ * detect powered transitions, but it remains non-conducting here; movement is
+ * planned separately by `domain/piston.ts`.
  */
 export const isPowered = (board: CircuitBoard, power: PowerMap, key: PositionKey): boolean =>
   drivenPowerAt(board, power, key) > 0

@@ -1,6 +1,7 @@
 import { Context, Effect, Layer, Ref } from 'effect'
 import type { ComparatorMode } from '../domain/comparator'
 import type { PositionKey } from '../domain/position-key'
+import type { PistonFacing, PistonKind, PistonState, PistonTransitionRequest } from '../domain/piston'
 import type {
   CircuitBoard,
   Component,
@@ -8,7 +9,7 @@ import type {
   PowerLevel,
   PowerMap,
 } from '../domain/power-graph'
-import { emptyPowerMap, isLit } from '../domain/power-graph'
+import { emptyPowerMap, isLit, isPowered } from '../domain/power-graph'
 import {
   emptyTimedCircuitState,
   type TimedCircuitState,
@@ -33,6 +34,9 @@ export type RedstoneComponentSnapshot = {
   readonly mode?: ComparatorMode
   readonly containerSignal?: PowerLevel
   readonly outputTo?: RedstonePosition
+  readonly pistonFacing?: PistonFacing
+  readonly pistonKind?: PistonKind
+  readonly pistonState?: PistonState
 }
 
 /** A complete replacement snapshot for one dimension. */
@@ -47,6 +51,10 @@ export type LampTransition = {
   readonly lit: boolean
 }
 
+export type PoweredPistonTransition = PistonTransitionRequest & {
+  readonly dimension: string
+}
+
 type DimensionSnapshot = ReadonlyMap<PositionKey, RedstoneComponentSnapshot>
 
 type ObservedLamp = LampTransition
@@ -59,6 +67,8 @@ export type RedstoneWorldState = {
   readonly pendingButtonPresses: Ref.Ref<ReadonlySet<PositionKey>>
   readonly observedLamps: Ref.Ref<ReadonlyMap<PositionKey, ObservedLamp>>
   readonly pendingLampTransitions: Ref.Ref<ReadonlyArray<LampTransition>>
+  readonly observedPistonStates: Ref.Ref<ReadonlyMap<PositionKey, PistonState>>
+  readonly pendingPistonTransitions: Ref.Ref<ReadonlyArray<PoweredPistonTransition>>
   readonly tickAccumulatorSecs: Ref.Ref<number>
   readonly tickCount: Ref.Ref<number>
 }
@@ -70,6 +80,8 @@ export type RedstoneWorldRuntimeService = {
   readonly pressButton: (dimension: string, position: RedstonePosition) => Effect.Effect<void>
   /** Atomically returns and clears transitions produced by `redstone:effects`. */
   readonly drainLampTransitions: Effect.Effect<ReadonlyArray<LampTransition>>
+  /** Atomically returns and clears power-driven requests for host planning/application. */
+  readonly drainPistonTransitions: Effect.Effect<ReadonlyArray<PoweredPistonTransition>>
 }
 
 export class RedstoneWorldRuntime extends Context.Tag(
@@ -153,6 +165,8 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
   const pendingButtonPresses = yield* Ref.make<ReadonlySet<PositionKey>>(new Set())
   const observedLamps = yield* Ref.make<ReadonlyMap<PositionKey, ObservedLamp>>(new Map())
   const pendingLampTransitions = yield* Ref.make<ReadonlyArray<LampTransition>>([])
+  const observedPistonStates = yield* Ref.make<ReadonlyMap<PositionKey, PistonState>>(new Map())
+  const pendingPistonTransitions = yield* Ref.make<ReadonlyArray<PoweredPistonTransition>>([])
   const tickAccumulatorSecs = yield* Ref.make(0)
   const tickCount = yield* Ref.make(0)
   return {
@@ -163,6 +177,8 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
     pendingButtonPresses,
     observedLamps,
     pendingLampTransitions,
+    observedPistonStates,
+    pendingPistonTransitions,
     tickAccumulatorSecs,
     tickCount,
   }
@@ -222,6 +238,42 @@ export const collectLampTransitions = (state: RedstoneWorldState): Effect.Effect
     }
   })
 
+/** Emits one request when a piston's desired powered state changes. */
+export const collectPistonTransitions = (state: RedstoneWorldState): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const board = yield* Ref.get(state.board)
+    const power = yield* Ref.get(state.power)
+    const dimensions = yield* Ref.get(state.dimensions)
+    const previous = yield* Ref.get(state.observedPistonStates)
+    const current = new Map<PositionKey, PistonState>()
+    const changed: Array<PoweredPistonTransition> = []
+
+    for (const [dimension, snapshot] of dimensions) {
+      for (const [nodeId, component] of snapshot) {
+        if (component.kind !== 'piston') continue
+        const powered = isPowered(board, power, nodeId)
+        const desired: PistonState = powered ? 'extended' : 'retracted'
+        const observed = previous.get(nodeId) ?? component.pistonState ?? 'retracted'
+        current.set(nodeId, desired)
+        if (observed !== desired) {
+          changed.push({
+            dimension,
+            piston: copyPosition(component.position),
+            facing: component.pistonFacing ?? 'north',
+            kind: component.pistonKind ?? 'normal',
+            state: observed,
+            powered,
+          })
+        }
+      }
+    }
+
+    yield* Ref.set(state.observedPistonStates, current)
+    if (changed.length > 0) {
+      yield* Ref.update(state.pendingPistonTransitions, (pending) => [...pending, ...changed])
+    }
+  })
+
 const runtimeStates = new WeakMap<RedstoneWorldRuntimeService, RedstoneWorldState>()
 
 export const redstoneWorldStateFor = (runtime: RedstoneWorldRuntimeService): RedstoneWorldState => {
@@ -243,6 +295,7 @@ export const makeRedstoneWorldRuntime: Effect.Effect<RedstoneWorldRuntimeService
         return next
       }),
     drainLampTransitions: Ref.getAndSet(state.pendingLampTransitions, []),
+    drainPistonTransitions: Ref.getAndSet(state.pendingPistonTransitions, []),
   }
   runtimeStates.set(runtime, state)
   return runtime

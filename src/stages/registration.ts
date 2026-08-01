@@ -28,6 +28,7 @@
 import { Effect, Option, Ref } from 'effect'
 import {
   collectLampTransitions,
+  collectPistonTransitions,
   makeRedstoneWorldState,
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
@@ -145,9 +146,9 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
   {
     id: REDSTONE_STAGE_IDS.effects,
     after: [REDSTONE_STAGE_IDS.power],
-    // Lamp transitions are recorded here after power settles for the frame.
-    // Piston extension/retraction (domain/piston.ts), dispensers, droppers,
-    // hoppers and observers will also be applied here through their host ports.
+    // Lamp and piston powered-state transitions are recorded after power settles.
+    // Piston movement, dispensers, droppers, hoppers and observers are applied
+    // through host ports; the runtime itself never mutates world blocks.
     // Keeping effects separate leaves the graph a pure function.
     //
     // The DECISIONS those effects need are now all written and tested:
@@ -172,7 +173,7 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
     // draining one and a dispenser drawing from one are all blocked on
     // `inventoryAt`. When this stage acquires mc-sim's services in
     // `frameStages`, that is the first thing to ask for.
-    run: () => collectLampTransitions(state),
+    run: () => Effect.all([collectLampTransitions(state), collectPistonTransitions(state)], { discard: true }),
   },
 ]
 

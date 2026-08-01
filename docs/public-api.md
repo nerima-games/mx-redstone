@@ -142,7 +142,7 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 `the two registered stages split at the purity boundary: power, then effects` が順序と `after` を固定している。
 
 現状 `redstone:effects` はランプの on/off 変化を runtime port に蓄積する。
-ホストは stage 実行後に `drainLampTransitions` で変化を取り出し、世界へ適用する。
+ホストは stage 実行後に `drainLampTransitions` と `drainPistonTransitions` で変化を取り出し、世界へ適用する。
 ボタンは `pressButton(dimension, position)` で次tickのパルスを予約する。`pulseTicks` の既定値は
 10で、パルス中の再入力は残り時間を設定値へ戻す。リピーターの `delayTicks` は1–4に丸められ、
 入力のONとOFFの双方へ同じtick遅延を適用する。
@@ -237,7 +237,8 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 ### `domain/piston.ts` — すべて内部（可視）
 
 `BlockRef` / `BlockCapabilityLookup` / `PISTON_PUSH_LIMIT` / `PushPlan` / `PushRefusal` /
-`PushOutcome` / `planPush` / `isPistonMovable`
+`PushOutcome` / `planPush` / `isPistonMovable` に加え、方向・伸縮状態を含む
+`PistonMovementPlan` / `planPistonTransition` / `validatePistonPlan` / `applyPistonPlan` を公開する。
 
 `BlockCapabilityLookup` は kernel 公開時に kernel の能力アクセサへ差し替わる
 （[design-notes.md](./design-notes.md) DN-RS-1、[versioning.md](./versioning.md) §6）。
