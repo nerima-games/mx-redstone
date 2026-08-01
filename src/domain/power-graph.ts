@@ -315,6 +315,9 @@ const neighboursOf = (board: CircuitBoard, key: PositionKey): ReadonlyArray<Posi
  * `test/power-graph.test.ts` names the current behaviour so that implementing
  * release upstream shows up as a failing test rather than a silent change.
  */
+const torchShouldEmit = (component: Component, inputPower: PowerLevel): boolean =>
+  inputPower === 0 && component.active !== false
+
 export const sourcesOf = (board: CircuitBoard, previous: PowerMap): PowerMap => {
   const sources = new Map<PositionKey, PowerLevel>()
 
@@ -339,7 +342,7 @@ export const sourcesOf = (board: CircuitBoard, previous: PowerMap): PowerMap => 
       // permanently, which is the standard way to write a constant source.
       const inputPower =
         component.invertedBy === undefined ? 0 : powerAt(previous, component.invertedBy)
-      if (inputPower === 0 && component.active !== false) {
+      if (torchShouldEmit(component, inputPower)) {
         sources.set(key, MAX_POWER_LEVEL)
       }
       continue

@@ -1,5 +1,11 @@
 # @nerima-games/mx-redstone
 
+## 0.2.1
+
+### Patch Changes
+
+- Remove lint regressions introduced by the torch burnout implementation without changing its behavior or API.
+
 ## 0.2.0
 
 ### Minor Changes

@@ -10,6 +10,10 @@ import {
   type TimedCircuitState,
 } from '../src/domain/timed-power-graph'
 
+const NEXT_TICK = 1
+const NO_TICKS = 0
+const TORCH_CLOCK_PHASES = 2
+
 const line = (cells: ReadonlyArray<readonly [string, Component]>): CircuitBoard => ({
   components: new Map(cells),
   adjacency: new Map(
@@ -25,6 +29,27 @@ const line = (cells: ReadonlyArray<readonly [string, Component]>): CircuitBoard 
 const ticks = (board: CircuitBoard, count: number, initial = emptyTimedCircuitState) => {
   let state: TimedCircuitState = initial
   for (let tick = 0; tick < count; tick += 1) state = advanceTimedCircuit(board, state)
+  return state
+}
+
+const burnOutSelfInvertingTorch = (): TimedCircuitState => {
+  const board: CircuitBoard = {
+    adjacency: new Map([['torch', []]]),
+    components: new Map([['torch', { invertedBy: 'torch', kind: 'torch' }]]),
+  }
+  let state = emptyTimedCircuitState
+  let offTransitions = NO_TICKS
+  let previousOutput = false
+
+  while (offTransitions < TORCH_BURNOUT_TOGGLE_LIMIT) {
+    state = advanceTimedCircuit(board, state)
+    const output = state.torches?.get('torch')?.output ?? false
+    if (previousOutput && !output) {
+      offTransitions += NEXT_TICK
+    }
+    previousOutput = output
+  }
+
   return state
 }
 
@@ -244,24 +269,13 @@ describe('timed redstone', () => {
         adjacency: new Map([['torch', []]]),
         components: new Map([['torch', { invertedBy: 'torch', kind: 'torch' }]]),
       }
-      let state = emptyTimedCircuitState
-      let offTransitions = 0
-      let previousOutput = false
-
-      while (offTransitions < TORCH_BURNOUT_TOGGLE_LIMIT) {
-        state = advanceTimedCircuit(board, state)
-        const output = state.torches?.get('torch')?.output ?? false
-        if (previousOutput && !output) {
-          offTransitions += 1
-        }
-        previousOutput = output
-      }
+      let state = burnOutSelfInvertingTorch()
 
       expect(state.torches?.get('torch')).toMatchObject({
         burnoutRemainingTicks: TORCH_BURNOUT_COOLDOWN_TICKS,
         output: false,
       })
-      state = ticks(board, TORCH_BURNOUT_COOLDOWN_TICKS - 1, state)
+      state = ticks(board, TORCH_BURNOUT_COOLDOWN_TICKS - NEXT_TICK, state)
       expect(state.torches?.get('torch')?.output).toBe(false)
       state = advanceTimedCircuit(board, state)
       expect(state.torches?.get('torch')?.output).toBe(true)
@@ -278,14 +292,14 @@ describe('timed redstone', () => {
         adjacency: new Map(entries.map(([key]) => [key, []])),
         components: new Map(entries),
       })
-      const count = TORCH_BURNOUT_TOGGLE_LIMIT * 2
+      const count = TORCH_BURNOUT_TOGGLE_LIMIT * TORCH_CLOCK_PHASES
       const forward = ticks(makeBoard(cells), count)
       const reverse = ticks(makeBoard([...cells].reverse()), count)
 
       expect([...forward.power].sort()).toStrictEqual([...reverse.power].sort())
       expect([...forward.torches ?? []].sort()).toStrictEqual([...reverse.torches ?? []].sort())
-      expect(forward.torches?.get('a')?.burnoutRemainingTicks).toBeGreaterThan(0)
-      expect(forward.torches?.get('b')?.burnoutRemainingTicks).toBeGreaterThan(0)
+      expect(forward.torches?.get('a')?.burnoutRemainingTicks).toBeGreaterThan(NO_TICKS)
+      expect(forward.torches?.get('b')?.burnoutRemainingTicks).toBeGreaterThan(NO_TICKS)
     }),
   )
 })

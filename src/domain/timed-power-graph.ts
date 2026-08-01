@@ -14,6 +14,9 @@ export const TORCH_BURNOUT_TOGGLE_LIMIT = 8
 export const TORCH_BURNOUT_WINDOW_TICKS = 30
 export const TORCH_BURNOUT_COOLDOWN_TICKS = 80
 
+const NO_TICKS = 0
+const NEXT_TICK = 1
+
 export type RepeaterTimer = {
   readonly output: boolean
   readonly pendingOutput?: boolean
@@ -99,19 +102,19 @@ const advanceTorch = (
   },
 ): TorchTimer => {
   const { previous, previousOutput, requestedOutput } = options
-  if ((previous?.burnoutRemainingTicks ?? 0) > 1) {
+  if ((previous?.burnoutRemainingTicks ?? NO_TICKS) > NEXT_TICK) {
     return {
-      burnoutRemainingTicks: (previous?.burnoutRemainingTicks ?? 0) - 1,
+      burnoutRemainingTicks: (previous?.burnoutRemainingTicks ?? NO_TICKS) - NEXT_TICK,
       output: false,
       recentOffTicks: [],
     }
   }
 
   const recentOffTicks = (previous?.recentOffTicks ?? [])
-    .map((age) => age + 1)
+    .map((age) => age + NEXT_TICK)
     .filter((age) => age < TORCH_BURNOUT_WINDOW_TICKS)
   if (previousOutput && !requestedOutput) {
-    recentOffTicks.push(0)
+    recentOffTicks.push(NO_TICKS)
   }
 
   if (recentOffTicks.length >= TORCH_BURNOUT_TOGGLE_LIMIT) {
@@ -163,14 +166,12 @@ export const advanceTimedCircuit = (
         inputActive: component.active === true,
       })
       components.set(key, { ...component, active })
-      continue
-    }
-
-    if (component.kind === 'torch') {
+    } else if (component.kind === 'torch') {
+      const invertedBy = component.invertedBy ?? null
       const requested =
-        component.invertedBy === undefined || powerAt(previous.power, component.invertedBy) === 0
+        invertedBy === null || powerAt(previous.power, invertedBy) === NO_TICKS
       const prior = previous.torches?.get(key)
-      const previousOutput = prior?.output ?? powerAt(previous.power, key) > 0
+      const previousOutput = prior?.output ?? powerAt(previous.power, key) > NO_TICKS
       const timer = advanceTorch({ previous: prior, previousOutput, requestedOutput: requested })
       torches.set(key, timer)
       components.set(key, { ...component, active: timer.output })
