@@ -138,6 +138,36 @@ describe('wire propagation', () => {
     }),
   )
 
+  it.effect('a wire cycle converges after decay, independent of insertion order', () =>
+    Effect.sync(() => {
+      const cells: ReadonlyArray<readonly [string, Component]> = [
+        ['lever', { kind: 'lever', active: true }],
+        ['w0', wire()],
+        ['w1', wire()],
+        ['w2', wire()],
+        ['w3', wire()],
+      ]
+      const edges: ReadonlyArray<readonly [string, string]> = [
+        ['lever', 'w0'],
+        ['w0', 'w1'],
+        ['w1', 'w2'],
+        ['w2', 'w3'],
+        ['w3', 'w0'],
+      ]
+
+      const forward = settle(graph(cells, edges))
+      const reverse = settle(graph([...cells].reverse(), [...edges].reverse()))
+
+      expect(forward.oscillating).toBe(false)
+      expect(forward.ticks).toBe(2)
+      expect([...forward.power].sort()).toStrictEqual([...reverse.power].sort())
+      expect(powerAt(forward.power, 'w0')).toBe(15)
+      expect(powerAt(forward.power, 'w1')).toBe(14)
+      expect(powerAt(forward.power, 'w2')).toBe(13)
+      expect(powerAt(forward.power, 'w3')).toBe(14)
+    }),
+  )
+
   it.effect('an inactive lever powers nothing at all', () =>
     Effect.sync(() => {
       const board = line([
@@ -1345,13 +1375,13 @@ describe('pressure plates — a lever thrown by whoever stands on it', () => {
   )
 })
 
-describe('hoppers and dispensers — actuators, which conduct nothing', () => {
+describe('actuators, which conduct nothing', () => {
   it.effect('REGRESSION: power stops dead at a hopper, so a filter cannot weld the line feeding it to the line beyond', () =>
     Effect.sync(() => {
       // The lamp's failure (DN-RS-5) in a component players deliberately put IN
       // a circuit. A hopper is in neither `RECEIVES_POWER` nor `CONDUCTS_POWER`,
       // which makes it exactly as transparent to power as an empty cell.
-      for (const kind of ['hopper', 'dispenser'] as const) {
+      for (const kind of ['hopper', 'dispenser', 'piston'] as const) {
         const board = line([
           ['lever', { kind: 'lever', active: true }],
           ['w0', wire()],
