@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Ref } from 'effect'
 import { containerSignalStrength, type ComparatorMode, type ContainerSlot } from '../domain/comparator'
+import { hopperTransferDue } from '../domain/hopper'
 import type { PositionKey } from '../domain/position-key'
 import type { PistonFacing, PistonKind, PistonState, PistonTransitionRequest } from '../domain/piston'
 import type {
@@ -65,6 +66,11 @@ export type RedstoneTriggerEvent = {
   readonly kind: TriggeredComponentKind
 }
 
+export type HopperTransferEvent = {
+  readonly dimension: string
+  readonly position: RedstonePosition
+}
+
 export type PoweredComponentKind = 'powered-rail' | 'door' | 'trapdoor'
 
 export type PoweredComponentTransition = {
@@ -90,6 +96,8 @@ export type RedstoneWorldState = {
   readonly pendingPistonTransitions: Ref.Ref<ReadonlyArray<PoweredPistonTransition>>
   readonly observedTriggerPower: Ref.Ref<ReadonlyMap<PositionKey, boolean>>
   readonly pendingTriggerEvents: Ref.Ref<ReadonlyArray<RedstoneTriggerEvent>>
+  readonly hopperTicksSinceTransfer: Ref.Ref<ReadonlyMap<PositionKey, number>>
+  readonly pendingHopperTransferEvents: Ref.Ref<ReadonlyArray<HopperTransferEvent>>
   readonly observedPoweredComponents: Ref.Ref<ReadonlyMap<PositionKey, boolean>>
   readonly pendingPoweredComponentTransitions: Ref.Ref<ReadonlyArray<PoweredComponentTransition>>
   readonly tickAccumulatorSecs: Ref.Ref<number>
@@ -107,6 +115,8 @@ export type RedstoneWorldRuntimeService = {
   readonly drainPistonTransitions: Effect.Effect<ReadonlyArray<PoweredPistonTransition>>
   /** Returns rising-edge actions for dispensers, droppers, and note blocks. */
   readonly drainTriggerEvents: Effect.Effect<ReadonlyArray<RedstoneTriggerEvent>>
+  /** Returns due, unlocked hopper transfer requests for host application. */
+  readonly drainHopperTransferEvents: Effect.Effect<ReadonlyArray<HopperTransferEvent>>
   /** Returns power-state changes for rails, doors, and trapdoors. */
   readonly drainPoweredComponentTransitions: Effect.Effect<ReadonlyArray<PoweredComponentTransition>>
 }
@@ -205,6 +215,8 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
   const pendingPistonTransitions = yield* Ref.make<ReadonlyArray<PoweredPistonTransition>>([])
   const observedTriggerPower = yield* Ref.make<ReadonlyMap<PositionKey, boolean>>(new Map())
   const pendingTriggerEvents = yield* Ref.make<ReadonlyArray<RedstoneTriggerEvent>>([])
+  const hopperTicksSinceTransfer = yield* Ref.make<ReadonlyMap<PositionKey, number>>(new Map())
+  const pendingHopperTransferEvents = yield* Ref.make<ReadonlyArray<HopperTransferEvent>>([])
   const observedPoweredComponents = yield* Ref.make<ReadonlyMap<PositionKey, boolean>>(new Map())
   const pendingPoweredComponentTransitions = yield* Ref.make<ReadonlyArray<PoweredComponentTransition>>([])
   const tickAccumulatorSecs = yield* Ref.make(0)
@@ -221,6 +233,8 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
     pendingPistonTransitions,
     observedTriggerPower,
     pendingTriggerEvents,
+    hopperTicksSinceTransfer,
+    pendingHopperTransferEvents,
     observedPoweredComponents,
     pendingPoweredComponentTransitions,
     tickAccumulatorSecs,
@@ -361,6 +375,42 @@ export const collectTriggerEvents = (state: RedstoneWorldState): Effect.Effect<v
     }
   })
 
+/** Emits due, unlocked hopper requests without acquiring inventory ownership. */
+export const collectHopperTransferEvents = (
+  state: RedstoneWorldState,
+  ticks: number,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const board = yield* Ref.get(state.board)
+    const power = yield* Ref.get(state.power)
+    const dimensions = yield* Ref.get(state.dimensions)
+    const previous = yield* Ref.get(state.hopperTicksSinceTransfer)
+    const current = new Map<PositionKey, number>()
+    const due: Array<[PositionKey, HopperTransferEvent]> = []
+
+    for (const [dimension, snapshot] of dimensions) {
+      for (const [nodeId, component] of snapshot) {
+        if (component.kind !== 'hopper') continue
+        const ticksSinceTransfer = (previous.get(nodeId) ?? 0) + ticks
+        if (hopperTransferDue({ powered: isPowered(board, power, nodeId), ticksSinceTransfer })) {
+          current.set(nodeId, 0)
+          due.push([nodeId, { dimension, position: copyPosition(component.position) }])
+        } else {
+          current.set(nodeId, ticksSinceTransfer)
+        }
+      }
+    }
+
+    due.sort(([left], [right]) => left.localeCompare(right))
+    yield* Ref.set(state.hopperTicksSinceTransfer, current)
+    if (due.length > 0) {
+      yield* Ref.update(state.pendingHopperTransferEvents, (pending) => [
+        ...pending,
+        ...due.map(([, event]) => event),
+      ])
+    }
+  })
+
 /** Emits deterministic state transitions for continuously powered components. */
 export const collectPoweredComponentTransitions = (state: RedstoneWorldState): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -421,6 +471,7 @@ export const makeRedstoneWorldRuntime: Effect.Effect<RedstoneWorldRuntimeService
     drainLampTransitions: Ref.getAndSet(state.pendingLampTransitions, []),
     drainPistonTransitions: Ref.getAndSet(state.pendingPistonTransitions, []),
     drainTriggerEvents: Ref.getAndSet(state.pendingTriggerEvents, []),
+    drainHopperTransferEvents: Ref.getAndSet(state.pendingHopperTransferEvents, []),
     drainPoweredComponentTransitions: Ref.getAndSet(state.pendingPoweredComponentTransitions, []),
   }
   runtimeStates.set(runtime, state)

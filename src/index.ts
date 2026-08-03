@@ -33,6 +33,7 @@ export {
 } from './application/world-runtime'
 export type {
   LampTransition,
+  HopperTransferEvent,
   PoweredComponentKind,
   PoweredComponentTransition,
   PoweredPistonTransition,

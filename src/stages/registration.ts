@@ -28,6 +28,7 @@
 import { Effect, Option, Ref } from 'effect'
 import {
   collectLampTransitions,
+  collectHopperTransferEvents,
   collectPistonTransitions,
   collectPoweredComponentTransitions,
   collectTriggerEvents,
@@ -142,6 +143,7 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
         }
         yield* Ref.set(state.timedCircuit, next)
         yield* Ref.set(state.power, next.power)
+        yield* collectHopperTransferEvents(state, ticks)
         yield* Ref.update(state.tickCount, (count) => count + ticks)
       }),
   },
@@ -163,17 +165,8 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
     // functions beside them, and this stage is built from per-call `Ref`s for
     // the reason DN-RS-8 gives.
     //
-    // What is missing is not effort, it is six named things that do not exist:
-    // `InventoryServiceApi.inventoryAt(position)`, a per-item `maxStackSize`,
-    // `EntityManagerApi.entitiesWithin(bounds)`, an entity extent, kernel's
-    // `Position`, and an owner for the dropped-item `behaviour` payload that is
-    // not a sibling experience module. docs/design-notes.md DN-RS-17 has the
-    // table, with the file and line where each one is absent.
-    //
-    // Three of the six are ONE addition: a comparator reading a chest, a hopper
-    // draining one and a dispenser drawing from one are all blocked on
-    // `inventoryAt`. When this stage acquires mc-sim's services in
-    // `frameStages`, that is the first thing to ask for.
+    // Hopper cadence is recorded in the power stage. The host drains it through
+    // the runtime and applies inventory changes via its own typed boundary.
     run: () => Effect.all([
       collectLampTransitions(state),
       collectPistonTransitions(state),

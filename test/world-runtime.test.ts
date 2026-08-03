@@ -414,6 +414,25 @@ describe('RedstoneWorldRuntime', () => {
     ),
   )
 
+  it.effect('emits an unlocked hopper request once per four redstone ticks', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [component(0, 'hopper')]))
+
+        for (let tick = 0; tick < 3; tick += 1) {
+          yield* runFrame(stages)
+          expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+        }
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
+          { dimension: 'overworld', position: { x: 0, y: 0, z: 0 } },
+        ])
+        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+      }),
+    ),
+  )
+
   it.effect('uses snapshot powered state as the restoration baseline', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {
