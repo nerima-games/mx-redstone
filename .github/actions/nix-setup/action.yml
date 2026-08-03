@@ -1,0 +1,71 @@
+name: Set up Nix
+description: >-
+  Install Nix (Determinate Systems installer) and, when a cache name is
+  provided, configure the Cachix binary cache. Pushes to the cache only on
+  non-pull_request events that carry an auth token; every other run, including
+  fork pull requests, is pull-only.
+
+# Copy this directory to <repo>/.github/actions/nix-setup/ verbatim.
+# It is the single place where the nix-installer and cachix-action SHAs are
+# pinned; bumping them here bumps every workflow in the repository. Mirrors
+# nerima-lisp/.github/templates/actions/nix-setup — nerima-games uses ONE
+# shared cache (`takeokunn-nerima-games`, see private-terraform's
+# projects/cachix/caches.tf and projects/github/repos_nerima_games.tf) across
+# all 16 repos rather than nerima-lisp's one-cache-per-repo convention,
+# because every repo's devShell is nixpkgs-only
+# (nodejs_24/corepack_24/typescript-language-server/oxlint, no
+# repository-specific build output).
+
+# NOTE: `actions/checkout` intentionally lives in the caller, not here: a
+# local composite action cannot check the repository out, because its own
+# action.yml is not on disk until after checkout has run.
+
+inputs:
+  cachix-cache:
+    description: Cachix cache name. When empty, Cachix is not configured at all.
+    required: false
+    default: ""
+  cachix-auth-token:
+    description: >-
+      Cachix auth token (pass secrets.CACHIX_AUTH_TOKEN). When empty — or on
+      pull_request events — the cache is configured pull-only so untrusted runs
+      can never push.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+    - name: Resolve Cachix mode
+      id: cachix-mode
+      shell: bash
+      env:
+        CACHIX_AUTH_TOKEN: ${{ inputs.cachix-auth-token }}
+        CACHIX_CACHE: ${{ inputs.cachix-cache }}
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        set -euo pipefail
+        push=false
+        if [[ -n "$CACHIX_AUTH_TOKEN" && "$EVENT_NAME" != "pull_request" ]]; then
+          push=true
+        fi
+        printf 'push=%s\n' "$push" >> "$GITHUB_OUTPUT"
+        if [[ -z "$CACHIX_CACHE" ]]; then
+          echo "::warning::CACHIX_CACHE is unset; building without a binary cache"
+        fi
+
+    - name: Configure Cachix (pull-only)
+      if: ${{ inputs.cachix-cache != '' && steps.cachix-mode.outputs.push != 'true' }}
+      uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      with:
+        name: ${{ inputs.cachix-cache }}
+        skipPush: true
+
+    - name: Configure Cachix (push-enabled)
+      if: ${{ inputs.cachix-cache != '' && steps.cachix-mode.outputs.push == 'true' }}
+      uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      with:
+        name: ${{ inputs.cachix-cache }}
+        authToken: ${{ inputs.cachix-auth-token }}

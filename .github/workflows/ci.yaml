@@ -45,8 +45,19 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
+      # oxlint is provided by the Nix devShell (flake.nix), not a package.json
+      # devDependency — see flake.nix's comment on why. Installing Nix just for
+      # this one step is the org-wide trade-off: one pinned oxlint version
+      # instead of 16 repos each independently drifting on their own
+      # npm-resolved version.
+      - name: Set up Nix
+        uses: ./.github/actions/nix-setup
+        with:
+          cachix-cache: ${{ vars.CACHIX_CACHE }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       - name: Lint
-        run: pnpm lint
+        run: nix develop --command pnpm lint
 
       - name: Test
         run: pnpm test

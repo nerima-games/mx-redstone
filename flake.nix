@@ -31,11 +31,18 @@
           # from corepack rather than nixpkgs so that the version is decided by
           # the `packageManager` field in package.json — one source of truth
           # instead of two that can drift.
+          #
+          # oxlint is the opposite case: it is NOT a package.json devDependency.
+          # It used to be, and every repo in the org independently drifted onto
+          # a different version without anyone noticing. A single pinned
+          # Nix-provided oxlint is now the one source of truth instead of 16
+          # independently-drifting npm pins.
           default = pkgs.mkShell {
             packages = [
               pkgs.nodejs_24
               pkgs.corepack_24
               pkgs.typescript-language-server
+              pkgs.oxlint
             ];
 
             shellHook = ''
