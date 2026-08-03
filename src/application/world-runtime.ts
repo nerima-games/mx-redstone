@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Ref } from 'effect'
-import type { ComparatorMode } from '../domain/comparator'
+import { containerSignalStrength, type ComparatorMode, type ContainerSlot } from '../domain/comparator'
 import type { PositionKey } from '../domain/position-key'
 import type { PistonFacing, PistonKind, PistonState, PistonTransitionRequest } from '../domain/piston'
 import type {
@@ -33,6 +33,7 @@ export type RedstoneComponentSnapshot = {
   readonly sideInputs?: ReadonlyArray<RedstonePosition>
   readonly mode?: ComparatorMode
   readonly containerSignal?: PowerLevel
+  readonly containerSlots?: ReadonlyArray<ContainerSlot>
   readonly outputTo?: RedstonePosition
   readonly pistonFacing?: PistonFacing
   readonly pistonKind?: PistonKind
@@ -123,7 +124,11 @@ export const redstoneNodeId = (dimension: string, position: RedstonePosition): P
 const componentAt = (
   dimension: string,
   component: RedstoneComponentSnapshot,
-): Component => ({
+): Component => {
+  const containerSignal = component.containerSignal ?? (
+    component.containerSlots === undefined ? undefined : containerSignalStrength(component.containerSlots)
+  )
+  return {
   kind: component.kind,
   ...(component.active === undefined ? {} : { active: component.active }),
   ...(component.emits === undefined ? {} : { emits: component.emits }),
@@ -139,13 +144,14 @@ const componentAt = (
     ? {}
     : { sideInputs: component.sideInputs.map((position) => redstoneNodeId(dimension, position)) }),
   ...(component.mode === undefined ? {} : { mode: component.mode }),
-  ...(component.containerSignal === undefined
+  ...(containerSignal === undefined
     ? {}
-    : { containerSignal: component.containerSignal }),
+    : { containerSignal }),
   ...(component.outputTo === undefined
     ? {}
     : { outputTo: redstoneNodeId(dimension, component.outputTo) }),
-})
+  }
+}
 
 const FACE_OFFSETS: ReadonlyArray<RedstonePosition> = [
   { x: 1, y: 0, z: 0 },

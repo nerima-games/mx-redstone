@@ -62,6 +62,21 @@ const runtimeProgram = <A>(
   }).pipe(Effect.provide(RedstoneWorldRuntimeLayer))
 
 describe('RedstoneWorldRuntime', () => {
+  it.effect('derives comparator container signal from typed slot readings', () =>
+    runtimeProgram((runtime) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [{
+          ...component(0, 'comparator'),
+          containerSlots: [{ count: 32, maxStack: 64 }],
+        }]))
+
+        const board = yield* Ref.get(redstoneWorldStateFor(runtime).board)
+        const comparator = board.components.get(redstoneNodeId('overworld', { x: 0, y: 0, z: 0 }))
+        expect(comparator).toMatchObject({ containerSignal: 8 })
+      }),
+    ),
+  )
+
   it.effect('builds stable six-face topology without connecting dimensions or diagonals', () =>
     runtimeProgram((runtime) =>
       Effect.gen(function* () {
