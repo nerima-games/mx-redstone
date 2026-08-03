@@ -142,7 +142,10 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 `the two registered stages split at the purity boundary: power, then effects` が順序と `after` を固定している。
 
 現状 `redstone:effects` はランプの on/off 変化を runtime port に蓄積する。
-ホストは stage 実行後に `drainLampTransitions` で変化を取り出し、世界へ適用する。
+ホストは stage 実行後に `drainLampTransitions` と `drainPistonTransitions` で変化を取り出し、世界へ適用する。
+ボタンは `pressButton(dimension, position)` で次tickのパルスを予約する。`pulseTicks` の既定値は
+10で、パルス中の再入力は残り時間を設定値へ戻す。リピーターの `delayTicks` は1–4に丸められ、
+入力のONとOFFの双方へ同じtick遅延を適用する。
 ピストン、ディスペンサ、ホッパー等の世界更新は、書き込み先サービスの公開後に追加する。
 
 ## 5. `index.ts` の全エクスポート
@@ -201,7 +204,7 @@ mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしてお�
 | --- | --- | --- |
 | `RedstoneWorldRuntime` | **契約** | Effect service tag |
 | `RedstoneWorldRuntimeLayer` | **契約** | runtime port の Layer |
-| `RedstoneWorldRuntimeService` | **契約** | dimension snapshot の置換とランプ変化の drain |
+| `RedstoneWorldRuntimeService` | **契約** | dimension snapshot の置換、ボタン入力、ランプ変化の drain |
 | `RedstoneWorldSnapshot` / `RedstoneComponentSnapshot` / `RedstonePosition` | **契約** | compose/gameplay 型に依存しない意味型 |
 | `LampTransition` | **契約** | ホストが世界へ適用するランプの on/off 変化 |
 
@@ -223,10 +226,39 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 
 1 つも契約ではない（§2）。
 
+### `domain/timed-power-graph.ts` — すべて内部（可視）
+
+`DEFAULT_BUTTON_PULSE_TICKS` / `TORCH_BURNOUT_TOGGLE_LIMIT` / `TORCH_BURNOUT_WINDOW_TICKS` /
+`TORCH_BURNOUT_COOLDOWN_TICKS` / `RepeaterTimer` / `ButtonTimer` / `TorchTimer` / `TimedCircuitState` /
+`emptyTimedCircuitState` / `advanceTimedCircuit`
+
+`propagateTick` の互換契約を変えずに、tickをまたぐ遅延とパルスを値として保持するAPIである。
+同じ盤面・状態・押下集合には同じ次状態を返し、壁時計や反復順序を参照しない。
+リピーターの `sideInputs` は前tickの電力を読み、いずれかが通電中なら現在出力を保持する。
+ロック中の未確定遷移は破棄し、解除後は背面入力を設定遅延の先頭から評価し直す。
+トーチは30 tick内の8回目の消灯でburnoutし、80 tick出力を停止してから再評価する。
+
+### `domain/target-block.ts` — すべて内部（可視）
+
+`TargetHit` / `targetSignal`
+
+ターゲット面の正規化座標を入力し、中心からの Chebyshev 距離を 1–15 の信号強度へ写像する純粋規則である。
+命中なしは 0、中心は 15、辺と角は 1 とし、範囲外座標は面の境界へ clamp する。
+
 ### `domain/piston.ts` — すべて内部（可視）
 
 `BlockRef` / `BlockCapabilityLookup` / `PISTON_PUSH_LIMIT` / `PushPlan` / `PushRefusal` /
-`PushOutcome` / `planPush` / `isPistonMovable`
+`PushOutcome` / `planPush` / `isPistonMovable` に加え、方向・伸縮状態を含む
+`PistonMovementPlan` / `planPistonTransition` / `validatePistonPlan` / `applyPistonPlan` を公開する。
+
+`planPistonTransition` は通常／スティッキーピストンの伸縮を計画する。伸長は最大 12 ブロックで、
+移動列は遠い側から順に並ぶ。スティッキー収縮は先端から 2 マス先の可動ブロック 1 個だけを
+1 マス先へ引き戻す。欠損セル、範囲外、移動不能ブロック、不正な移動列は拒否し、
+`applyPistonPlan` は検証済み plan を `PistonApplyPort.commit` の 1 回の atomic commit で適用する。
+runtime の powered transition は node ID 順で、観測した給電エッジごとに冪等である。
+
+スライム／ハチミツによる隣接ブロック連結は mc-kernel に対応する語彙・能力が無いため扱わない。
+ブロックに押されるエンティティの移動と衝突解決は mc-sim / mc-physics の責務である。
 
 `BlockCapabilityLookup` は kernel 公開時に kernel の能力アクセサへ差し替わる
 （[design-notes.md](./design-notes.md) DN-RS-1、[versioning.md](./versioning.md) §6）。

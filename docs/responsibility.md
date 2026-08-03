@@ -14,9 +14,9 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | --- | --- | --- |
 | ワイヤ（電力伝播・1 マス 1 減衰） | `packages/entity/domain/redstone/redstone-simulation.ts:68`（`propagatePower`） | `domain/power-graph.ts` に実装済み |
 | トーチ（1 tick 遅延反転） | 同 `:254`（`updateTorches`） | 実装済み |
-| レバー / ボタン | 同 `:36-46`（`isPowerSource`） | 実装済み（ボタンのパルス長は未実装） |
-| リピーター | 同 `:219-245` | 実装済み（ダイオード。遅延は未実装で、`delayTicks` フィールドは**削除済み**——DN-RS-12） |
-| ピストン押し出し | `packages/app/application/frame/stages/redstone-piston-world-effects.ts`（263 LOC） | `domain/piston.ts` に押し出し計画のみ実装済み |
+| レバー / ボタン | 同 `:36-46`（`isPowerSource`） | 実装済み（状態付きAPIで既定10 tickのパルスと再トリガー） |
+| リピーター | 同 `:219-245` | 実装済み（ダイオード + 状態付きAPIで1–4 tick遅延） |
+| ピストン押し出し・sticky 引き戻し | `packages/app/application/frame/stages/redstone-piston-world-effects.ts`（263 LOC） | `domain/piston.ts` に typed plan/apply、runtime に powered transition を実装済み |
 | ランプ | `redstone-lamp-world-effects.ts`（92 LOC） | `isLit` として実装済み |
 | ディスペンサ | `redstone-dispenser-world-effects.ts`（137 LOC） | `domain/dispenser.ts` に**立ち上がりエッジ検出のみ**。中身 / ドロップ / 発射体は境界（[design-notes.md](./design-notes.md) DN-RS-17） |
 | ホッパー | `redstone-hopper-world-effects.ts`（53 LOC） | `domain/hopper.ts` に**ロックの反転と搬送周期のみ**。搬送そのものは境界（DN-RS-16 §16-1、DN-RS-17） |
@@ -65,7 +65,7 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | 押されたブロックとプレイヤーの衝突解決 | `mc-physics`（**`mc-sim` 経由**） | 推移閉包禁止により mc-physics は直接 import できない |
 | 回路の永続化フォーマット | 現状スコープ外。必要になれば `mc-save` + `mc-sim` | [architecture.md](./architecture.md) §3-1 |
 | 落下ブロック・流体伝播・作物 | `mx-gameplay` | 体験モジュール間エッジはゼロ。観測は mc-sim / mc-worldgen 越しに行う |
-| スティッキーピストン・引き寄せ | 第一版のスコープ外（将来 mx-redstone） | 能力フラグが監査で確定していない。[design-notes.md](./design-notes.md) DN-RS-10 |
+| スライム／ハチミツによる隣接ブロック連結 | 対応する語彙・能力が mc-kernel に追加された後の mx-redstone | 現在は軸上の可動ブロック 1 個を引き戻す sticky 規則だけを実装し、未確定の連結能力は推測しない。[design-notes.md](./design-notes.md) DN-RS-10 |
 
 ### 2-1. 監査が「mx-redstone のもの」と名指ししたもの
 
@@ -138,7 +138,7 @@ domain/
   block-ref.ts                # ブロックの不透明な参照。kernel 公開時に削除
   signal-level.ts             # 信号の値域（0-15）。規則 3 つが共有するので独立している
   power-graph.ts              # 電力グラフ。規則を「置く」場所であって規則そのものではない
-  piston.ts                   # ピストン押し出し計画
+  piston.ts                   # ピストン伸縮の typed plan と atomic apply
   comparator.ts               # コンパレータの算術とコンテナ充填率
   observer.ts                 # ブロック変化検出とパルス長
   pressure-plate.ts           # 占有数 → 信号強度

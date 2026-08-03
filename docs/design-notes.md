@@ -534,30 +534,24 @@ oxlint が該当ルールを実装したら `.oxlintrc.json` 側へ移す。
 
 ---
 
-## DN-RS-10 スティッキーピストンと引き寄せは第一版のスコープ外
+## DN-RS-10 スティッキーピストンは単一ブロックを引き寄せる
 
 ### 決定
 
-`domain/piston.ts` は押し出し（`planPush`）だけを実装する。引き寄せは無い。
+`domain/piston.ts` は facing 付きの伸長と、スティッキーピストンによる単一ブロックの引き寄せを純粋に計画する。
+計画の適用はホストの単一 atomic commit に委譲し、部分更新を許さない。
 
-### なぜ「あとで」なのか
+### 境界
 
-理由は工数ではない。**能力フラグが監査で確定していないから**である。
-
-引き寄せには独自の規則がある。スティッキーピストンはちょうど 1 ブロックを引く。
+スティッキーピストンはちょうど 1 ブロックを引く。
 スライムブロックは隣接ブロックを 3 次元に引きずる。
 つまり「このブロックは粘着に引っ張られるか」「引きずり連結を伝播させるか」という
 **新しい能力**が要る。`mc-kernel/docs/capability-flag-audit.md` はこれを扱っていない
 （§3 の 28 行に該当行が無く、§8 の「参照実装に存在しない概念」にも挙がっていない）。
 
-ここで能力名とセマンティクスを推測すると、その推測が kernel に入る。
-kernel は 14 リポジトリからピン留めされるので、**間違った推測が一度に 14 リポジトリへ配られる**
-（`mc-kernel/docs/versioning.md` §5-1 の深さ 5 の republish カスケード）。
-監査が答えを出すまで待つほうが、確実に安い。
-
-`domain/piston.ts:38-45` がこの判断を「意図的なスコープ制限」として記録している。
-未実装であることを README の「現状」にも書いてあるのは、
-**忘れられた未実装と、決定された未実装を区別するため**である。
+そこで単一ブロックの pull は既存の `pistonImmovable` 能力だけで判定し、slime/honey の
+隣接連結は新しい能力を推測せず境界外に残す。missing/out-of-world/immovable/上限超過は
+型付き refusal とし、不正な duplicate/collision plan は commit 前に拒否する。
 
 ---
 
@@ -679,18 +673,16 @@ readonly outputTo?: PositionKey    // リピーター: 駆動する唯一のセ�
 | **`neighboursOf` を filter する**（`[outputTo]` を直接返さない） | `adjacency` が**グラフそのもの**である。`outputTo` は自分の辺を 1 本**選ぶ**のであって、新しい辺を**作らない**。さもなければ呼び出し側は遠いセルを名指しして電力をテレポートでき、出力セルを削除された盤面のリピーターは存在しない座標に給電し続ける |
 | **トーチは `invertedBy` を除外**（`outputTo` を持たない） | トーチはバニラでも無指向（隣接する全ダストを点ける）。制約は「支持ブロックを除く」という 1 点だけなので、除外で足りる。リピーターに同じ形（`inputFrom` だけ除外）を使うと側面が残る |
 
-### 遅延は形の問題ではないので、ここでは直っていない
+### 遅延とパルスの状態は純粋な伝播の外に置く
 
-`Component.delayTicks` は**削除した**。受け取って保存して一度も読まれない
-フィールドは、無いフィールドより悪い。バニラの 1–4 tick 遅延を実装するには
-「N tick 前の入力」が要り、`propagateTick` は設計上 (board, previous power map) の純関数——
-すなわち履歴 1 tick ぶんしか持たない。これは**tick の状態の形**の変更であって
-部品レコードの変更ではないので、フィールドは機構と一緒に戻ってくる。
+`Component.delayTicks` と `Component.pulseTicks` は盤面に規則を宣言するが、残り時間は
+`TimedCircuitState` が持つ。`advanceTimedCircuit(board, state, pressedButtons)` はリピーターの
+1–4 tick 遅延とボタンのパルスを進め、その tick で有効な盤面を `propagateTick` に渡す。
+したがって `propagateTick(board, previous)` の 1 tick 伝播契約は互換性のため変わらない。
 
-同じ理由でボタンのパルスもここには無い（DN-RS-4 の隣、`sourcesOf` のコメントに全文がある）。
-**残り時間は状態である。** 電力マップに置く場所が無く、盤面はこのモジュールが書き換えてよい入力ではない。
-`active` は世界の所有者の申告であり、レバーのそれはプレイヤーが、ボタンのそれは**時間**が下ろす。
-レッドストーン時間が進んでいることを知っているのは `stages/registration.ts` である。
+runtime では `stages/registration.ts` が dimension ごとの `TimedCircuitState` を保持し、
+`RedstoneWorldRuntime.pressButton` の入力を次の redstone tick で消費する。押下中の再押下は
+残り時間を `pulseTicks`（既定 10 tick）へ戻す。盤面スナップショット自体は書き換えない。
 
 **回帰テスト**: `test/power-graph.test.ts`
 `describe('repeaters — a diode, which means both ends are named')` ほか
@@ -703,40 +695,28 @@ readonly outputTo?: PositionKey    // リピーター: 駆動する唯一のセ�
 | `a repeater with no output named drives nothing — an unwired repeater is inert in both directions` | 既定値の選択そのもの |
 | `a named output that is not a declared edge drives nothing — adjacency is still the graph` | 隣接に無いセルを名指しても何も駆動しない |
 | `REGRESSION: a torch does not power the cell it inverts, so an inverter is steady rather than a 2-tick blinker` | レバー OFF で 20 tick、トーチは 15 のまま、支持セルは 0 のまま |
-| `REGRESSION: \`Component\` carries no delay field, and every repeater costs exactly one tick` | `@ts-expect-error` による**コンパイル時**の不在確認と、直列 N 個が N tick である実測 |
+| `legacy propagation keeps its one-tick repeater contract when delay metadata is present` | 旧 API は `delayTicks` を解釈せず、従来どおり各リピーターを 1 tick で伝播する |
+| `test/timed-power-graph.test.ts` の repeater / button 節 | 1–4 tick の境界、遷移キャンセル、パルス停止、再押下、挿入順非依存を固定する |
 
 ---
 
-## DN-RS-13 コンパレータは値を 1 段ごとに 1 失う
+## DN-RS-13 ソース出力は隣接ダストへ同じ強度で入る
 
-**完成条件 #3 の 5 部品のうち、モデルの穴を露出させたのはコンパレータである。**
-穴は「表現できない」ではなく「表現の代償が部品によって違う」という形をしていた。
+**コンパレータと重み付き感圧板は 0〜15 の値を出力する。** その値を隣接ダストへ
+渡すだけで 1 減らすと、算術結果そのものが変わる。
 
 ### 規則
 
-`domain/signal-level.ts` の `MAX_POWER_LEVEL` は既に 1 つの乖離を記録している——
-**ソースは自分の最初の隣接セルへ減衰する**ので、信号は 15 マスではなく 14 マスしか届かない。
-バニラではレバーに触れたダストが 15 である。
-
-この乖離のコストは部品によって違う。
-
-| 部品 | 失うもの | 生き残るか |
-| --- | --- | --- |
-| レバー | 到達距離 1 マス | — |
-| リピーター | 何も失わない | 出力は常に 15 に復元される。読んだレベルは捨てられる |
-| **コンパレータ** | **値そのものを 1 段につき 1** | **次のコンパレータがその値で演算する** |
-
-コンパレータは**数を次へ渡す最初の部品**である。`sourcesOf` はコンパレータを
-「読んだレベル」で seed し、`propagateTick` はそのセルから 1 減らして前へ渡すので、
-コンパレータ + ダスト 1 段ごとに 1 ずつ落ちる。
+`sourcesOf` は各ソースをその出力強度で seed する。`propagateTick` はソースから
+隣接セルへ同じ強度を渡し、**ダストが次のセルへ伝えるときだけ** 1 減らす。
 
 ```
 lever  C  dust  C  dust  C  dust
-15     15  14   14  13   13  12
+15     15  15   15  15   15  15
 ```
 
-バニラでは 15, 15, 15 である——コンパレータは正面のダストを**自分の出力強度で駆動する**ので、
-値は何段通っても変わらない。
+これにより、レベル 15 は 15 個のダストへ届き、レベル 4 の感圧板は
+隣接ダストを 4、その次を 3、2、1 と駆動し、それ以降は 0 になる。
 
 ### 破れたときに起きること
 
@@ -745,24 +725,15 @@ lever  C  dust  C  dust  C  dust
 **中身が等しい 2 つのチェストが違う数を返す**。到達距離の乖離と違って、これは
 「1 マス足りない」ではなく「答えが間違っている」である。
 
-### 直さない理由と、直すときに落ちるもの
-
-閉じるには「ソースが最初の隣接セルへ減衰しない」ようにするしかなく、それは
-**盤面上の全セルの全レベルを振り直す**。`MAX_POWER_LEVEL` のコメントが 15 対 14 について
-先送りしているのと**同じ 1 つの決定**であり、2 つの決定ではない。
-だから DN として記録し、テストで固定する。
+### 回帰境界
 
 **回帰テスト**: `test/power-graph.test.ts`
 `describe('comparators — the only component whose output is a NUMBER')`
 
 | テスト名 | 主張 |
 | --- | --- |
-| `REGRESSION: a comparator loses ONE LEVEL per stage — the recorded source divergence, compounding` | 1〜4 段のラダーが `[15, 14, 13, 12]` を返す。バニラは全部 15 |
+| `REGRESSION: comparator stages preserve the level they emit into adjacent dust` | 1〜4 段のラダーがすべて 15 を返す |
 | `a comparator emits the LEVEL it read, not full power — the first variable-strength source` | `sourcesOf` が 15 以外で seed できることそのもの |
-
-プレビューも実行時に測っている（`pnpm preview --stats` の finding、および
-`comparator-ladder` シナリオ）。**数値は記録されていない**ので、直せば finding は消える。
-固定しているのはテストのほうである。
 
 ---
 
@@ -863,7 +834,8 @@ plan.md §3.11 が「disaster」と呼ぶ per-tick 全走査は**ロードされ
 ### 15-3. だから `Component` に `watching` は無い
 
 グラフはブロックを読めない。読めないセルを名指すフィールドは
-**受け取って保存して一度も読まれない**——DN-RS-12 が `delayTicks` を削除した理由そのものである。
+**受け取って保存して一度も読まれない**状態にしてはならない。DN-RS-12 の `delayTicks` は
+`advanceTimedCircuit` が解釈するため、この条件を満たす。
 オブザーバがどのセルを見ているかは、それが生む `active` の隣、世界の所有者のところにある。
 
 パルス長 `OBSERVER_PULSE_TICKS = 2`（参照実装 `:17` と一致）は**規則**なのでここにあり、

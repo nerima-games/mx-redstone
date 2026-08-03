@@ -19,10 +19,12 @@ const component = (
   active?: boolean,
   y = 0,
   z = 0,
+  timing: Pick<RedstoneComponentSnapshot, 'delayTicks' | 'pulseTicks'> = {},
 ): RedstoneComponentSnapshot => ({
   position: { x, y, z },
   kind,
   ...(active === undefined ? {} : { active }),
+  ...timing,
 })
 
 const snapshot = (
@@ -193,6 +195,227 @@ describe('RedstoneWorldRuntime', () => {
         yield* runFrame(stages)
         expect(yield* runtime.drainLampTransitions).toStrictEqual([
           { dimension: 'nether', position: { x: 2, y: 0, z: 0 }, lit: true },
+        ])
+      }),
+    ),
+  )
+
+  it.effect('runs button pulses and configured repeater delays through the runtime stage', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(
+          snapshot('overworld', [
+            component(0, 'button', undefined, 0, 0, { pulseTicks: 4 }),
+            component(1, 'wire'),
+            {
+              ...component(2, 'repeater', undefined, 0, 0, { delayTicks: 2 }),
+              inputFrom: { x: 1, y: 0, z: 0 },
+              outputTo: { x: 3, y: 0, z: 0 },
+            },
+            component(3, 'lamp'),
+          ]),
+        )
+
+        yield* runtime.pressButton('overworld', { x: 0, y: 0, z: 0 })
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([
+          { dimension: 'overworld', position: { x: 3, y: 0, z: 0 }, lit: true },
+        ])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([
+          { dimension: 'overworld', position: { x: 3, y: 0, z: 0 }, lit: false },
+        ])
+      }),
+    ),
+  )
+
+  it.effect('emits one powered piston transition per power edge', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', true),
+          {
+            ...component(1, 'piston'),
+            pistonFacing: 'east',
+            pistonKind: 'sticky',
+            pistonState: 'retracted',
+          },
+        ]))
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([{
+          dimension: 'overworld',
+          piston: { x: 1, y: 0, z: 0 },
+          facing: 'east',
+          kind: 'sticky',
+          state: 'retracted',
+          powered: true,
+        }])
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([])
+
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', false),
+          {
+            ...component(1, 'piston'),
+            pistonFacing: 'east',
+            pistonKind: 'sticky',
+            pistonState: 'extended',
+          },
+        ]))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([{
+          dimension: 'overworld',
+          piston: { x: 1, y: 0, z: 0 },
+          facing: 'east',
+          kind: 'sticky',
+          state: 'extended',
+          powered: false,
+        }])
+      }),
+    ),
+  )
+
+  it.effect('orders piston transitions by node id regardless of snapshot insertion order', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'piston', undefined, 0, 1),
+          component(0, 'piston', undefined, 0, -1),
+          component(0, 'lever', true),
+        ]))
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([
+          {
+            dimension: 'overworld', piston: { x: 0, y: 0, z: -1 },
+            facing: 'north', kind: 'normal', state: 'retracted', powered: true,
+          },
+          {
+            dimension: 'overworld', piston: { x: 0, y: 0, z: 1 },
+            facing: 'north', kind: 'normal', state: 'retracted', powered: true,
+          },
+        ])
+      }),
+    ),
+  )
+
+  it.effect('does not emit a false retraction after a failed extension leaves a stale snapshot', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        const circuit = (active: boolean) => snapshot('overworld', [
+          component(0, 'lever', active),
+          { ...component(1, 'piston'), pistonState: 'retracted' },
+        ])
+
+        yield* runtime.syncSnapshot(circuit(true))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toHaveLength(1)
+
+        yield* runtime.syncSnapshot(circuit(false))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([])
+
+        yield* runtime.syncSnapshot(circuit(true))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPistonTransitions).toMatchObject([{
+          state: 'retracted', powered: true,
+        }])
+      }),
+    ),
+  )
+
+  it.effect('emits deterministic trigger and powered-component transitions', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        const circuit = (active: boolean) => snapshot('overworld', [
+          component(0, 'lever', active),
+          component(1, 'dispenser', undefined, 0, 0),
+          component(0, 'dropper', undefined, 1, 0),
+          component(0, 'note-block', undefined, 0, 1),
+          component(-1, 'powered-rail', undefined, 0, 0),
+          component(0, 'door', undefined, -1, 0),
+          component(0, 'trapdoor', undefined, 0, -1),
+        ])
+
+        yield* runtime.syncSnapshot(circuit(true))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toStrictEqual([
+          { dimension: 'overworld', position: { x: 0, y: 0, z: 1 }, kind: 'note-block' },
+          { dimension: 'overworld', position: { x: 0, y: 1, z: 0 }, kind: 'dropper' },
+          { dimension: 'overworld', position: { x: 1, y: 0, z: 0 }, kind: 'dispenser' },
+        ])
+        expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([
+          { dimension: 'overworld', position: { x: -1, y: 0, z: 0 }, kind: 'powered-rail', powered: true },
+          { dimension: 'overworld', position: { x: 0, y: -1, z: 0 }, kind: 'door', powered: true },
+          { dimension: 'overworld', position: { x: 0, y: 0, z: -1 }, kind: 'trapdoor', powered: true },
+        ])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toStrictEqual([])
+        expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([])
+
+        yield* runtime.syncSnapshot(circuit(false))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toStrictEqual([])
+        expect(yield* runtime.drainPoweredComponentTransitions).toHaveLength(3)
+
+        yield* runtime.syncSnapshot(circuit(true))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toHaveLength(3)
+      }),
+    ),
+  )
+
+  it.effect('does not conduct power through an actuator', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', true),
+          component(1, 'dropper'),
+          component(2, 'lamp'),
+        ]))
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toHaveLength(1)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+      }),
+    ),
+  )
+
+  it.effect('uses snapshot powered state as the restoration baseline', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', true),
+          { ...component(1, 'door'), powered: true },
+        ]))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([])
+
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', false),
+          { ...component(1, 'door'), powered: true },
+        ]))
+        yield* runFrame(stages)
+        expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([
+          { dimension: 'overworld', position: { x: 1, y: 0, z: 0 }, kind: 'door', powered: false },
         ])
       }),
     ),

@@ -122,8 +122,15 @@ export type ComponentKind =
   | 'comparator'
   | 'observer'
   | 'pressure-plate'
+  | 'target'
+  | 'piston'
   | 'hopper'
   | 'dispenser'
+  | 'dropper'
+  | 'note-block'
+  | 'powered-rail'
+  | 'door'
+  | 'trapdoor'
 
 /**
  * One placed component.
@@ -136,7 +143,7 @@ export type ComponentKind =
 export type Component = {
   readonly kind: ComponentKind
   /**
-   * Levers, buttons, observers and pressure plates: whether it is currently on.
+   * Levers, buttons, observers, pressure plates and targets: whether it is currently on.
    *
    * One field for four components because it means one thing in all four: THE
    * OWNER OF THE WORLD SAYS THIS IS ON RIGHT NOW. What differs is who the owner
@@ -165,6 +172,10 @@ export type Component = {
    * value beside the thing it is cached from.
    */
   readonly emits?: PowerLevel
+  /** Repeaters: transition delay in redstone ticks, clamped to 1–4. */
+  readonly delayTicks?: number
+  /** Buttons: pulse duration in redstone ticks. Omitted means a stone button's 10 ticks. */
+  readonly pulseTicks?: number
   /**
    * Torches: the cell whose power inverts this torch. In the world this is the
    * block the torch is attached to.
@@ -180,20 +191,22 @@ export type Component = {
    * The two read it differently and that difference is the comparator: a
    * repeater asks whether the rear carries anything and then emits full power,
    * while a comparator asks HOW MUCH and emits a function of it. A repeater is
-   * therefore immune to the level it receives and a comparator is not, which is
-   * the whole reason `MAX_POWER_LEVEL`'s recorded divergence from vanilla costs
-   * more here than anywhere else (DN-RS-13).
+   * therefore immune to the level it receives and a comparator is not. Source
+   * output must consequently enter adjacent dust unchanged (DN-RS-13).
    */
   readonly inputFrom?: PositionKey
   /**
-   * Comparators: the cells beside it, whose power it compares the rear against.
+   * Repeaters and comparators: the cells beside the component.
    *
-   * A list rather than two named fields because a comparator has two sides in
+   * A powered side locks a repeater at its current output. A comparator reads
+   * the strongest side and compares it with its rear input.
+   *
+   * A list rather than two named fields because either component has two sides in
    * vanilla and the number is a property of the world's geometry, which this
    * file refuses to know. A caller working on a 2D preview grid supplies two; a
    * caller reading voxel faces might one day supply four for a vertical
-   * placement. Omitted or empty means nothing is beside it, so `compare` passes
-   * the rear through and `subtract` subtracts nothing.
+   * placement. Omitted or empty means no lock for a repeater, while `compare`
+   * passes the rear through and `subtract` subtracts nothing for a comparator.
    *
    * Like `outputTo`, these SELECT edges rather than create them — a side that is
    * not a declared neighbour is still read, because reading is not conducting
@@ -249,15 +262,8 @@ export type Component = {
    * placed to ISOLATE them) is silent, and the failure it causes (a repeater
    * that does nothing) is visible on the first tick.
    *
-   * NOT MODELLED: vanilla's 1–4 tick repeater delay. A `delayTicks` field used
-   * to sit here, was never read by anything, and has been removed rather than
-   * left as a promise the graph does not keep. Honouring it needs memory — the
-   * input from N ticks ago — and `propagateTick` is by design a pure function of
-   * (board, previous power map), which holds exactly one tick of history. Adding
-   * that memory is a change to the tick's state shape, not a change to this
-   * record, so the field will come back with the mechanism and not before. Every
-   * repeater currently costs exactly one tick; `test/power-graph.test.ts` pins
-   * that, and `settleTickLimitFor` depends on it.
+   * Stateful delay is implemented by `advanceTimedCircuit`. The legacy
+   * `propagateTick` API intentionally retains its one-tick repeater behaviour.
    */
   readonly outputTo?: PositionKey
 }
@@ -269,13 +275,51 @@ export type CircuitBoard = {
    * geometry.
    */
   readonly adjacency: ReadonlyMap<PositionKey, ReadonlyArray<PositionKey>>
+  /** Optional runtime index. Literal boards fall back to a complete component scan. */
+  readonly componentKeysByKind?: ReadonlyMap<ComponentKind, ReadonlyArray<PositionKey>>
 }
 
 export type PowerMap = ReadonlyMap<PositionKey, PowerLevel>
 
 export const emptyPowerMap: PowerMap = new Map<PositionKey, PowerLevel>()
 
+const EXTERNAL_SOURCE_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
+  'lever',
+  'button',
+  'observer',
+  'pressure-plate',
+  'target',
+])
+
+const SOURCE_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
+  ...EXTERNAL_SOURCE_KINDS,
+  'torch',
+  'repeater',
+  'comparator',
+])
+
 export const powerAt = (map: PowerMap, key: PositionKey): PowerLevel => map.get(key) ?? 0
+
+export const componentEntriesForKinds = (
+  board: CircuitBoard,
+  kinds: ReadonlySet<ComponentKind>,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): Iterable<readonly [PositionKey, Component]> => {
+  if (board.componentKeysByKind === undefined) {
+    return [...board.components]
+      .map(([key, component]) => [key, overrides?.get(key) ?? component] as const)
+      .filter(([, component]) => kinds.has(component.kind))
+  }
+
+  const entries: Array<readonly [PositionKey, Component]> = []
+  for (const kind of kinds) {
+    for (const key of board.componentKeysByKind.get(kind) ?? []) {
+      const component = overrides?.get(key) ?? board.components.get(key)
+      if (component !== undefined) entries.push([key, component])
+    }
+  }
+  return entries
+}
 
 const neighboursOf = (board: CircuitBoard, key: PositionKey): ReadonlyArray<PositionKey> =>
   board.adjacency.get(key) ?? []
@@ -315,19 +359,21 @@ const neighboursOf = (board: CircuitBoard, key: PositionKey): ReadonlyArray<Posi
  * `test/power-graph.test.ts` names the current behaviour so that implementing
  * release upstream shows up as a failing test rather than a silent change.
  */
-export const sourcesOf = (board: CircuitBoard, previous: PowerMap): PowerMap => {
+const torchShouldEmit = (component: Component, inputPower: PowerLevel): boolean =>
+  inputPower === 0 && component.active !== false
+
+export const sourcesOf = (
+  board: CircuitBoard,
+  previous: PowerMap,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): PowerMap => {
   const sources = new Map<PositionKey, PowerLevel>()
 
-  for (const [key, component] of board.components) {
-    if (
-      component.kind === 'lever' ||
-      component.kind === 'button' ||
-      component.kind === 'observer' ||
-      component.kind === 'pressure-plate'
-    ) {
-      // The four components whose truth is declared from outside. `emits` lets
-      // a weighted plate report a count rather than a yes; everything else
-      // omits it and gets full power.
+  for (const [key, component] of componentEntriesForKinds(board, SOURCE_KINDS, overrides)) {
+    if (EXTERNAL_SOURCE_KINDS.has(component.kind)) {
+      // The components whose truth is declared from outside. `emits` lets a
+      // weighted plate report a count and a target report hit accuracy;
+      // everything else omits it and gets full power.
       if (component.active === true) {
         sources.set(key, component.emits ?? MAX_POWER_LEVEL)
       }
@@ -339,7 +385,7 @@ export const sourcesOf = (board: CircuitBoard, previous: PowerMap): PowerMap => 
       // permanently, which is the standard way to write a constant source.
       const inputPower =
         component.invertedBy === undefined ? 0 : powerAt(previous, component.invertedBy)
-      if (inputPower === 0) {
+      if (torchShouldEmit(component, inputPower)) {
         sources.set(key, MAX_POWER_LEVEL)
       }
       continue
@@ -450,6 +496,7 @@ const CONDUCTS_POWER: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
   'comparator',
   'observer',
   'pressure-plate',
+  'target',
 ])
 
 /**
@@ -485,8 +532,12 @@ const CONDUCTS_POWER: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
  * Everything else — wire, lever, button — drives all of its edges, which is what
  * makes a wire a wire.
  */
-const conductsInto = (board: CircuitBoard, key: PositionKey): ReadonlyArray<PositionKey> => {
-  const component = board.components.get(key)
+const conductsInto = (
+  board: CircuitBoard,
+  key: PositionKey,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): ReadonlyArray<PositionKey> => {
+  const component = overrides?.get(key) ?? board.components.get(key)
   if (component === undefined || !CONDUCTS_POWER.has(component.kind)) {
     return []
   }
@@ -511,17 +562,24 @@ const conductsInto = (board: CircuitBoard, key: PositionKey): ReadonlyArray<Posi
 /**
  * Advance the circuit by one redstone tick.
  *
- * Multi-source BFS with decay: sources start at their level and each conducting
- * step loses one. The queue is seeded in descending power order, so a cell is
+ * Multi-source BFS with decay: sources apply their level to the first receiving
+ * cell, and each subsequent wire step loses one. The queue is seeded in
+ * descending power order, so a cell is
  * reached at its final level first and the sweep is O(cells + edges) rather than
  * O(cells × sources).
  *
  * A lamp's own entry in the returned map is a DECAYED level, so it is not the
  * right thing to test for litness — see `isLit`.
  */
-export const propagateTick = (board: CircuitBoard, previous: PowerMap): PowerMap => {
+export const propagateTick = (
+  board: CircuitBoard,
+  previous: PowerMap,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): PowerMap => {
   const power = new Map<PositionKey, PowerLevel>()
-  const sources = [...sourcesOf(board, previous)].sort(([, left], [, right]) => right - left)
+  const sources = [...sourcesOf(board, previous, overrides)].sort(
+    ([, left], [, right]) => right - left,
+  )
 
   const queue: Array<PositionKey> = []
   for (const [key, level] of sources) {
@@ -535,13 +593,14 @@ export const propagateTick = (board: CircuitBoard, previous: PowerMap): PowerMap
   // read would be `PositionKey | undefined` and would need an unreachable
   // `undefined` guard, i.e. a branch that can never be covered.
   for (const key of queue) {
-    const outgoing = powerAt(power, key) - 1
+    const component = overrides?.get(key) ?? board.components.get(key)
+    const outgoing = powerAt(power, key) - (component?.kind === 'wire' ? 1 : 0)
     if (outgoing <= 0) {
       continue
     }
 
-    for (const neighbour of conductsInto(board, key)) {
-      const neighbourKind = board.components.get(neighbour)?.kind
+    for (const neighbour of conductsInto(board, key, overrides)) {
+      const neighbourKind = (overrides?.get(neighbour) ?? board.components.get(neighbour))?.kind
       if (neighbourKind === undefined || !RECEIVES_POWER.has(neighbourKind)) {
         continue
       }
@@ -620,11 +679,7 @@ const DELAYED_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
  */
 export const settleTickLimitFor = (board: CircuitBoard): number => {
   let delayed = 0
-  for (const component of board.components.values()) {
-    if (DELAYED_KINDS.has(component.kind)) {
-      delayed += 1
-    }
-  }
+  for (const _entry of componentEntriesForKinds(board, DELAYED_KINDS)) delayed += 1
   return delayed + 2
 }
 
@@ -725,15 +780,15 @@ export const isLit = (board: CircuitBoard, power: PowerMap, key: PositionKey): b
 /**
  * Whether an actuator has power arriving at it.
  *
- * For the two components that act on power without carrying it — a dispenser
+ * For components that act on power without carrying it — a dispenser
  * fires on the rising edge of this, a hopper is LOCKED while it is true
  * (`domain/hopper.ts`; note the inversion) — and for `redstone:effects`, which
  * has to ask the same question about a piston.
  *
  * Deliberately NOT restricted by kind, unlike `isLit`. "Is power arriving here"
- * is a question about a cell, and a piston is not a `ComponentKind` at all
- * (`domain/piston.ts` moves the world; it does not carry power), so a kind check
- * would exclude the caller that needs it most.
+ * is a question about a cell. A piston is a `ComponentKind` so the runtime can
+ * detect powered transitions, but it remains non-conducting here; movement is
+ * planned separately by `domain/piston.ts`.
  */
 export const isPowered = (board: CircuitBoard, power: PowerMap, key: PositionKey): boolean =>
   drivenPowerAt(board, power, key) > 0

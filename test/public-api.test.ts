@@ -18,6 +18,7 @@ import { Effect } from 'effect'
 import * as redstone from '../src/index'
 import { planPush } from '../src/domain/piston'
 import { propagateTick } from '../src/domain/power-graph'
+import { advanceTimedCircuit } from '../src/domain/timed-power-graph'
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 
 describe('public API surface', () => {
@@ -74,6 +75,9 @@ describe('public API surface', () => {
         // a board (one tick per delay element, +2), and no single number can
         // stand for every board. See domain/power-graph.ts.
         'settleTickLimitFor',
+        'DEFAULT_BUTTON_PULSE_TICKS',
+        'emptyTimedCircuitState',
+        'advanceTimedCircuit',
         'isLit',
         // the two accessors that answer "is power arriving here" through the
         // same `conductsInto` the sweep uses, so the accessor cannot leak what
@@ -97,6 +101,7 @@ describe('public API surface', () => {
         'plateSignal',
         'LIGHT_PLATE_CAPACITY',
         'HEAVY_PLATE_CAPACITY',
+        'targetSignal',
         // pistons — the capability lookup is a parameter, never a local set
         'PISTON_PUSH_LIMIT',
         'planPush',
@@ -120,6 +125,7 @@ describe('public API surface', () => {
     Effect.sync(() => {
       expect(redstone.planPush).toBe(planPush)
       expect(redstone.propagateTick).toBe(propagateTick)
+      expect(redstone.advanceTimedCircuit).toBe(advanceTimedCircuit)
       expect(redstone.REDSTONE_STAGE_IDS).toBe(REDSTONE_STAGE_IDS)
     }),
   )

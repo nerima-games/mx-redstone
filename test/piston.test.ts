@@ -9,9 +9,12 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import {
+  applyPistonPlan,
   isPistonMovable,
   PISTON_PUSH_LIMIT,
   planPush,
+  planPistonTransition,
+  validatePistonPlan,
   type BlockCapabilityLookup,
   type BlockRef,
 } from '../src/domain/piston'
@@ -136,6 +139,174 @@ describe('push planning', () => {
         expect(outcome.plan.moved).not.toBe(column)
         expect(outcome.plan.moved).toStrictEqual(column)
       }
+    }),
+  )
+})
+
+const cells = (entries: ReadonlyArray<readonly [number, BlockRef]>) => {
+  const world = new Map(entries.map(([x, block]) => [x, block]))
+  return {
+    read: ({ x }: { readonly x: number }) =>
+      world.has(x) ? { kind: 'block' as const, block: world.get(x)! } : { kind: 'empty' as const },
+  }
+}
+
+describe('positioned piston movement', () => {
+  it.effect('extends a 12-block east-facing chain farthest-first', () =>
+    Effect.sync(() => {
+      const outcome = planPistonTransition(
+        { piston: { x: 0, y: 0, z: 0 }, facing: 'east', kind: 'normal', state: 'retracted', powered: true },
+        cells(Array.from({ length: PISTON_PUSH_LIMIT }, (_, index) => [index + 1, `BLOCK_${String(index)}`])),
+        NOTHING_IS_IMMOVABLE,
+      )
+      expect(outcome.kind).toBe('move')
+      if (outcome.kind === 'move') {
+        expect(outcome.plan.moves).toHaveLength(PISTON_PUSH_LIMIT)
+        expect(outcome.plan.moves[0]?.from.x).toBe(12)
+        expect(outcome.plan.moves.at(-1)?.from.x).toBe(1)
+      }
+    }),
+  )
+
+  it.effect('refuses the 13th block and unavailable world boundaries', () =>
+    Effect.sync(() => {
+      const request = { piston: { x: 0, y: 0, z: 0 }, facing: 'east' as const, kind: 'normal' as const, state: 'retracted' as const, powered: true }
+      const tooLong = planPistonTransition(
+        request,
+        cells(Array.from({ length: PISTON_PUSH_LIMIT + 1 }, (_, index) => [index + 1, 'STONE'])),
+        NOTHING_IS_IMMOVABLE,
+      )
+      expect(tooLong.kind === 'refused' ? tooLong.refusal.reason : undefined).toBe('too-long')
+      const boundary = planPistonTransition(
+        request,
+        { read: (position) => position.x === 2 ? { kind: 'out-of-world' } : { kind: 'block', block: 'STONE' } },
+        NOTHING_IS_IMMOVABLE,
+      )
+      expect(boundary.kind === 'refused' ? boundary.refusal.reason : undefined).toBe('out-of-world')
+    }),
+  )
+
+  it.effect('a sticky piston pulls one movable block into the vacated head cell', () =>
+    Effect.sync(() => {
+      const outcome = planPistonTransition(
+        { piston: { x: 0, y: 0, z: 0 }, facing: 'up', kind: 'sticky', state: 'extended', powered: false },
+        { read: ({ y }) => y === 2 ? { kind: 'block', block: 'STONE' } : { kind: 'empty' } },
+        NOTHING_IS_IMMOVABLE,
+      )
+      expect(outcome).toStrictEqual({
+        kind: 'move',
+        plan: {
+          piston: { x: 0, y: 0, z: 0 }, facing: 'up', kind: 'sticky', fromState: 'extended', toState: 'retracted',
+          moves: [{ block: 'STONE', from: { x: 0, y: 2, z: 0 }, to: { x: 0, y: 1, z: 0 } }],
+        },
+      })
+    }),
+  )
+
+  it.effect('rejects a malformed duplicate plan without invoking the atomic commit', () =>
+    Effect.gen(function* () {
+      let commits = 0
+      const move = { block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }
+      const result = yield* Effect.either(applyPistonPlan({
+        piston: { x: 0, y: 0, z: 0 }, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended', moves: [move, move],
+      }, { commit: () => Effect.sync(() => { commits += 1 }) }))
+      expect(result._tag).toBe('Left')
+      expect(commits).toBe(0)
+
+      expect(validatePistonPlan({
+        piston: { x: 0, y: 0, z: 0 }, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended',
+        moves: [{ block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 3, y: 0, z: 0 } }],
+      })).toStrictEqual({ reason: 'collision', position: { x: 3, y: 0, z: 0 } })
+    }),
+  )
+
+  it.effect('rejects plans that bypass the push limit or deterministic movement shape', () =>
+    Effect.gen(function* () {
+      const piston = { x: 0, y: 0, z: 0 }
+      const moves = Array.from({ length: PISTON_PUSH_LIMIT + 1 }, (_, index) => {
+        const from = { x: PISTON_PUSH_LIMIT + 1 - index, y: 0, z: 0 }
+        return { block: `BLOCK_${String(index)}`, from, to: { ...from, x: from.x + 1 } }
+      })
+      let commits = 0
+      const result = yield* Effect.either(applyPistonPlan({
+        piston, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended', moves,
+      }, { commit: () => Effect.sync(() => { commits += 1 }) }))
+      expect(result).toMatchObject({
+        _tag: 'Left',
+        left: { reason: 'too-long', position: { x: PISTON_PUSH_LIMIT + 1, y: 0, z: 0 } },
+      })
+      expect(commits).toBe(0)
+
+      expect(validatePistonPlan({
+        piston, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended',
+        moves: [
+          { block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } },
+          { block: 'DIRT', from: { x: 2, y: 0, z: 0 }, to: { x: 3, y: 0, z: 0 } },
+        ],
+      })).toStrictEqual({ reason: 'collision', position: { x: 1, y: 0, z: 0 } })
+    }),
+  )
+
+  it.effect('accepts only the single two-to-one-cell pull shape for sticky retraction', () =>
+    Effect.sync(() => {
+      const base = {
+        piston: { x: 0, y: 0, z: 0 }, facing: 'east' as const, kind: 'sticky' as const,
+        fromState: 'extended' as const, toState: 'retracted' as const,
+      }
+      expect(validatePistonPlan({
+        ...base,
+        moves: [{ block: 'STONE', from: { x: 2, y: 0, z: 0 }, to: { x: 1, y: 0, z: 0 } }],
+      })).toBeUndefined()
+      expect(validatePistonPlan({
+        ...base,
+        moves: [{ block: 'STONE', from: { x: 3, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }],
+      })).toStrictEqual({ reason: 'collision', position: { x: 3, y: 0, z: 0 } })
+      expect(validatePistonPlan({
+        ...base,
+        kind: 'normal',
+        moves: [{ block: 'STONE', from: { x: 2, y: 0, z: 0 }, to: { x: 1, y: 0, z: 0 } }],
+      })).toStrictEqual({ reason: 'invalid-transition', position: { x: 2, y: 0, z: 0 } })
+    }),
+  )
+
+  it.effect('covers retraction, refusal, validation, and successful atomic apply boundaries', () =>
+    Effect.gen(function* () {
+      const piston = { x: 0, y: 0, z: 0 }
+      const extended = { piston, facing: 'east' as const, kind: 'normal' as const, state: 'extended' as const, powered: true }
+      expect(planPistonTransition(extended, cells([]), NOTHING_IS_IMMOVABLE)).toStrictEqual({ kind: 'noop', state: 'extended' })
+      expect(planPistonTransition({ ...extended, powered: false }, cells([]), NOTHING_IS_IMMOVABLE)).toMatchObject({
+        kind: 'move', plan: { moves: [], toState: 'retracted' },
+      })
+
+      const sticky = { ...extended, kind: 'sticky' as const, powered: false }
+      for (const unavailable of ['missing', 'out-of-world'] as const) {
+        expect(planPistonTransition(sticky, { read: () => ({ kind: unavailable }) }, NOTHING_IS_IMMOVABLE)).toMatchObject({
+          kind: 'refused', refusal: { reason: unavailable },
+        })
+      }
+      expect(planPistonTransition(sticky, cells([]), NOTHING_IS_IMMOVABLE)).toMatchObject({ kind: 'move', plan: { moves: [] } })
+      expect(planPistonTransition(sticky, cells([[2, 'BEDROCK']]), immovableSet(['BEDROCK']))).toMatchObject({
+        kind: 'move', plan: { moves: [] },
+      })
+
+      const extension = { ...extended, state: 'retracted' as const }
+      expect(planPistonTransition(extension, cells([[1, 'BEDROCK']]), immovableSet(['BEDROCK']))).toMatchObject({
+        kind: 'refused', refusal: { reason: 'immovable' },
+      })
+
+      const validPlan = {
+        piston, facing: 'east' as const, kind: 'normal' as const, fromState: 'retracted' as const, toState: 'extended' as const,
+        moves: [{ block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }],
+      }
+      expect(validatePistonPlan(validPlan)).toBeUndefined()
+      expect(validatePistonPlan({
+        ...validPlan,
+        moves: [validPlan.moves[0]!, { block: 'DIRT', from: { x: 3, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }],
+      })).toMatchObject({ reason: 'duplicate' })
+
+      let committed = false
+      yield* applyPistonPlan(validPlan, { commit: () => Effect.sync(() => { committed = true }) })
+      expect(committed).toBe(true)
     }),
   )
 })

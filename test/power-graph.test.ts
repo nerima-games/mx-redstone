@@ -88,9 +88,12 @@ const graph = (
 }
 
 const wire = (): Component => ({ kind: 'wire' })
+const TARGET_CYCLE_SIGNAL = 8
+const TARGET_CYCLE_DECAYED_SIGNAL = 7
+const EMPTY_POWER_SIZE = 0
 
 describe('wire propagation', () => {
-  it.effect('a lever holds 15 and the wire beside it is already at 14, losing one per further cell', () =>
+  it.effect('a lever applies 15 to adjacent dust, which loses one per further cell', () =>
     Effect.sync(() => {
       const board = line([
         ['lever', { kind: 'lever', active: true }],
@@ -103,25 +106,18 @@ describe('wire propagation', () => {
       const power = propagateTick(board, emptyPowerMap)
 
       expect(powerAt(power, 'lever')).toBe(MAX_POWER_LEVEL)
-      expect(powerAt(power, 'w0')).toBe(14)
-      expect(powerAt(power, 'w1')).toBe(13)
-      expect(powerAt(power, 'w2')).toBe(12)
-      expect(powerAt(power, 'w3')).toBe(11)
+      expect(powerAt(power, 'w0')).toBe(15)
+      expect(powerAt(power, 'w1')).toBe(14)
+      expect(powerAt(power, 'w2')).toBe(13)
+      expect(powerAt(power, 'w3')).toBe(12)
     }),
   )
 
-  it.effect('REGRESSION: a signal crosses FOURTEEN wire cells — the source occupies one of the fifteen levels', () =>
+  it.effect('REGRESSION: a signal crosses FIFTEEN wire cells and stops before the sixteenth', () =>
     Effect.sync(() => {
-      // The number was written as fifteen in four comments, a design note, a
-      // preview scenario and two test names, and it is fourteen: a source is a
-      // cell of the power map like any other and every conducting step loses
-      // one, so the first wire is already decayed.
-      //
-      // This diverges from vanilla, where the dust touching a lever is at 15 and
-      // a run reaches fifteen cells. The divergence is RECORDED here rather than
-      // fixed, because closing it means a source not decaying into its first
-      // neighbour — a change to every level in every circuit above. This test is
-      // what makes that change loud instead of quiet.
+      // A source applies its full level to adjacent dust. Each dust cell then
+      // loses one level while forwarding, so the fifteenth dust cell carries 1
+      // and cannot power the sixteenth.
       const cells: Array<readonly [string, Component]> = [
         ['lever', { kind: 'lever', active: true }],
       ]
@@ -135,13 +131,80 @@ describe('wire propagation', () => {
       const carrying = Array.from({ length: 20 }, (_, index) =>
         powerAt(power, `w${String(index)}`),
       ).filter((level) => level > 0)
-      expect(carrying).toHaveLength(MAX_POWER_LEVEL - 1)
+      expect(carrying).toHaveLength(MAX_POWER_LEVEL)
 
       // …and it is a contiguous run ending at 1, not fifteen cells with a hole.
-      expect(powerAt(power, 'w0')).toBe(MAX_POWER_LEVEL - 1)
-      expect(powerAt(power, 'w13')).toBe(1)
-      expect(powerAt(power, 'w14')).toBe(0)
+      expect(powerAt(power, 'w0')).toBe(MAX_POWER_LEVEL)
+      expect(powerAt(power, 'w14')).toBe(1)
+      expect(powerAt(power, 'w15')).toBe(0)
       expect(powerAt(power, 'w19')).toBe(0)
+    }),
+  )
+
+  it.effect('a wire cycle converges after decay, independent of insertion order', () =>
+    Effect.sync(() => {
+      const cells: ReadonlyArray<readonly [string, Component]> = [
+        ['lever', { kind: 'lever', active: true }],
+        ['w0', wire()],
+        ['w1', wire()],
+        ['w2', wire()],
+        ['w3', wire()],
+      ]
+      const edges: ReadonlyArray<readonly [string, string]> = [
+        ['lever', 'w0'],
+        ['w0', 'w1'],
+        ['w1', 'w2'],
+        ['w2', 'w3'],
+        ['w3', 'w0'],
+      ]
+
+      const forward = settle(graph(cells, edges))
+      const reverse = settle(graph([...cells].reverse(), [...edges].reverse()))
+
+      expect(forward.oscillating).toBe(false)
+      expect(forward.ticks).toBe(2)
+      expect([...forward.power].sort()).toStrictEqual([...reverse.power].sort())
+      expect(powerAt(forward.power, 'w0')).toBe(15)
+      expect(powerAt(forward.power, 'w1')).toBe(14)
+      expect(powerAt(forward.power, 'w2')).toBe(13)
+      expect(powerAt(forward.power, 'w3')).toBe(14)
+    }),
+  )
+
+  it.effect('REGRESSION: a target feeds a cycle at its hit strength without latching it', () =>
+    Effect.sync(() => {
+      const active = graph(
+        [
+          ['target', { active: true, emits: TARGET_CYCLE_SIGNAL, kind: 'target' }],
+          ['w0', wire()],
+          ['w1', wire()],
+          ['w2', wire()],
+        ],
+        [
+          ['target', 'w0'],
+          ['w0', 'w1'],
+          ['w1', 'w2'],
+          ['w2', 'w0'],
+        ],
+      )
+      const powered = settle(active)
+
+      expect(powerAt(powered.power, 'w0')).toBe(TARGET_CYCLE_SIGNAL)
+      expect(powerAt(powered.power, 'w1')).toBe(TARGET_CYCLE_DECAYED_SIGNAL)
+      expect(powerAt(powered.power, 'w2')).toBe(TARGET_CYCLE_DECAYED_SIGNAL)
+
+      const inactive = {
+        ...active,
+        components: new Map(active.components).set('target', {
+          active: false,
+          emits: TARGET_CYCLE_SIGNAL,
+          kind: 'target',
+        } as const),
+      }
+      const released = settle(inactive, { from: powered.power })
+
+      expect(released.oscillating).toBe(false)
+      expect(released.power.size).toBe(EMPTY_POWER_SIZE)
     }),
   )
 
@@ -166,9 +229,9 @@ describe('wire propagation', () => {
       ])
 
       const power = propagateTick(board, emptyPowerMap)
-      expect(powerAt(power, 'w0')).toBe(14)
-      expect(powerAt(power, 'w1')).toBe(13)
-      expect(powerAt(power, 'w2')).toBe(14)
+      expect(powerAt(power, 'w0')).toBe(15)
+      expect(powerAt(power, 'w1')).toBe(14)
+      expect(powerAt(power, 'w2')).toBe(15)
     }),
   )
 
@@ -240,7 +303,7 @@ describe('wire propagation', () => {
       const cells: Array<readonly [string, Component]> = [
         ['lever', { kind: 'lever', active: true }],
       ]
-      for (let index = 0; index < 14; index += 1) {
+      for (let index = 0; index < 15; index += 1) {
         cells.push([`w${String(index)}`, wire()])
       }
       cells.push(['lamp', { kind: 'lamp' }])
@@ -248,7 +311,7 @@ describe('wire propagation', () => {
       const board = line(cells)
       const power = propagateTick(board, emptyPowerMap)
 
-      expect(powerAt(power, 'w13')).toBe(1)
+      expect(powerAt(power, 'w14')).toBe(1)
       expect(powerAt(power, 'lamp')).toBe(0)
       expect(isLit(board, power, 'lamp')).toBe(true)
     }),
@@ -270,7 +333,7 @@ describe('torch inversion — the one-tick delay every clock is built from', () 
     Effect.sync(() => {
       const power = propagateTick(torchBoard(false), emptyPowerMap)
       expect(powerAt(power, 'torch')).toBe(MAX_POWER_LEVEL)
-      expect(powerAt(power, 'out')).toBe(14)
+      expect(powerAt(power, 'out')).toBe(15)
     }),
   )
 
@@ -281,7 +344,7 @@ describe('torch inversion — the one-tick delay every clock is built from', () 
       // Tick 1: the torch still sees last tick's (empty) power map, so it is
       // still burning even though its base is now powered.
       const first = propagateTick(board, emptyPowerMap)
-      expect(powerAt(first, 'base')).toBe(14)
+      expect(powerAt(first, 'base')).toBe(15)
       expect(powerAt(first, 'torch')).toBe(MAX_POWER_LEVEL)
 
       // Tick 2: it sees the powered base and goes out.
@@ -301,7 +364,7 @@ describe('torch inversion — the one-tick delay every clock is built from', () 
       ])
       const power = settle(board)
       expect(power.oscillating).toBe(false)
-      expect(powerAt(power.power, 'w0')).toBe(14)
+      expect(powerAt(power.power, 'w0')).toBe(15)
     }),
   )
 
@@ -328,7 +391,7 @@ describe('torch inversion — the one-tick delay every clock is built from', () 
       for (let tick = 0; tick < 20; tick += 1) {
         power = propagateTick(board, power)
         expect(powerAt(power, 'torch')).toBe(MAX_POWER_LEVEL)
-        expect(powerAt(power, 'out')).toBe(14)
+        expect(powerAt(power, 'out')).toBe(15)
         // The support cell is the lever's business, and the lever is off.
         expect(powerAt(power, 'base')).toBe(0)
       }
@@ -381,7 +444,7 @@ describe('repeaters — a diode, which means both ends are named', () => {
       const settled = settle(board)
       expect(settled.oscillating).toBe(false)
       expect(powerAt(settled.power, 'repeater')).toBe(MAX_POWER_LEVEL)
-      expect(powerAt(settled.power, 'w2')).toBe(14)
+      expect(powerAt(settled.power, 'w2')).toBe(15)
     }),
   )
 
@@ -424,7 +487,7 @@ describe('repeaters — a diode, which means both ends are named', () => {
         power = propagateTick(on, power)
       }
       expect(powerAt(power, 'repeater')).toBe(MAX_POWER_LEVEL)
-      expect(powerAt(power, 'out0')).toBe(14)
+      expect(powerAt(power, 'out0')).toBe(15)
 
       // Now the player throws the lever back. Nothing on the board generates.
       const off = diodeBoard(false)
@@ -444,9 +507,8 @@ describe('repeaters — a diode, which means both ends are named', () => {
     Effect.sync(() => {
       // The mechanism of the latch above, asserted directly so that the two
       // cannot be fixed apart. `w1` is two conducting steps from the lever, so
-      // it is 13. It was 14 — the repeater's own 15, decayed once, coming back
-      // in through the input — which is precisely one more than the lever can
-      // deliver there.
+      // it is 14. A repeater must not feed its own full output back through the
+      // input, which would lift the cell above what the lever can deliver there.
       let power = emptyPowerMap
       const board = diodeBoard(true)
       for (let tick = 0; tick < 4; tick += 1) {
@@ -454,7 +516,7 @@ describe('repeaters — a diode, which means both ends are named', () => {
       }
 
       expect(powerAt(power, 'repeater')).toBe(MAX_POWER_LEVEL)
-      expect(powerAt(power, 'w1')).toBe(13)
+      expect(powerAt(power, 'w1')).toBe(14)
     }),
   )
 
@@ -471,7 +533,7 @@ describe('repeaters — a diode, which means both ends are named', () => {
       }
 
       expect(powerAt(power, 'repeater')).toBe(MAX_POWER_LEVEL)
-      expect(powerAt(power, 'out0')).toBe(14)
+      expect(powerAt(power, 'out0')).toBe(15)
       expect(powerAt(power, 'flank')).toBe(0)
 
       // A lamp on the flank is dark too: `isLit` and the sweep read the same
@@ -543,27 +605,14 @@ describe('repeaters — a diode, which means both ends are named', () => {
     }),
   )
 
-  it.effect('REGRESSION: `Component` carries no delay field, and every repeater costs exactly one tick', () =>
+  it.effect('legacy propagation keeps its one-tick repeater contract when delay metadata is present', () =>
     Effect.sync(() => {
-      // `delayTicks?: number` used to sit on `Component`. It was accepted,
-      // stored and never read: a repeater set to 1, 2, 3 or 4 delivered on the
-      // same tick, because `sourcesOf` only asks whether the input carries
-      // power. It is absent now rather than silently doing nothing.
-      //
-      // Honouring it needs the input from N ticks ago, and `propagateTick` is by
-      // design a pure function of (board, previous power map) — one tick of
-      // history. That is a change to the tick's STATE SHAPE, not to this record,
-      // so the field returns with the mechanism and not before.
-      //
-      // The compile-time half of the pin: the excess-property check rejects the
-      // literal today, and if `delayTicks` ever comes back the `@ts-expect-error`
-      // goes unused and `pnpm typecheck` fails.
-      // @ts-expect-error `delayTicks` is deliberately not part of `Component`.
+      // Stateful callers use `advanceTimedCircuit`; this legacy API deliberately
+      // keeps the original one-tick-per-repeater behavior.
       const unmodelled: Component = { kind: 'repeater', delayTicks: 4 }
       expect(unmodelled.kind).toBe('repeater')
 
-      // The behavioural half: N repeaters in series cost exactly N ticks, and
-      // there is no way to ask any of them for more.
+      // N repeaters in series still cost exactly N legacy propagation ticks.
       const chain = (length: number): CircuitBoard =>
         line([
           ['lever', { kind: 'lever', active: true }],
@@ -741,7 +790,7 @@ describe('settling and oscillation', () => {
       const once = propagateTick(board, emptyPowerMap)
       const resumed = settle(board, { from: once })
       expect(resumed.ticks).toBe(1)
-      expect(powerAt(resumed.power, 'w0')).toBe(14)
+      expect(powerAt(resumed.power, 'w0')).toBe(15)
     }),
   )
 
@@ -763,7 +812,7 @@ describe('settling and oscillation', () => {
 
       const result = settle(board, { from: wrong })
       expect(result.oscillating).toBe(false)
-      expect(powerAt(result.power, 'w0')).toBe(14)
+      expect(powerAt(result.power, 'w0')).toBe(15)
       // Two ticks: one to correct, one to confirm the fixpoint.
       expect(result.ticks).toBe(2)
     }),
@@ -830,7 +879,7 @@ describe('buttons — the pulse is the caller’s, and this names the current be
       }
 
       expect(powerAt(power, 'button')).toBe(MAX_POWER_LEVEL)
-      expect(powerAt(power, 'w0')).toBe(14)
+      expect(powerAt(power, 'w0')).toBe(15)
       expect(settle(board).oscillating).toBe(false)
     }),
   )
@@ -850,7 +899,7 @@ describe('buttons — the pulse is the caller’s, and this names the current be
       ])
 
       const held = propagateTick(pressed, emptyPowerMap)
-      expect(powerAt(held, 'w0')).toBe(14)
+      expect(powerAt(held, 'w0')).toBe(15)
 
       expect(propagateTick(released, held).size).toBe(0)
     }),
@@ -908,11 +957,11 @@ describe('comparators — the only component whose output is a NUMBER', () => {
       // Every other source in the model emits MAX_POWER_LEVEL. This is the one
       // that does arithmetic, and `sourcesOf` had to learn to seed a source at
       // something other than 15 for it.
-      const settled = settle(comparatorBoard())
+      const settled = settle(comparatorBoard({ containerSignal: 7 }))
 
       expect(settled.oscillating).toBe(false)
-      expect(powerAt(settled.power, 'w0')).toBe(14)
-      expect(powerAt(settled.power, 'comparator')).toBe(14)
+      expect(powerAt(settled.power, 'w0')).toBe(15)
+      expect(powerAt(settled.power, 'comparator')).toBe(7)
       expect(powerAt(settled.power, 'comparator')).not.toBe(MAX_POWER_LEVEL)
     }),
   )
@@ -925,9 +974,9 @@ describe('comparators — the only component whose output is a NUMBER', () => {
       const passing = settle(
         comparatorBoard({ sideSources: [['sideLever', { kind: 'lever', active: true }]] }),
       )
-      expect(powerAt(passing.power, 'sideA')).toBe(14)
+      expect(powerAt(passing.power, 'sideA')).toBe(15)
       // 14 against 14: compare mode passes on equality.
-      expect(powerAt(passing.power, 'comparator')).toBe(14)
+      expect(powerAt(passing.power, 'comparator')).toBe(15)
 
       const blocked = settle(
         graph(
@@ -950,9 +999,9 @@ describe('comparators — the only component whose output is a NUMBER', () => {
           ],
         ),
       )
-      // Rear is 13 (two steps from the lever); the side is 14. Compare refuses.
-      expect(powerAt(blocked.power, 'w1')).toBe(13)
-      expect(powerAt(blocked.power, 'sideA')).toBe(14)
+      // Rear is 14 (two dust cells from the lever); the side is 15. Compare refuses.
+      expect(powerAt(blocked.power, 'w1')).toBe(14)
+      expect(powerAt(blocked.power, 'sideA')).toBe(15)
       expect(powerAt(blocked.power, 'comparator')).toBe(0)
       expect(powerAt(blocked.power, 'out')).toBe(0)
     }),
@@ -986,11 +1035,11 @@ describe('comparators — the only component whose output is a NUMBER', () => {
       )
 
       const settled = settle(board)
-      expect(powerAt(settled.power, 'w0')).toBe(14)
-      // Four conducting steps from the side lever, so 11.
-      expect(powerAt(settled.power, 's3')).toBe(11)
-      expect(powerAt(settled.power, 'comparator')).toBe(14 - 11)
-      expect(powerAt(settled.power, 'out')).toBe(2)
+      expect(powerAt(settled.power, 'w0')).toBe(15)
+      // Four dust cells from the side lever, so 12.
+      expect(powerAt(settled.power, 's3')).toBe(12)
+      expect(powerAt(settled.power, 'comparator')).toBe(15 - 12)
+      expect(powerAt(settled.power, 'out')).toBe(3)
     }),
   )
 
@@ -1007,10 +1056,10 @@ describe('comparators — the only component whose output is a NUMBER', () => {
         power = propagateTick(board, power)
       }
 
-      expect(powerAt(power, 'comparator')).toBe(14)
-      expect(powerAt(power, 'out')).toBe(13)
+      expect(powerAt(power, 'comparator')).toBe(15)
+      expect(powerAt(power, 'out')).toBe(15)
       // The rear stays the lever's level, not lifted by the comparator's output.
-      expect(powerAt(power, 'w0')).toBe(14)
+      expect(powerAt(power, 'w0')).toBe(15)
       expect(powerAt(power, 'sideA')).toBe(0)
       expect(powerAt(power, 'sideB')).toBe(0)
 
@@ -1047,7 +1096,7 @@ describe('comparators — the only component whose output is a NUMBER', () => {
       ])
 
       const settled = settle(board)
-      expect(powerAt(settled.power, 'comparator')).toBe(14)
+      expect(powerAt(settled.power, 'comparator')).toBe(15)
       expect(powerAt(settled.power, 'w1')).toBe(0)
     }),
   )
@@ -1075,7 +1124,7 @@ describe('comparators — the only component whose output is a NUMBER', () => {
       const settled = settle(board)
       // The wire behind it is live, so the board really does have power to
       // offer; the comparator simply is not asking for it.
-      expect(powerAt(settled.power, 'w0')).toBe(14)
+      expect(powerAt(settled.power, 'w0')).toBe(15)
       expect(powerAt(settled.power, 'comparator')).toBe(0)
       expect(powerAt(settled.power, 'out')).toBe(0)
     }),
@@ -1087,12 +1136,12 @@ describe('comparators — the only component whose output is a NUMBER', () => {
       // wire, never both, and a rule that took the maximum would let a player
       // wire past an empty chest and read a full one.
       const empty = settle(comparatorBoard({ containerSignal: 0 }))
-      expect(powerAt(empty.power, 'w0')).toBe(14)
+      expect(powerAt(empty.power, 'w0')).toBe(15)
       expect(powerAt(empty.power, 'comparator')).toBe(0)
 
       const stocked = settle(comparatorBoard({ containerSignal: 7 }))
       expect(powerAt(stocked.power, 'comparator')).toBe(7)
-      expect(powerAt(stocked.power, 'out')).toBe(6)
+      expect(powerAt(stocked.power, 'out')).toBe(7)
     }),
   )
 
@@ -1121,10 +1170,10 @@ describe('comparators — the only component whose output is a NUMBER', () => {
       )
 
       const settled = settle(board)
-      expect(powerAt(settled.power, 'detached')).toBe(14)
+      expect(powerAt(settled.power, 'detached')).toBe(15)
       // Rear 14 against side 14: compare passes on equality, so the comparator
       // is on — and the point is that the side was read at all.
-      expect(powerAt(settled.power, 'comparator')).toBe(14)
+      expect(powerAt(settled.power, 'comparator')).toBe(15)
 
       const stronger = settle(
         graph(
@@ -1190,26 +1239,11 @@ describe('comparators — the only component whose output is a NUMBER', () => {
     }),
   )
 
-  it.effect('REGRESSION: a comparator loses ONE LEVEL per stage — the recorded source divergence, compounding', () =>
+  it.effect('REGRESSION: comparator stages preserve the level they emit into adjacent dust', () =>
     Effect.sync(() => {
-      // NOT A FIX. This is `MAX_POWER_LEVEL`'s divergence (a source decays into
-      // its first neighbour, so a signal crosses fourteen wire cells and not
-      // fifteen) arriving in the one component where it costs something other
-      // than reach.
-      //
-      // For a lever the divergence loses one cell. For a repeater it loses
-      // nothing that survives, because a repeater restores full power and
-      // discards the level it read. A comparator is the first component that
-      // PASSES A NUMBER ON, and here that number is one smaller at every stage:
-      // in vanilla a comparator drives the dust in front of it at its own output
-      // strength, so a value crosses any number of comparators unchanged.
-      //
-      // What that breaks is arithmetic, not reach. An item sorter that compares
-      // one chest's reading against another's through different numbers of
-      // comparators gets different answers for equal chests. Closing it means a
-      // source not decaying into its first neighbour, which renumbers every
-      // level in every circuit — a behaviour decision, and the same one
-      // `MAX_POWER_LEVEL` defers. This test is what makes taking it loud.
+      // A comparator passes a numeric value rather than restoring full power.
+      // Applying that value unchanged to its adjacent dust prevents equal
+      // readings from changing merely because they crossed more comparators.
       const stages = (count: number): CircuitBoard =>
         line([
           ['lever', { kind: 'lever', active: true }],
@@ -1224,15 +1258,15 @@ describe('comparators — the only component whose output is a NUMBER', () => {
         ])
 
       // The lever holds 15. Each stage is comparator + one dust: the comparator
-      // reads the previous stage's dust and emits that level, then the dust in
-      // front decays once more.
+      // reads the previous stage's dust and emits that level unchanged into the
+      // dust immediately in front.
       const readings = [1, 2, 3, 4].map((count) => {
         const settled = settle(stages(count))
         expect(settled.oscillating).toBe(false)
         return powerAt(settled.power, `c${String(count - 1)}`)
       })
 
-      expect(readings).toStrictEqual([15, 14, 13, 12])
+      expect(readings).toStrictEqual([15, 15, 15, 15])
       // In vanilla every entry above is 15.
     }),
   )
@@ -1271,7 +1305,7 @@ describe('observers — a source whose trigger is not a signal', () => {
       // whose whole job is to notice that a cell changed.
       const power = settle(observerBoard(true)).power
 
-      expect(powerAt(power, 'out')).toBe(14)
+      expect(powerAt(power, 'out')).toBe(15)
       expect(powerAt(power, 'watched')).toBe(0)
       expect(powerAt(power, 'flank')).toBe(0)
     }),
@@ -1310,7 +1344,7 @@ describe('pressure plates — a lever thrown by whoever stands on it', () => {
       ])
       const power = propagateTick(board, emptyPowerMap)
       expect(powerAt(power, 'plate')).toBe(MAX_POWER_LEVEL)
-      expect(powerAt(power, 'w0')).toBe(14)
+      expect(powerAt(power, 'w0')).toBe(15)
     }),
   )
 
@@ -1328,8 +1362,8 @@ describe('pressure plates — a lever thrown by whoever stands on it', () => {
         ],
       )
       const power = propagateTick(board, emptyPowerMap)
-      expect(powerAt(power, 'north')).toBe(14)
-      expect(powerAt(power, 'south')).toBe(14)
+      expect(powerAt(power, 'north')).toBe(15)
+      expect(powerAt(power, 'south')).toBe(15)
     }),
   )
 
@@ -1347,8 +1381,20 @@ describe('pressure plates — a lever thrown by whoever stands on it', () => {
       ])
       const power = propagateTick(weighed, emptyPowerMap)
       expect(powerAt(power, 'plate')).toBe(4)
-      expect(powerAt(power, 'w0')).toBe(3)
-      expect(powerAt(power, 'w3')).toBe(0)
+      expect(powerAt(power, 'w0')).toBe(4)
+      expect(powerAt(power, 'w1')).toBe(3)
+      expect(powerAt(power, 'w2')).toBe(2)
+      expect(powerAt(power, 'w3')).toBe(1)
+
+      const cutoff = line([
+        ['plate', { kind: 'pressure-plate', active: true, emits: 4 }],
+        ['w0', wire()],
+        ['w1', wire()],
+        ['w2', wire()],
+        ['w3', wire()],
+        ['w4', wire()],
+      ])
+      expect(powerAt(propagateTick(cutoff, emptyPowerMap), 'w4')).toBe(0)
 
       const plain = line([['plate', { kind: 'pressure-plate', active: true }], ['w0', wire()]])
       expect(powerAt(propagateTick(plain, emptyPowerMap), 'plate')).toBe(MAX_POWER_LEVEL)
@@ -1369,13 +1415,13 @@ describe('pressure plates — a lever thrown by whoever stands on it', () => {
   )
 })
 
-describe('hoppers and dispensers — actuators, which conduct nothing', () => {
+describe('actuators, which conduct nothing', () => {
   it.effect('REGRESSION: power stops dead at a hopper, so a filter cannot weld the line feeding it to the line beyond', () =>
     Effect.sync(() => {
       // The lamp's failure (DN-RS-5) in a component players deliberately put IN
       // a circuit. A hopper is in neither `RECEIVES_POWER` nor `CONDUCTS_POWER`,
       // which makes it exactly as transparent to power as an empty cell.
-      for (const kind of ['hopper', 'dispenser'] as const) {
+      for (const kind of ['hopper', 'dispenser', 'piston'] as const) {
         const board = line([
           ['lever', { kind: 'lever', active: true }],
           ['w0', wire()],
@@ -1385,7 +1431,7 @@ describe('hoppers and dispensers — actuators, which conduct nothing', () => {
         ])
 
         const power = propagateTick(board, emptyPowerMap)
-        expect(powerAt(power, 'w0')).toBe(14)
+        expect(powerAt(power, 'w0')).toBe(15)
         expect(powerAt(power, 'actuator')).toBe(0)
         expect(powerAt(power, 'w1')).toBe(0)
         expect(powerAt(power, 'w2')).toBe(0)
@@ -1410,7 +1456,7 @@ describe('hoppers and dispensers — actuators, which conduct nothing', () => {
       const power = propagateTick(board, emptyPowerMap)
       expect(powerAt(power, 'hopper')).toBe(0)
       expect(isPowered(board, power, 'hopper')).toBe(true)
-      expect(drivenPowerAt(board, power, 'hopper')).toBe(14)
+      expect(drivenPowerAt(board, power, 'hopper')).toBe(15)
 
       // The wire beyond it is driven by nothing, so it is not powered either.
       expect(isPowered(board, power, 'w1')).toBe(false)
@@ -1439,7 +1485,7 @@ describe('hoppers and dispensers — actuators, which conduct nothing', () => {
       )
 
       const power = settle(board).power
-      expect(powerAt(power, 'out')).toBe(14)
+      expect(powerAt(power, 'out')).toBe(15)
       expect(isPowered(board, power, 'sideDispenser')).toBe(false)
     }),
   )
@@ -1455,7 +1501,7 @@ describe('hoppers and dispensers — actuators, which conduct nothing', () => {
       ])
       const power = propagateTick(board, emptyPowerMap)
 
-      expect(drivenPowerAt(board, power, 'w1')).toBe(14)
+      expect(drivenPowerAt(board, power, 'w1')).toBe(15)
       expect(isLit(board, power, 'w1')).toBe(false)
     }),
   )
@@ -1549,7 +1595,7 @@ describe('ported oracles — claims taken from the reference implementation', ()
 
       const settled = settle(board)
       expect(settled.oscillating).toBe(false)
-      expect(powerAt(settled.power, 'front')).toBe(14)
+      expect(powerAt(settled.power, 'front')).toBe(15)
       expect(powerAt(settled.power, 'repeater')).toBe(0)
       expect(powerAt(settled.power, 'rear')).toBe(0)
 
@@ -1594,7 +1640,7 @@ describe('ported oracles — claims taken from the reference implementation', ()
           ['w0', []],
         ]),
       }
-      expect(powerAt(propagateTick(forwards, emptyPowerMap), 'w0')).toBe(14)
+      expect(powerAt(propagateTick(forwards, emptyPowerMap), 'w0')).toBe(15)
 
       // The same two cells, the same one edge, written from the other end.
       const backwards: CircuitBoard = {
@@ -1658,12 +1704,12 @@ describe('ported oracles — claims taken from the reference implementation', ()
       const power = propagateTick(graph(cells, edges), emptyPowerMap)
 
       expect(powerAt(power, 'plate')).toBe(5)
-      expect(powerAt(power, 'w0')).toBe(14)
-      expect(powerAt(power, 'w1')).toBe(13)
-      expect(powerAt(power, 'w2')).toBe(12)
+      expect(powerAt(power, 'w0')).toBe(15)
+      expect(powerAt(power, 'w1')).toBe(14)
+      expect(powerAt(power, 'w2')).toBe(13)
       // The contested cell. The plate offers 4 and reaches it in one step; the
       // lever offers 11 and reaches it in five.
-      expect(powerAt(power, 'w3')).toBe(11)
+      expect(powerAt(power, 'w3')).toBe(12)
 
       // …and none of it depends on the order the caller built its Maps.
       //

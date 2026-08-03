@@ -33,10 +33,15 @@ export {
 } from './application/world-runtime'
 export type {
   LampTransition,
+  PoweredComponentKind,
+  PoweredComponentTransition,
+  PoweredPistonTransition,
   RedstoneComponentSnapshot,
   RedstonePosition,
+  RedstoneTriggerEvent,
   RedstoneWorldRuntimeService,
   RedstoneWorldSnapshot,
+  TriggeredComponentKind,
 } from './application/world-runtime'
 
 export * from './domain/comparator'
@@ -45,7 +50,9 @@ export * from './domain/hopper'
 export * from './domain/observer'
 export * from './domain/piston'
 export * from './domain/power-graph'
+export * from './domain/timed-power-graph'
 export * from './domain/pressure-plate'
+export * from './domain/target-block'
 export * from './stages/registration'
 export * from './stages/stage-ids'
 

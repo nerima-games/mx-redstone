@@ -2,11 +2,11 @@
 
 ## 1. 現状
 
-- **バージョン: `0.1.0`。**
-- **publish パイプラインは無い。** `package.json` の `exports` は TypeScript ソース（`./index.ts`）を直接指しており、
+- **バージョン: `0.2.4`。**
+- **自動 publish パイプラインは無い。** `package.json` の `exports` は TypeScript ソース（`./src/index.ts`）を直接指しており、
   `tsconfig.base.json:59` が `noEmit: true` なので `dist/` は存在しない。
-- **実行時依存は `effect` のみ。** `@nerima-games/*` は 1 つも入っていない。
-  組織内でまだ何も公開されていないので、依存できるバージョンが存在しないためである（§4）。
+- **実行時依存は `effect` と公開済みの `mc-kernel` / `mc-sim` / `mc-worldgen`。**
+  GitHub Packages に公開されたバージョンを pin する。
 - 開発中は `mc-dev-meta` workspace（16 リポジトリを `repos/` に clone して 1 つの pnpm workspace として束ねる）による
   `workspace:*` 解決でモノレポ同等の DX を得る（plan.md §6 Step 0-2）。
 
@@ -40,7 +40,7 @@ plan.md §8 のリスク表も同じことを別角度から書いている。
 ## 3. 公開先
 
 **GitHub Packages**（`https://npm.pkg.github.com`、`access: restricted`）。
-`package.json` の `publishConfig` に設定済みだが、**publish 自体はまだ実行されない**。
+`package.json` の `publishConfig` に設定済みで、検証済みソースパッケージを手動 publish する。
 
 ```json
 "publishConfig": {
@@ -189,7 +189,7 @@ PATCH で済む世界の差は、本リポジトリの実装期間を通じて�
 
 - `pistonImmovable` が boolean のままか、enum に広がるか
 - 既定値が「押せる」なのか「押せない」なのか
-- スティッキーピストンの引き寄せ能力（DN-RS-10、監査未確定）がどの形で追加されるか
+- スライム／ハチミツによる隣接ブロック連結能力（DN-RS-10、監査未確定）がどの形で追加されるか
 
 `mc-kernel/docs/versioning.md` §6 は「**既定値の変更は MAJOR**」と定めている。
 既定値が変わると「何も書いていない全ブロックの挙動が変わる」からで、

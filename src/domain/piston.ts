@@ -36,13 +36,12 @@
  * If somebody reintroduces a local set, that test fails.
  *
  * ---------------------------------------------------------------------------
- * Sticky pistons and pulling are not here yet
+ * Movement planning is pure; applying a plan is a single atomic host operation.
  * ---------------------------------------------------------------------------
  *
- * Deliberate scope limit for the first cut. Pulling has its own rules (a sticky
- * piston pulls exactly one block, and slime blocks drag their neighbours in
- * three dimensions) and needs a capability flag the audit has not yet settled.
- * Guessing it now would put a wrong flag into fourteen repositories at once.
+ * Sticky pistons pull the single block two cells in front of the base into the
+ * vacated head cell. Slime/honey neighbour attachment remains a separate block
+ * capability concern and is intentionally not inferred here.
  */
 
 /**
@@ -55,6 +54,7 @@
  */
 export type { BlockRef } from './block-ref'
 
+import { Effect } from 'effect'
 import type { BlockRef } from './block-ref'
 
 /**
@@ -145,3 +145,226 @@ export const isPistonMovable = (
   capabilities: BlockCapabilityLookup,
   block: BlockRef,
 ): boolean => !capabilities.pistonImmovable(block)
+
+export type PistonFacing = 'down' | 'east' | 'north' | 'south' | 'up' | 'west'
+export type PistonKind = 'normal' | 'sticky'
+export type PistonState = 'extended' | 'retracted'
+
+export type PistonPosition = {
+  readonly x: number
+  readonly y: number
+  readonly z: number
+}
+
+export type PistonCell =
+  | { readonly kind: 'block'; readonly block: BlockRef }
+  | { readonly kind: 'empty' }
+
+export type PistonCellRead =
+  | PistonCell
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'out-of-world' }
+
+export type PistonWorldView = {
+  readonly read: (position: PistonPosition) => PistonCellRead
+}
+
+export type PistonMove = {
+  readonly block: BlockRef
+  readonly from: PistonPosition
+  readonly to: PistonPosition
+}
+
+export type PistonMovementPlan = {
+  readonly piston: PistonPosition
+  readonly facing: PistonFacing
+  readonly kind: PistonKind
+  readonly fromState: PistonState
+  readonly toState: PistonState
+  /** Farthest-first for extension, one move for sticky retraction. */
+  readonly moves: ReadonlyArray<PistonMove>
+}
+
+export type PistonPlanRefusal = {
+  readonly reason: 'collision' | 'duplicate' | 'immovable' | 'invalid-transition' | 'missing' | 'out-of-world' | 'too-long'
+  readonly position: PistonPosition
+}
+
+export type PistonMovementOutcome =
+  | { readonly kind: 'move'; readonly plan: PistonMovementPlan }
+  | { readonly kind: 'noop'; readonly state: PistonState }
+  | { readonly kind: 'refused'; readonly refusal: PistonPlanRefusal }
+
+export type PistonTransitionRequest = {
+  readonly piston: PistonPosition
+  readonly facing: PistonFacing
+  readonly kind: PistonKind
+  readonly state: PistonState
+  readonly powered: boolean
+}
+
+const OFFSETS: Readonly<Record<PistonFacing, PistonPosition>> = {
+  down: { x: 0, y: -1, z: 0 },
+  east: { x: 1, y: 0, z: 0 },
+  north: { x: 0, y: 0, z: -1 },
+  south: { x: 0, y: 0, z: 1 },
+  up: { x: 0, y: 1, z: 0 },
+  west: { x: -1, y: 0, z: 0 },
+}
+
+export const pistonPositionAt = (
+  origin: PistonPosition,
+  facing: PistonFacing,
+  distance: number,
+): PistonPosition => {
+  const offset = OFFSETS[facing]
+  return {
+    x: origin.x + offset.x * distance,
+    y: origin.y + offset.y * distance,
+    z: origin.z + offset.z * distance,
+  }
+}
+
+const positionKey = ({ x, y, z }: PistonPosition): string => `${x},${y},${z}`
+
+/** Plans extension/retraction without mutating the supplied view. */
+export const planPistonTransition = (
+  request: PistonTransitionRequest,
+  world: PistonWorldView,
+  capabilities: BlockCapabilityLookup,
+): PistonMovementOutcome => {
+  const targetState: PistonState = request.powered ? 'extended' : 'retracted'
+  if (request.state === targetState) return { kind: 'noop', state: request.state }
+
+  if (targetState === 'retracted') {
+    const base: PistonMovementPlan = {
+      piston: request.piston,
+      facing: request.facing,
+      kind: request.kind,
+      fromState: request.state,
+      toState: targetState,
+      moves: [],
+    }
+    if (request.kind === 'normal') return { kind: 'move', plan: base }
+
+    const source = pistonPositionAt(request.piston, request.facing, 2)
+    const cell = world.read(source)
+    if (cell.kind === 'missing' || cell.kind === 'out-of-world') {
+      return { kind: 'refused', refusal: { reason: cell.kind, position: source } }
+    }
+    if (cell.kind === 'empty' || capabilities.pistonImmovable(cell.block)) {
+      return { kind: 'move', plan: base }
+    }
+    return {
+      kind: 'move',
+      plan: {
+        ...base,
+        moves: [{ block: cell.block, from: source, to: pistonPositionAt(request.piston, request.facing, 1) }],
+      },
+    }
+  }
+
+  const blocks: Array<{ readonly block: BlockRef; readonly position: PistonPosition }> = []
+  for (let distance = 1; distance <= PISTON_PUSH_LIMIT + 1; distance += 1) {
+    const position = pistonPositionAt(request.piston, request.facing, distance)
+    const cell = world.read(position)
+    if (cell.kind === 'missing' || cell.kind === 'out-of-world') {
+      return { kind: 'refused', refusal: { reason: cell.kind, position } }
+    }
+    if (cell.kind === 'empty') {
+      return {
+        kind: 'move',
+        plan: {
+          piston: request.piston,
+          facing: request.facing,
+          kind: request.kind,
+          fromState: request.state,
+          toState: targetState,
+          moves: blocks.toReversed().map(({ block, position: from }) => ({
+            block,
+            from,
+            to: pistonPositionAt(from, request.facing, 1),
+          })),
+        },
+      }
+    }
+    if (capabilities.pistonImmovable(cell.block)) {
+      return { kind: 'refused', refusal: { reason: 'immovable', position } }
+    }
+    if (blocks.length === PISTON_PUSH_LIMIT) {
+      return { kind: 'refused', refusal: { reason: 'too-long', position } }
+    }
+    blocks.push({ block: cell.block, position })
+  }
+  throw new Error('unreachable piston scan')
+}
+
+export type PistonApplyPort<E = never> = {
+  /** Must compare expected source blocks and commit all moves plus state together. */
+  readonly commit: (plan: PistonMovementPlan) => Effect.Effect<void, E>
+}
+
+/** A plan has the same bounded, deterministic shape as the pure planner emits. */
+export const validatePistonPlan = (plan: PistonMovementPlan): PistonPlanRefusal | undefined => {
+  if (plan.fromState === plan.toState) {
+    return { reason: 'invalid-transition', position: plan.piston }
+  }
+
+  const sources = new Set<string>()
+  const targets = new Set<string>()
+  for (const move of plan.moves) {
+    const source = positionKey(move.from)
+    const target = positionKey(move.to)
+    if (sources.has(source) || targets.has(target)) {
+      return { reason: 'duplicate', position: sources.has(source) ? move.from : move.to }
+    }
+    sources.add(source)
+    targets.add(target)
+    const direction = plan.toState === 'extended' ? 1 : -1
+    if (target !== positionKey(pistonPositionAt(move.from, plan.facing, direction))) {
+      return { reason: 'collision', position: move.to }
+    }
+  }
+
+  if (plan.toState === 'extended') {
+    if (plan.moves.length > PISTON_PUSH_LIMIT) {
+      return {
+        reason: 'too-long',
+        position: pistonPositionAt(plan.piston, plan.facing, PISTON_PUSH_LIMIT + 1),
+      }
+    }
+    for (const [index, move] of plan.moves.entries()) {
+      const expectedDistance = plan.moves.length - index
+      if (positionKey(move.from) !== positionKey(pistonPositionAt(plan.piston, plan.facing, expectedDistance))) {
+        return { reason: 'collision', position: move.from }
+      }
+    }
+    return undefined
+  }
+
+  if (plan.kind === 'normal' && plan.moves.length > 0) {
+    return { reason: 'invalid-transition', position: plan.moves[0]!.from }
+  }
+  if (plan.moves.length > 1) {
+    return { reason: 'invalid-transition', position: plan.moves[1]!.from }
+  }
+  const pull = plan.moves[0]
+  if (pull !== undefined && (
+    positionKey(pull.from) !== positionKey(pistonPositionAt(plan.piston, plan.facing, 2))
+    || positionKey(pull.to) !== positionKey(pistonPositionAt(plan.piston, plan.facing, 1))
+  )) {
+    return { reason: 'collision', position: pull.from }
+  }
+  return undefined
+}
+
+/** Delegates one validated plan to one atomic host commit. */
+export const applyPistonPlan = <E>(
+  plan: PistonMovementPlan,
+  port: PistonApplyPort<E>,
+): import('effect').Effect.Effect<void, E | PistonPlanRefusal> => {
+  const refusal = validatePistonPlan(plan)
+  return refusal === undefined
+    ? port.commit(plan)
+    : Effect.fail(refusal)
+}
