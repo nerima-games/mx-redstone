@@ -1,6 +1,6 @@
 {
   "name": "@nerima-games/mx-redstone",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "type": "module",
   "description": "Experience module for the nerima-games Minecraft-clone rebuild: the redstone mechanism — wire power propagation, torches, levers, buttons, repeaters and piston pushing.",
   "homepage": "https://github.com/nerima-games/mx-redstone#readme",
@@ -51,9 +51,9 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm test"
   },
   "dependencies": {
-    "@nerima-games/mc-kernel": "0.2.16",
-    "@nerima-games/mc-sim": "0.1.36",
-    "@nerima-games/mc-worldgen": "0.1.12",
+    "@nerima-games/mc-kernel": "0.2.17",
+    "@nerima-games/mc-sim": "0.1.39",
+    "@nerima-games/mc-worldgen": "0.1.14",
     "effect": "^3.22.0"
   },
   "devDependencies": {
