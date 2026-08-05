@@ -300,25 +300,25 @@ const SOURCE_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
 
 export const powerAt = (map: PowerMap, key: PositionKey): PowerLevel => map.get(key) ?? 0
 
-export const componentEntriesForKinds = (
+export function* componentEntriesForKinds(
   board: CircuitBoard,
   kinds: ReadonlySet<ComponentKind>,
   overrides?: ReadonlyMap<PositionKey, Component>,
-): Iterable<readonly [PositionKey, Component]> => {
+): IterableIterator<readonly [PositionKey, Component]> {
   if (board.componentKeysByKind === undefined) {
-    return [...board.components]
-      .map(([key, component]) => [key, overrides?.get(key) ?? component] as const)
-      .filter(([, component]) => kinds.has(component.kind))
+    for (const [key, boardComponent] of board.components) {
+      const component = overrides?.get(key) ?? boardComponent
+      if (kinds.has(component.kind)) yield [key, component] as const
+    }
+    return
   }
 
-  const entries: Array<readonly [PositionKey, Component]> = []
   for (const kind of kinds) {
     for (const key of board.componentKeysByKind.get(kind) ?? []) {
       const component = overrides?.get(key) ?? board.components.get(key)
-      if (component !== undefined) entries.push([key, component])
+      if (component !== undefined) yield [key, component] as const
     }
   }
-  return entries
 }
 
 const neighboursOf = (board: CircuitBoard, key: PositionKey): ReadonlyArray<PositionKey> =>
