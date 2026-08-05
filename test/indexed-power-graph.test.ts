@@ -4,6 +4,7 @@ import {
   type CircuitBoard,
   type Component,
   type ComponentKind,
+  componentEntriesForKinds,
   powerAt,
 } from '../src/domain/power-graph'
 import {
@@ -51,6 +52,24 @@ const advanceBoth = (
 }
 
 describe('indexed power graph', () => {
+  it.effect('keeps indexed and full-scan component selection equivalent with overrides', () =>
+    Effect.sync(() => {
+      const board = indexedLine([
+        ['button', { kind: 'button', pulseTicks: 3 }],
+        ['torch', { kind: 'torch' }],
+        ['wire', { kind: 'wire' }],
+      ])
+      const kinds = new Set<ComponentKind>(['button', 'torch'])
+      const overrides = new Map<string, Component>([
+        ['button', { kind: 'button', active: true, pulseTicks: 3 }],
+      ])
+
+      expect([...componentEntriesForKinds(board, kinds, overrides)]).toStrictEqual(
+        [...componentEntriesForKinds(withoutIndex(board), kinds, overrides)],
+      )
+    }),
+  )
+
   it.effect('matches the full-scan oracle across boundaries, edits, continuous ticks and reruns', () =>
     Effect.sync(() => {
       const makeBoard = (includeTail: boolean) =>
