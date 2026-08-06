@@ -33,8 +33,8 @@ export type RedstoneComponentSnapshot = {
   readonly inputFrom?: RedstonePosition
   readonly sideInputs?: ReadonlyArray<RedstonePosition>
   readonly mode?: ComparatorMode
-  readonly containerSignal?: PowerLevel
   readonly containerSlots?: ReadonlyArray<ContainerSlot>
+  readonly containerSignal?: PowerLevel
   readonly outputTo?: RedstonePosition
   readonly pistonFacing?: PistonFacing
   readonly pistonKind?: PistonKind
@@ -139,27 +139,25 @@ const componentAt = (
     component.containerSlots === undefined ? undefined : containerSignalStrength(component.containerSlots)
   )
   return {
-  kind: component.kind,
-  ...(component.active === undefined ? {} : { active: component.active }),
-  ...(component.emits === undefined ? {} : { emits: component.emits }),
-  ...(component.delayTicks === undefined ? {} : { delayTicks: component.delayTicks }),
-  ...(component.pulseTicks === undefined ? {} : { pulseTicks: component.pulseTicks }),
-  ...(component.invertedBy === undefined
-    ? {}
-    : { invertedBy: redstoneNodeId(dimension, component.invertedBy) }),
-  ...(component.inputFrom === undefined
-    ? {}
-    : { inputFrom: redstoneNodeId(dimension, component.inputFrom) }),
-  ...(component.sideInputs === undefined
-    ? {}
-    : { sideInputs: component.sideInputs.map((position) => redstoneNodeId(dimension, position)) }),
-  ...(component.mode === undefined ? {} : { mode: component.mode }),
-  ...(containerSignal === undefined
-    ? {}
-    : { containerSignal }),
-  ...(component.outputTo === undefined
-    ? {}
-    : { outputTo: redstoneNodeId(dimension, component.outputTo) }),
+    kind: component.kind,
+    ...(component.active === undefined ? {} : { active: component.active }),
+    ...(component.emits === undefined ? {} : { emits: component.emits }),
+    ...(component.delayTicks === undefined ? {} : { delayTicks: component.delayTicks }),
+    ...(component.pulseTicks === undefined ? {} : { pulseTicks: component.pulseTicks }),
+    ...(component.invertedBy === undefined
+      ? {}
+      : { invertedBy: redstoneNodeId(dimension, component.invertedBy) }),
+    ...(component.inputFrom === undefined
+      ? {}
+      : { inputFrom: redstoneNodeId(dimension, component.inputFrom) }),
+    ...(component.sideInputs === undefined
+      ? {}
+      : { sideInputs: component.sideInputs.map((position) => redstoneNodeId(dimension, position)) }),
+    ...(component.mode === undefined ? {} : { mode: component.mode }),
+    ...(containerSignal === undefined ? {} : { containerSignal }),
+    ...(component.outputTo === undefined
+      ? {}
+      : { outputTo: redstoneNodeId(dimension, component.outputTo) }),
   }
 }
 
