@@ -1,13 +1,13 @@
 /**
  * Every `StageId` this repository writes down, in one file.
  *
- * See `../domain/frame-contract.ts` for why a stage id is a string and what
- * that implies: naming one creates no import and no dependency edge, so an
- * `after` constraint is invisible to `pnpm check:deps`. Collecting them here is
- * what makes them reviewable, and `test/stage-registration.test.ts` fails if one
- * points at a sibling experience module.
+ * `StageId` is owned by `@nerima-games/mc-kernel`. Naming one creates no import
+ * and no dependency edge, so an `after` constraint is invisible to
+ * `pnpm check:deps`. Collecting them here is what makes them reviewable, and
+ * `test/stage-registration.test.ts` fails if one points at a sibling experience
+ * module.
  */
-import { StageId } from '../domain/frame-contract'
+import { StageId } from '@nerima-games/mc-kernel'
 
 /**
  * Stages owned by mx-redstone.

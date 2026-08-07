@@ -38,7 +38,7 @@ import {
   redstoneWorldStateFor,
   type RedstoneWorldState,
 } from '../application/world-runtime'
-import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
+import type { DeltaTimeSecs, GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import type { CircuitBoard } from '../domain/power-graph'
 import { advanceTimedCircuit } from '../domain/timed-power-graph'
 import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
