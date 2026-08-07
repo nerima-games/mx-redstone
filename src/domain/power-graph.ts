@@ -559,6 +559,27 @@ const conductsInto = (
   return neighbours
 }
 
+const drivesInto = (board: CircuitBoard, key: PositionKey, target: PositionKey): boolean => {
+  const component = board.components.get(key)
+  if (component === undefined || !CONDUCTS_POWER.has(component.kind)) {
+    return false
+  }
+
+  if (!neighboursOf(board, key).includes(target)) {
+    return false
+  }
+
+  if (
+    component.kind === 'repeater' ||
+    component.kind === 'comparator' ||
+    component.kind === 'observer'
+  ) {
+    return component.outputTo === target
+  }
+
+  return component.kind !== 'torch' || component.invertedBy !== target
+}
+
 /**
  * Advance the circuit by one redstone tick.
  *
@@ -759,7 +780,7 @@ export const drivenPowerAt = (
   let strongest = 0
   for (const neighbour of neighboursOf(board, key)) {
     const level = powerAt(power, neighbour)
-    if (level > strongest && conductsInto(board, neighbour).includes(key)) {
+    if (level > strongest && drivesInto(board, neighbour, key)) {
       strongest = level
     }
   }
