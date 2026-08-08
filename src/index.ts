@@ -59,7 +59,7 @@ export * from './stages/stage-ids'
 
 // --- Provisional ---------------------------------------------------------------
 // Frame-stage vocabulary is imported from @nerima-games/mc-kernel and is NOT
-// re-exported here. `StageId`, `DeltaTimeSecs` and `StageRegistration` belong to
-// the kernel package; keeping them out of this barrel prevents this package from
-// becoming a second owner of that public contract. `domain/position-key.ts`
-// remains a separate local provisional implementation.
+// Re-exported here. `StageId`, `DeltaTimeSecs` and `StageRegistration` belong to
+// The kernel package; keeping them out of this barrel prevents this package from
+// Becoming a second owner of that public contract. `domain/position-key.ts`
+// Remains a separate local provisional implementation.

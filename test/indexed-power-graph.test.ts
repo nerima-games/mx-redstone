@@ -5,7 +5,10 @@ import {
   type Component,
   type ComponentKind,
   componentEntriesForKinds,
+  emptyPowerMap,
+  MAX_POWER_LEVEL,
   powerAt,
+  sourcesOf,
 } from '../src/domain/power-graph'
 import {
   type TimedCircuitState,
@@ -67,6 +70,37 @@ describe('indexed power graph', () => {
       expect([...componentEntriesForKinds(board, kinds, overrides)]).toStrictEqual(
         [...componentEntriesForKinds(withoutIndex(board), kinds, overrides)],
       )
+    }),
+  )
+
+  it.effect('an override that changes a component’s kind is not laundered through the stale index bucket', () =>
+    Effect.sync(() => {
+      // `indexedComponentEntries` looks a key up by KIND in `componentKeysByKind`
+      // and then resolves the component at that key through `overrides`, without
+      // re-checking that the resolved component's actual kind still belongs in
+      // the bucket it was found under. A circuit-board preview overriding a
+      // torch with a different component at the same key is exactly this: the
+      // index still says "torch" here; the override says otherwise.
+      const board = indexedLine([
+        ['torch', { kind: 'torch' }],
+        ['wire', { kind: 'wire' }],
+      ])
+
+      // Without an override, the indexed torch is a source: nothing inverts it,
+      // so it burns permanently.
+      expect(sourcesOf(board, emptyPowerMap).get('torch')).toBe(MAX_POWER_LEVEL)
+
+      // A preview override replacing that torch with a wire does not touch
+      // `componentKeysByKind` — the index still buckets this key under 'torch'.
+      // `indexedComponentEntries` yields the override's ACTUAL component
+      // (kind: 'wire') unfiltered, which sends a non-source kind through
+      // `sourceLevelFor`'s four `if`s to its trailing `return NO_POWER_LEVEL`.
+      const overrides = new Map<string, Component>([['torch', { kind: 'wire' }]])
+      expect(sourcesOf(board, emptyPowerMap, overrides).has('torch')).toBe(false)
+
+      // The full-scan oracle agrees: an override to a non-source kind is simply
+      // not a source, so the indexed path is not merely quieter about it.
+      expect(sourcesOf(withoutIndex(board), emptyPowerMap, overrides).has('torch')).toBe(false)
     }),
   )
 

@@ -399,6 +399,35 @@ describe('torch inversion — the one-tick delay every clock is built from', () 
       expect(settle(board).oscillating).toBe(false)
     }),
   )
+
+  it.effect('REGRESSION: `drivenPowerAt` also refuses a torch driving its own support cell, not just the sweep', () =>
+    Effect.sync(() => {
+      // The test above pins `conductsInto`'s torch filter, which is what
+      // `propagateTick`'s sweep walks. `isPowered`/`isLit` walk `drivenPowerAt`
+      // instead, which asks `drivesInto` — a SEPARATE filter over the same rule
+      // (the big comment above `conductsInto`/`drivesInto`: "a torch drives
+      // every neighbour EXCEPT `invertedBy`") that has to make the same
+      // exception independently, or an actuator sitting on a torch's support
+      // cell would see itself as powered by the very torch it silences.
+      const board: CircuitBoard = {
+        components: new Map<string, Component>([
+          ['base', wire()],
+          ['torch', { kind: 'torch', invertedBy: 'base' }],
+        ]),
+        adjacency: new Map([
+          ['base', ['torch']],
+          ['torch', ['base']],
+        ]),
+      }
+
+      // Exactly what `sourcesOf` records for this torch while its base is
+      // unpowered: burning at full strength.
+      const power: ReadonlyMap<string, number> = new Map([['torch', MAX_POWER_LEVEL]])
+
+      expect(drivenPowerAt(board, power, 'base')).toBe(0)
+      expect(isPowered(board, power, 'base')).toBe(false)
+    }),
+  )
 })
 
 describe('repeaters — a diode, which means both ends are named', () => {
@@ -1656,6 +1685,40 @@ describe('ported oracles — claims taken from the reference implementation', ()
       const power = propagateTick(backwards, emptyPowerMap)
       expect(powerAt(power, 'lever')).toBe(MAX_POWER_LEVEL)
       expect(powerAt(power, 'w0')).toBe(0)
+    }),
+  )
+
+  it.effect('REGRESSION: `drivenPowerAt` answers the same directed-adjacency question `conductsInto` does', () =>
+    Effect.sync(() => {
+      // The companion to the DIRECTED-adjacency regression above, for the other
+      // function that reads adjacency to decide who drives whom. `conductsInto`
+      // filters `neighboursOf` from the DRIVER's own row; `drivesInto` —
+      // `drivenPowerAt`'s per-neighbour check — asks `neighboursOf(driver)` too
+      // (`domain/power-graph.ts` around line 627), so a neighbour that never
+      // named the target back does not get counted as driving it, however
+      // strong its own level is.
+      const board: CircuitBoard = {
+        components: new Map<string, Component>([
+          ['target', wire()],
+          ['sym', wire()],
+          ['asym', wire()],
+        ]),
+        adjacency: new Map([
+          ['target', ['sym', 'asym']],
+          ['sym', ['target']],
+          // `asym` does not name `target` back: a one-way edge.
+          ['asym', []],
+        ]),
+      }
+
+      // `asym` carries the STRONGER level, so a `drivenPowerAt` that ignored
+      // reciprocity would report 7, not 5.
+      const power: ReadonlyMap<string, number> = new Map([
+        ['sym', 5],
+        ['asym', 7],
+      ])
+
+      expect(drivenPowerAt(board, power, 'target')).toBe(5)
     }),
   )
 

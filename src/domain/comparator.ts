@@ -56,6 +56,9 @@ export type ComparatorMode = 'compare' | 'subtract'
  * expression that got this backwards would still pass every test in which the
  * sides are unwired, which is most of them.
  */
+/** The floor every redstone signal level sits at; nothing here reads negative. */
+const MIN_POWER_LEVEL: PowerLevel = 0
+
 export const comparatorOutput = (
   rear: PowerLevel,
   sides: ReadonlyArray<PowerLevel>,
@@ -69,12 +72,15 @@ export const comparatorOutput = (
   }
 
   if (mode === 'subtract') {
-    return Math.max(0, rear - strongestSide)
+    return Math.max(MIN_POWER_LEVEL, rear - strongestSide)
   }
 
   // An if rather than a ternary chain, and no `default`: see DN-RS-11 on why a
-  // closed union is branched over with an if-chain in this repository.
-  return rear >= strongestSide ? rear : 0
+  // Closed union is branched over with an if-chain in this repository.
+  if (rear >= strongestSide) {
+    return rear
+  }
+  return MIN_POWER_LEVEL
 }
 
 /**
@@ -157,26 +163,59 @@ export const CONTAINER_SIGNAL_SPAN = 14
  * would make every comparator on the board read `NaN`, and `NaN > 0` is false,
  * so the symptom would be a sorter that stopped working rather than an error.
  */
-export const containerSignalStrength = (slots: ReadonlyArray<ContainerSlot>): PowerLevel => {
-  if (slots.length === 0) {
-    return 0
-  }
+/** A slot list of this length holds no slots to read at all. */
+const NO_SLOTS = 0
 
+/** A clamped slot count at or below this holds nothing. */
+const MIN_SLOT_COUNT = 0
+
+/** A `maxStack` at or below this cannot be divided into and is unusable data. */
+const NON_POSITIVE_MAX_STACK = 0
+
+/** A fullness accumulator at this value means no slot contributed anything. */
+const NO_ITEMS_HELD = 0
+
+/** Whether a slot's data is safe to fold into the fullness total. */
+const isUsableSlot = (slot: ContainerSlot): boolean =>
+  Number.isFinite(slot.count) && Number.isFinite(slot.maxStack) && slot.maxStack > NON_POSITIVE_MAX_STACK
+
+/** A slot's count, clamped to the range it can actually hold. */
+const clampedSlotCount = (slot: ContainerSlot): number =>
+  Math.min(Math.max(MIN_SLOT_COUNT, slot.count), slot.maxStack)
+
+type ContainerFullness = {
+  readonly held: number
+  readonly fullness: number
+}
+
+/**
+ * Sums how much every usable slot holds and how full it is. Split out of
+ * `containerSignalStrength` so that function stays under the statement-count
+ * threshold; the accumulation rule itself is unchanged.
+ */
+const accumulateFullness = (slots: ReadonlyArray<ContainerSlot>): ContainerFullness => {
   let fullness = 0
   let held = 0
   for (const slot of slots) {
-    if (!Number.isFinite(slot.count) || !Number.isFinite(slot.maxStack) || slot.maxStack <= 0) {
-      continue
-    }
-    const count = Math.min(Math.max(0, slot.count), slot.maxStack)
-    if (count > 0) {
-      held += count
-      fullness += count / slot.maxStack
+    if (isUsableSlot(slot)) {
+      const count = clampedSlotCount(slot)
+      if (count > MIN_SLOT_COUNT) {
+        held += count
+        fullness += count / slot.maxStack
+      }
     }
   }
+  return { fullness, held }
+}
 
-  if (held === 0) {
-    return 0
+export const containerSignalStrength = (slots: ReadonlyArray<ContainerSlot>): PowerLevel => {
+  if (slots.length === NO_SLOTS) {
+    return MIN_POWER_LEVEL
+  }
+
+  const { held, fullness } = accumulateFullness(slots)
+  if (held === NO_ITEMS_HELD) {
+    return MIN_POWER_LEVEL
   }
 
   return Math.min(

@@ -195,6 +195,50 @@ describe('timed redstone', () => {
     }),
   )
 
+  it.effect('a repeater whose side is already powered on its very first tick holds low, having never produced a timer', () =>
+    Effect.sync(() => {
+      const board: CircuitBoard = {
+        components: new Map([
+          ['side', { kind: 'lever', active: true }],
+          ['repeater', { kind: 'repeater', inputFrom: 'rear', outputTo: 'out', sideInputs: ['side'] }],
+          ['out', { kind: 'wire' }],
+        ]),
+        adjacency: new Map([
+          ['side', []],
+          ['repeater', []],
+          ['out', []],
+        ]),
+      }
+      // No prior tick ever ran: the repeaters map is empty, so this is
+      // `holdRepeater(undefined)` — a repeater placed into a world where its
+      // side input is already live, before it has ever produced a timer of
+      // its own. It must hold at `output: false`, not throw or default to
+      // whatever `previous.output` would have been.
+      const alreadyPowered: TimedCircuitState = {
+        power: new Map([['side', 15]]),
+        repeaters: new Map(),
+        buttons: new Map(),
+      }
+      const state = advanceTimedCircuit(board, alreadyPowered)
+      expect(state.repeaters.get('repeater')).toStrictEqual({ output: false, remainingTicks: 0 })
+      expect(powerAt(state.power, 'out')).toBe(0)
+    }),
+  )
+
+  it.effect('a repeater with no rear input never requests output, even amid unrelated power', () =>
+    Effect.sync(() => {
+      const board = line([
+        ['lever', { kind: 'lever', active: true }],
+        ['unrelated', { kind: 'wire' }],
+        ['repeater', { kind: 'repeater', outputTo: 'out' }],
+        ['out', { kind: 'wire' }],
+      ])
+      const state = advanceTimedCircuit(board, emptyTimedCircuitState)
+      expect(state.repeaters.get('repeater')).toStrictEqual({ output: false, remainingTicks: 0 })
+      expect(powerAt(state.power, 'out')).toBe(0)
+    }),
+  )
+
   it.effect('side-lock cycles are insertion-order independent and missing side cells are unpowered', () =>
     Effect.sync(() => {
       const cells: ReadonlyArray<readonly [string, Component]> = [
@@ -300,6 +344,24 @@ describe('timed redstone', () => {
       expect([...forward.torches ?? []].sort()).toStrictEqual([...reverse.torches ?? []].sort())
       expect(forward.torches?.get('a')?.burnoutRemainingTicks).toBeGreaterThan(NO_TICKS)
       expect(forward.torches?.get('b')?.burnoutRemainingTicks).toBeGreaterThan(NO_TICKS)
+    }),
+  )
+
+  it.effect('a torch with no invertedBy input is simply always on', () =>
+    Effect.sync(() => {
+      const board: CircuitBoard = {
+        adjacency: new Map([['torch', []]]),
+        // No `invertedBy`: this torch isn't wired to invert any neighbour's
+        // signal, so it has nothing to ever turn it off — a standalone torch
+        // stuck to a block always emits.
+        components: new Map([['torch', { kind: 'torch' }]]),
+      }
+      const state = advanceTimedCircuit(board, emptyTimedCircuitState)
+      expect(state.torches?.get('torch')).toStrictEqual({
+        burnoutRemainingTicks: NO_TICKS,
+        output: true,
+        recentOffTicks: [],
+      })
     }),
   )
 })

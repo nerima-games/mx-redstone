@@ -93,6 +93,14 @@
     // prettier/biome/.editorconfig in this repo; formatting is presently unenforced.
     "no-array-method-this-argument": "warn",
     "no-bitwise": "warn",
+    // `x`/`y`/`z` are this repository's 3D coordinate axis fields (RedstonePosition,
+    // PistonPosition — see src/application/world-runtime.ts, src/domain/piston.ts),
+    // locally-defined types, not an external contract. id-length's default minimum
+    // of 2 has no built-in accommodation for single-letter axis names; `exceptions`
+    // is the rule's own documented mechanism for exactly this case (the same way
+    // `i`/`j`/`k` are commonly exempted for loop counters). This keeps id-length
+    // fully enforced everywhere else in src/**.
+    "id-length": ["warn", { "exceptions": ["x", "y", "z"] }],
 
     // Restriction
     "default-case": "warn",
@@ -134,5 +142,42 @@
     "no-param-reassign": "off",
     "no-plusplus": "off"
   },
+  // Org policy (2026-08-08): src/** stays fully strict — every style violation there
+  // is a real fix, no disable comments. test/**, scripts/** and apps/** (dev-tooling
+  // previews) get these style-only rules turned off because they fire on
+  // pre-existing, accepted patterns that carry no behavioral risk: test assertions
+  // use literal expected values by design (no-magic-numbers), scripts print to
+  // stdout by design (no-console), and mass-rewriting hundreds of test/preview call
+  // sites for id-length/sort-keys/no-ternary/etc. risks silent assertion corruption
+  // for zero behavioral value. Verified empirically against the pinned oxlint
+  // (nixpkgs oxlint 1.75.0): `overrides[].files` glob-matches correctly and
+  // `--print-config` reflects the per-path rule relaxation.
+  "overrides": [
+    {
+      "files": ["test/**", "scripts/**", "apps/**"],
+      "rules": {
+        "no-magic-numbers": "off",
+        "id-length": "off",
+        "capitalized-comments": "off",
+        "sort-keys": "off",
+        "no-ternary": "off",
+        "sort-imports": "off",
+        "no-undefined": "off",
+        "max-statements": "off",
+        "func-names": "off",
+        "new-cap": "off",
+        "max-params": "off",
+        "prefer-destructuring": "off",
+        "no-continue": "off",
+        "complexity": "off",
+        "curly": "off",
+        "no-use-before-define": "off",
+        "no-nested-ternary": "off",
+        "no-duplicate-imports": "off",
+        "no-console": "off",
+        "no-underscore-dangle": "off"
+      }
+    }
+  ],
   "ignorePatterns": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
 }
