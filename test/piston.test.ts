@@ -309,4 +309,51 @@ describe('positioned piston movement', () => {
       expect(committed).toBe(true)
     }),
   )
+
+  it.effect('REGRESSION: a sticky retraction can pull at most one block — validatePistonPlan is a gate on arbitrary plans, not just planner output', () =>
+    Effect.sync(() => {
+      // The planner (`planStickyRetraction`) can never itself construct a
+      // sticky-retraction plan with more than one move: it reads exactly one
+      // source cell. But `validatePistonPlan` is exported and, as the tests
+      // above already do, is exercised against hand-built `PistonMovementPlan`
+      // values — the shape a caller reconstructing a plan from persisted or
+      // networked data would produce. A two-move "pull" is a rule violation
+      // that must be caught here, not assumed away because the in-process
+      // planner happens to be well-behaved.
+      const twoBlockPull = {
+        piston: { x: 0, y: 0, z: 0 }, facing: 'east' as const, kind: 'sticky' as const,
+        fromState: 'extended' as const, toState: 'retracted' as const,
+        moves: [
+          { block: 'STONE', from: { x: 3, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } },
+          { block: 'DIRT', from: { x: 2, y: 0, z: 0 }, to: { x: 1, y: 0, z: 0 } },
+        ],
+      }
+
+      expect(validatePistonPlan(twoBlockPull)).toStrictEqual({
+        reason: 'invalid-transition',
+        position: { x: 2, y: 0, z: 0 },
+      })
+    }),
+  )
+
+  it.effect('REGRESSION: a plan that claims to transition a piston to the state it is already in is refused, not silently accepted', () =>
+    Effect.sync(() => {
+      // `planPistonTransition` never emits this shape — it returns `noop`
+      // before calling either planner when `fromState === toState` would
+      // hold. `validatePistonPlan` has no such guarantee about its caller,
+      // so a reconstructed or malformed plan asserting a no-op transition as
+      // a real move must be refused rather than validated as if it were a
+      // legitimate (if pointless) move.
+      const noopClaimedAsMove = {
+        piston: { x: 5, y: 6, z: 7 }, facing: 'up' as const, kind: 'normal' as const,
+        fromState: 'extended' as const, toState: 'extended' as const,
+        moves: [],
+      }
+
+      expect(validatePistonPlan(noopClaimedAsMove)).toStrictEqual({
+        reason: 'invalid-transition',
+        position: { x: 5, y: 6, z: 7 },
+      })
+    }),
+  )
 })

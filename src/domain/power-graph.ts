@@ -80,9 +80,9 @@
  * `dispenser`) appear here only as kinds, so that a board can contain them and
  * so that power stops at them.
  */
-import { comparatorOutput, type ComparatorMode } from './comparator'
-import type { PositionKey } from './position-key'
+import { type ComparatorMode, comparatorOutput } from './comparator'
 import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level'
+import type { PositionKey } from './position-key'
 
 /**
  * The signal range, re-exported.
@@ -298,27 +298,66 @@ const SOURCE_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
   'comparator',
 ])
 
-export const powerAt = (map: PowerMap, key: PositionKey): PowerLevel => map.get(key) ?? 0
+/** The power level meaning "unpowered". */
+const NO_POWER_LEVEL: PowerLevel = 0
 
-export function* componentEntriesForKinds(
+export const powerAt = (map: PowerMap, key: PositionKey): PowerLevel => map.get(key) ?? NO_POWER_LEVEL
+
+/** Scans every component on the board. Used when no per-kind index was supplied. */
+const allComponentEntries = function* allComponentEntries(
   board: CircuitBoard,
   kinds: ReadonlySet<ComponentKind>,
   overrides?: ReadonlyMap<PositionKey, Component>,
 ): IterableIterator<readonly [PositionKey, Component]> {
-  if (board.componentKeysByKind === undefined) {
-    for (const [key, boardComponent] of board.components) {
-      const component = overrides?.get(key) ?? boardComponent
-      if (kinds.has(component.kind)) yield [key, component] as const
+  for (const [key, boardComponent] of board.components) {
+    const component = overrides?.get(key) ?? boardComponent
+    if (kinds.has(component.kind)) {
+      yield [key, component] as const
     }
+  }
+}
+
+/** Looks components up through `board.componentKeysByKind`. Used when that index was supplied. */
+const indexedComponentEntries = function* indexedComponentEntries(
+  board: CircuitBoard,
+  kinds: ReadonlySet<ComponentKind>,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): IterableIterator<readonly [PositionKey, Component]> {
+  for (const kind of kinds) {
+    for (const key of board.componentKeysByKind?.get(kind) ?? []) {
+      const component = overrides?.get(key) ?? board.components.get(key)
+      if (component) {
+        yield [key, component] as const
+      }
+    }
+  }
+}
+
+export const componentEntriesForKinds = function* componentEntriesForKinds(
+  board: CircuitBoard,
+  kinds: ReadonlySet<ComponentKind>,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): IterableIterator<readonly [PositionKey, Component]> {
+  if (board.componentKeysByKind) {
+    yield* indexedComponentEntries(board, kinds, overrides)
     return
   }
+  yield* allComponentEntries(board, kinds, overrides)
+}
 
-  for (const kind of kinds) {
-    for (const key of board.componentKeysByKind.get(kind) ?? []) {
-      const component = overrides?.get(key) ?? board.components.get(key)
-      if (component !== undefined) yield [key, component] as const
-    }
+/** Resolves the component at `key`, preferring an override over the board's own record. */
+const resolveComponent = (
+  board: CircuitBoard,
+  key: PositionKey,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): Component | undefined => overrides?.get(key) ?? board.components.get(key)
+
+/** `powerAt(previous, key)`, or `NO_POWER_LEVEL` when the optional cell reference is absent. */
+const inputPowerAt = (previous: PowerMap, key: PositionKey | undefined): PowerLevel => {
+  if (key) {
+    return powerAt(previous, key)
   }
+  return NO_POWER_LEVEL
 }
 
 const neighboursOf = (board: CircuitBoard, key: PositionKey): ReadonlyArray<PositionKey> =>
@@ -360,7 +399,82 @@ const neighboursOf = (board: CircuitBoard, key: PositionKey): ReadonlyArray<Posi
  * release upstream shows up as a failing test rather than a silent change.
  */
 const torchShouldEmit = (component: Component, inputPower: PowerLevel): boolean =>
-  inputPower === 0 && component.active !== false
+  inputPower === NO_POWER_LEVEL && component.active !== false
+
+const externalSourceLevel = (component: Component): PowerLevel => {
+  // The components whose truth is declared from outside. `emits` lets a
+  // Weighted plate report a count and a target report hit accuracy;
+  // Everything else omits it and gets full power.
+  if (component.active === true) {
+    return component.emits ?? MAX_POWER_LEVEL
+  }
+  return NO_POWER_LEVEL
+}
+
+const torchSourceLevel = (component: Component, previous: PowerMap): PowerLevel => {
+  // Inversion, delayed by one tick. A torch with no attachment burns
+  // Permanently, which is the standard way to write a constant source.
+  const inputPower = inputPowerAt(previous, component.invertedBy)
+  if (torchShouldEmit(component, inputPower)) {
+    return MAX_POWER_LEVEL
+  }
+  return NO_POWER_LEVEL
+}
+
+const repeaterSourceLevel = (component: Component, previous: PowerMap): PowerLevel => {
+  // Repeaters restore FULL power rather than passing the level through:
+  // That is what lets a signal cross more wire than one run reaches (14
+  // Cells — see `MAX_POWER_LEVEL`). Where that full power GOES is
+  // `conductsInto`'s business, not this function's: `sourcesOf` says a cell
+  // Generates, never who it generates into.
+  const inputPower = inputPowerAt(previous, component.inputFrom)
+  if (inputPower > NO_POWER_LEVEL) {
+    return MAX_POWER_LEVEL
+  }
+  return NO_POWER_LEVEL
+}
+
+const comparatorSourceLevel = (component: Component, previous: PowerMap): PowerLevel => {
+  // The rear is either a container's reading or the cell behind, never
+  // Both: in the world that cell holds one or the other. Both are read from
+  // OUTSIDE the current sweep — `previous` for the wire, the world owner's
+  // Statement for the container — which is what makes a comparator a delay
+  // Element like a repeater (`DELAYED_KINDS`).
+  const rear = component.containerSignal ?? inputPowerAt(previous, component.inputFrom)
+  const sides = (component.sideInputs ?? []).map((side) => powerAt(previous, side))
+  return comparatorOutput(rear, sides, component.mode ?? 'compare')
+}
+
+/**
+ * The level a single component generates this tick, before any wire propagation.
+ * `NO_POWER_LEVEL` means "does not generate" and is the single signal `sourcesOf`
+ * uses to decide whether to record an entry — which is what lets the four kinds
+ * below share one caller instead of each carrying its own `continue`.
+ */
+const sourceLevelFor = (component: Component, previous: PowerMap): PowerLevel => {
+  if (EXTERNAL_SOURCE_KINDS.has(component.kind)) {
+    return externalSourceLevel(component)
+  }
+  if (component.kind === 'torch') {
+    return torchSourceLevel(component, previous)
+  }
+  if (component.kind === 'repeater') {
+    return repeaterSourceLevel(component, previous)
+  }
+  if (component.kind === 'comparator') {
+    return comparatorSourceLevel(component, previous)
+  }
+
+  // `wire`, `lamp`, `hopper` and `dispenser` generate nothing, so they need no
+  // Branch.
+  //
+  // An if-chain rather than a `switch`, deliberately: a `switch` over a closed
+  // Union needs a `default` clause to satisfy oxlint's `default-case`, and
+  // That clause is unreachable — an uncoverable branch sitting permanently in
+  // The report, which is exactly the kind of noise that makes a coverage
+  // Threshold something people learn to ignore.
+  return NO_POWER_LEVEL
+}
 
 export const sourcesOf = (
   board: CircuitBoard,
@@ -370,65 +484,10 @@ export const sourcesOf = (
   const sources = new Map<PositionKey, PowerLevel>()
 
   for (const [key, component] of componentEntriesForKinds(board, SOURCE_KINDS, overrides)) {
-    if (EXTERNAL_SOURCE_KINDS.has(component.kind)) {
-      // The components whose truth is declared from outside. `emits` lets a
-      // weighted plate report a count and a target report hit accuracy;
-      // everything else omits it and gets full power.
-      if (component.active === true) {
-        sources.set(key, component.emits ?? MAX_POWER_LEVEL)
-      }
-      continue
+    const level = sourceLevelFor(component, previous)
+    if (level > NO_POWER_LEVEL) {
+      sources.set(key, level)
     }
-
-    if (component.kind === 'torch') {
-      // Inversion, delayed by one tick. A torch with no attachment burns
-      // permanently, which is the standard way to write a constant source.
-      const inputPower =
-        component.invertedBy === undefined ? 0 : powerAt(previous, component.invertedBy)
-      if (torchShouldEmit(component, inputPower)) {
-        sources.set(key, MAX_POWER_LEVEL)
-      }
-      continue
-    }
-
-    if (component.kind === 'repeater') {
-      // Repeaters restore FULL power rather than passing the level through:
-      // that is what lets a signal cross more wire than one run reaches (14
-      // cells — see `MAX_POWER_LEVEL`). Where that full power GOES is
-      // `conductsInto`'s business, not this function's: `sourcesOf` says a cell
-      // generates, never who it generates into.
-      const inputPower =
-        component.inputFrom === undefined ? 0 : powerAt(previous, component.inputFrom)
-      if (inputPower > 0) {
-        sources.set(key, MAX_POWER_LEVEL)
-      }
-      continue
-    }
-
-    if (component.kind === 'comparator') {
-      // The rear is either a container's reading or the cell behind, never
-      // both: in the world that cell holds one or the other. Both are read from
-      // OUTSIDE the current sweep — `previous` for the wire, the world owner's
-      // statement for the container — which is what makes a comparator a delay
-      // element like a repeater (`DELAYED_KINDS`).
-      const rear =
-        component.containerSignal ??
-        (component.inputFrom === undefined ? 0 : powerAt(previous, component.inputFrom))
-      const sides = (component.sideInputs ?? []).map((side) => powerAt(previous, side))
-      const output = comparatorOutput(rear, sides, component.mode ?? 'compare')
-      if (output > 0) {
-        sources.set(key, output)
-      }
-    }
-
-    // `wire`, `lamp`, `hopper` and `dispenser` generate nothing, so they need no
-    // branch.
-    //
-    // An if-chain rather than a `switch`, deliberately: a `switch` over a closed
-    // union needs a `default` clause to satisfy oxlint's `default-case`, and
-    // that clause is unreachable — an uncoverable branch sitting permanently in
-    // the report, which is exactly the kind of noise that makes a coverage
-    // threshold something people learn to ignore.
   }
 
   return sources
@@ -537,8 +596,8 @@ const conductsInto = (
   key: PositionKey,
   overrides?: ReadonlyMap<PositionKey, Component>,
 ): ReadonlyArray<PositionKey> => {
-  const component = overrides?.get(key) ?? board.components.get(key)
-  if (component === undefined || !CONDUCTS_POWER.has(component.kind)) {
+  const component = resolveComponent(board, key, overrides)
+  if (!component || !CONDUCTS_POWER.has(component.kind)) {
     return []
   }
 
@@ -559,6 +618,27 @@ const conductsInto = (
   return neighbours
 }
 
+const drivesInto = (board: CircuitBoard, key: PositionKey, target: PositionKey): boolean => {
+  const component = board.components.get(key)
+  if (!component || !CONDUCTS_POWER.has(component.kind)) {
+    return false
+  }
+
+  if (!neighboursOf(board, key).includes(target)) {
+    return false
+  }
+
+  if (
+    component.kind === 'repeater' ||
+    component.kind === 'comparator' ||
+    component.kind === 'observer'
+  ) {
+    return component.outputTo === target
+  }
+
+  return component.kind !== 'torch' || component.invertedBy !== target
+}
+
 /**
  * Advance the circuit by one redstone tick.
  *
@@ -571,44 +651,75 @@ const conductsInto = (
  * A lamp's own entry in the returned map is a DECAYED level, so it is not the
  * right thing to test for litness — see `isLit`.
  */
+/** How much a signal loses crossing one wire cell — redstone dust decays by exactly this much per hop. */
+const SIGNAL_DECAY_PER_BLOCK: PowerLevel = 1
+
+const orderedSources = (
+  board: CircuitBoard,
+  previous: PowerMap,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): ReadonlyArray<readonly [PositionKey, PowerLevel]> =>
+  [...sourcesOf(board, previous, overrides)].sort(([, left], [, right]) => right - left)
+
+/** The BFS queue and its power map, seeded from this tick's sources in descending power order. */
+const seedFromSources = (
+  board: CircuitBoard,
+  previous: PowerMap,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): { readonly power: Map<PositionKey, PowerLevel>; readonly queue: Array<PositionKey> } => {
+  const power = new Map<PositionKey, PowerLevel>()
+  const queue: Array<PositionKey> = []
+  for (const [key, level] of orderedSources(board, previous, overrides)) {
+    power.set(key, level)
+    queue.push(key)
+  }
+  return { power, queue }
+}
+
+/** The level `key` still has left to give after this tick's decay, if any. */
+const outgoingPowerAt = (power: PowerMap, key: PositionKey, kind: ComponentKind | undefined): PowerLevel => {
+  if (kind === 'wire') {
+    return powerAt(power, key) - SIGNAL_DECAY_PER_BLOCK
+  }
+  return powerAt(power, key)
+}
+
+/** Pushes `outgoing` onto every neighbour of `key` that receives power and is not already at least that strong. */
+const relaxNeighbours = (params: {
+  readonly board: CircuitBoard
+  readonly power: Map<PositionKey, PowerLevel>
+  readonly queue: Array<PositionKey>
+  readonly key: PositionKey
+  readonly outgoing: PowerLevel
+  readonly overrides: ReadonlyMap<PositionKey, Component> | undefined
+}): void => {
+  const { board, key, outgoing, overrides, power, queue } = params
+  for (const neighbour of conductsInto(board, key, overrides)) {
+    const neighbourKind = resolveComponent(board, neighbour, overrides)?.kind
+    if (neighbourKind && RECEIVES_POWER.has(neighbourKind) && powerAt(power, neighbour) < outgoing) {
+      power.set(neighbour, outgoing)
+      queue.push(neighbour)
+    }
+  }
+}
+
 export const propagateTick = (
   board: CircuitBoard,
   previous: PowerMap,
   overrides?: ReadonlyMap<PositionKey, Component>,
 ): PowerMap => {
-  const power = new Map<PositionKey, PowerLevel>()
-  const sources = [...sourcesOf(board, previous, overrides)].sort(
-    ([, left], [, right]) => right - left,
-  )
-
-  const queue: Array<PositionKey> = []
-  for (const [key, level] of sources) {
-    power.set(key, level)
-    queue.push(key)
-  }
+  const { power, queue } = seedFromSources(board, previous, overrides)
 
   // `for...of` over an array re-reads `length` on every step, so entries pushed
-  // inside the loop ARE visited — which makes this a BFS queue with no cursor
-  // and no `queue[head]` indexed read. Under `noUncheckedIndexedAccess` that
-  // read would be `PositionKey | undefined` and would need an unreachable
+  // Inside the loop ARE visited — which makes this a BFS queue with no cursor
+  // And no `queue[head]` indexed read. Under `noUncheckedIndexedAccess` that
+  // Read would be `PositionKey | undefined` and would need an unreachable
   // `undefined` guard, i.e. a branch that can never be covered.
   for (const key of queue) {
-    const component = overrides?.get(key) ?? board.components.get(key)
-    const outgoing = powerAt(power, key) - (component?.kind === 'wire' ? 1 : 0)
-    if (outgoing <= 0) {
-      continue
-    }
-
-    for (const neighbour of conductsInto(board, key, overrides)) {
-      const neighbourKind = (overrides?.get(neighbour) ?? board.components.get(neighbour))?.kind
-      if (neighbourKind === undefined || !RECEIVES_POWER.has(neighbourKind)) {
-        continue
-      }
-      if (powerAt(power, neighbour) >= outgoing) {
-        continue
-      }
-      power.set(neighbour, outgoing)
-      queue.push(neighbour)
+    const kind = resolveComponent(board, key, overrides)?.kind
+    const outgoing = outgoingPowerAt(power, key, kind)
+    if (outgoing > NO_POWER_LEVEL) {
+      relaxNeighbours({ board, key, outgoing, overrides, power, queue })
     }
   }
 
@@ -677,11 +788,11 @@ const DELAYED_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
  * point — a bound with slack in it hides the day the model grows a third delayed
  * component and somebody forgets to add it to `DELAYED_KINDS`.
  */
-export const settleTickLimitFor = (board: CircuitBoard): number => {
-  let delayed = 0
-  for (const _entry of componentEntriesForKinds(board, DELAYED_KINDS)) delayed += 1
-  return delayed + 2
-}
+/** One tick to produce the final map, plus one to observe that it did not change. */
+const SETTLE_TICK_OVERHEAD = 2
+
+export const settleTickLimitFor = (board: CircuitBoard): number =>
+  [...componentEntriesForKinds(board, DELAYED_KINDS)].length + SETTLE_TICK_OVERHEAD
 
 export type SettleResult = {
   readonly power: PowerMap
@@ -716,15 +827,15 @@ export const settle = (
   const limit = options.limit ?? settleTickLimitFor(board)
   let power = options.from ?? emptyPowerMap
 
-  for (let tick = 1; tick <= limit; tick += 1) {
+  for (let tick = 1; tick <= limit; tick++) {
     const next = propagateTick(board, power)
     if (samePower(power, next)) {
-      return { power: next, ticks: tick, oscillating: false }
+      return { oscillating: false, power: next, ticks: tick }
     }
     power = next
   }
 
-  return { power, ticks: limit, oscillating: true }
+  return { oscillating: true, power, ticks: limit }
 }
 
 /**
@@ -759,7 +870,7 @@ export const drivenPowerAt = (
   let strongest = 0
   for (const neighbour of neighboursOf(board, key)) {
     const level = powerAt(power, neighbour)
-    if (level > strongest && conductsInto(board, neighbour).includes(key)) {
+    if (level > strongest && drivesInto(board, neighbour, key)) {
       strongest = level
     }
   }
@@ -775,7 +886,7 @@ export const drivenPowerAt = (
  * that separately.
  */
 export const isLit = (board: CircuitBoard, power: PowerMap, key: PositionKey): boolean =>
-  board.components.get(key)?.kind === 'lamp' && drivenPowerAt(board, power, key) > 0
+  board.components.get(key)?.kind === 'lamp' && drivenPowerAt(board, power, key) > NO_POWER_LEVEL
 
 /**
  * Whether an actuator has power arriving at it.
@@ -791,4 +902,4 @@ export const isLit = (board: CircuitBoard, power: PowerMap, key: PositionKey): b
  * planned separately by `domain/piston.ts`.
  */
 export const isPowered = (board: CircuitBoard, power: PowerMap, key: PositionKey): boolean =>
-  drivenPowerAt(board, power, key) > 0
+  drivenPowerAt(board, power, key) > NO_POWER_LEVEL

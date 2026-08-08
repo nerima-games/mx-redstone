@@ -39,6 +39,13 @@ export default defineConfig({
         // number meaningless. It is a placeholder for mc-kernel's coordinate
         // vocabulary and is deleted when kernel is published.
         'src/domain/position-key.ts',
+        // PURE_TYPE, same reasoning: `export type BlockRef = string`, zero
+        // executable statements. Its own file header calls out that it is "the
+        // same call, and the same reasoning" as position-key.ts above — a
+        // placeholder for mc-kernel's block identity, deleted when kernel is
+        // published. It was omitted from this list when it was split out of
+        // domain/piston.ts, which is why it showed as 0% rather than excluded.
+        'src/domain/block-ref.ts',
       ],
       all: true,
       reporter: ['text', 'json', 'html', 'lcov'],

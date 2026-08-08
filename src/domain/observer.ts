@@ -136,7 +136,7 @@ export const observeChanges = (current: Sightings, previous: Sightings): Observe
   for (const [key, block] of current) {
     seen.set(key, block)
     const before = previous.get(key)
-    if (before !== undefined && before !== block) {
+    if (previous.has(key) && before !== block) {
       fired.push(key)
     }
   }

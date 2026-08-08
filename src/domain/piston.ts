@@ -66,7 +66,7 @@ import type { BlockRef } from './block-ref'
  * explicitly.
  */
 export type BlockCapabilityLookup = {
-  /** kernel's `pistonImmovable` flag (capability-flag-audit.md §3). */
+  /** Kernel's `pistonImmovable` flag (capability-flag-audit.md §3). */
   readonly pistonImmovable: (block: BlockRef) => boolean
 }
 
@@ -123,14 +123,14 @@ export const planPush = (
 ): PushOutcome => {
   for (const [index, block] of column.entries()) {
     if (capabilities.pistonImmovable(block)) {
-      return { kind: 'refused', refusal: { reason: 'immovable', at: index } }
+      return { kind: 'refused', refusal: { at: index, reason: 'immovable' } }
     }
     if (index >= PISTON_PUSH_LIMIT) {
-      return { kind: 'refused', refusal: { reason: 'too-long', at: index } }
+      return { kind: 'refused', refusal: { at: index, reason: 'too-long' } }
     }
   }
 
-  return { kind: 'push', plan: { moved: [...column], length: column.length } }
+  return { kind: 'push', plan: { length: column.length, moved: [...column] } }
 }
 
 /**
@@ -225,7 +225,160 @@ export const pistonPositionAt = (
   }
 }
 
-const positionKey = ({ x, y, z }: PistonPosition): string => `${x},${y},${z}`
+const positionKey = ({ x: posX, y: posY, z: posZ }: PistonPosition): string => `${posX},${posY},${posZ}`
+
+/**
+ * Distance from a piston's base to its head — the adjacent cell — and also the
+ * step size the extension scan advances by, one cell at a time.
+ */
+const ADJACENT_CELL_DISTANCE = 1
+
+/** Distance from a sticky piston's base to the block it pulls in on retraction. */
+const STICKY_PULL_SOURCE_DISTANCE = 2
+
+/** Direction multiplier applied to a per-cell offset when a piston extends. */
+const EXTEND_DIRECTION = 1
+
+/** Direction multiplier applied to a per-cell offset when a piston retracts. */
+const RETRACT_DIRECTION = -1
+
+/** Index of the first entry in a `moves` array. */
+const FIRST_MOVE_INDEX = 0
+
+/** Index of the second entry in a `moves` array. */
+const SECOND_MOVE_INDEX = 1
+
+/** A normal (non-sticky) piston retraction must carry zero pulled-block moves. */
+const NORMAL_PISTON_RETRACT_MOVE_LIMIT = 0
+
+/** A sticky piston retraction pulls at most one block. */
+const STICKY_PISTON_RETRACT_MOVE_LIMIT = 1
+
+/** The three inputs every planning helper below needs, bundled so each helper stays within the max-params budget. */
+type PistonPlanningContext = {
+  readonly capabilities: BlockCapabilityLookup
+  readonly request: PistonTransitionRequest
+  readonly world: PistonWorldView
+}
+
+const buildRetractionBasePlan = (request: PistonTransitionRequest): PistonMovementPlan => ({
+  facing: request.facing,
+  fromState: request.state,
+  kind: request.kind,
+  moves: [],
+  piston: request.piston,
+  toState: 'retracted',
+})
+
+const planStickyRetraction = (
+  context: PistonPlanningContext,
+  base: PistonMovementPlan,
+): PistonMovementOutcome => {
+  const source = pistonPositionAt(context.request.piston, context.request.facing, STICKY_PULL_SOURCE_DISTANCE)
+  const cell = context.world.read(source)
+  if (cell.kind === 'missing' || cell.kind === 'out-of-world') {
+    return { kind: 'refused', refusal: { position: source, reason: cell.kind } }
+  }
+  if (cell.kind === 'empty' || context.capabilities.pistonImmovable(cell.block)) {
+    return { kind: 'move', plan: base }
+  }
+  return {
+    kind: 'move',
+    plan: {
+      ...base,
+      moves: [{ block: cell.block, from: source, to: pistonPositionAt(context.request.piston, context.request.facing, ADJACENT_CELL_DISTANCE) }],
+    },
+  }
+}
+
+const planRetraction = (context: PistonPlanningContext): PistonMovementOutcome => {
+  const base = buildRetractionBasePlan(context.request)
+  if (context.request.kind === 'normal') {
+    return { kind: 'move', plan: base }
+  }
+  return planStickyRetraction(context, base)
+}
+
+type ExtendedColumnBlock = { readonly block: BlockRef; readonly position: PistonPosition }
+
+/** One step of the extension scan: either the scan is done (refused or found the vacancy to push into) or one more block joins the column. */
+type ExtensionStep =
+  | { readonly kind: 'settled'; readonly outcome: PistonMovementOutcome }
+  | { readonly kind: 'joins-column'; readonly block: ExtendedColumnBlock }
+
+const buildExtensionMovePlan = (
+  context: PistonPlanningContext,
+  blocks: ReadonlyArray<ExtendedColumnBlock>,
+): PistonMovementOutcome => ({
+  kind: 'move',
+  plan: {
+    facing: context.request.facing,
+    fromState: context.request.state,
+    kind: context.request.kind,
+    moves: blocks.toReversed().map(({ block, position: from }) => ({
+      block,
+      from,
+      to: pistonPositionAt(from, context.request.facing, ADJACENT_CELL_DISTANCE),
+    })),
+    piston: context.request.piston,
+    toState: 'extended',
+  },
+})
+
+const scanExtensionCell = (
+  context: PistonPlanningContext,
+  position: PistonPosition,
+  blocks: ReadonlyArray<ExtendedColumnBlock>,
+): ExtensionStep => {
+  const cell = context.world.read(position)
+  if (cell.kind === 'missing' || cell.kind === 'out-of-world') {
+    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: cell.kind } } }
+  }
+  if (cell.kind === 'empty') {
+    return { kind: 'settled', outcome: buildExtensionMovePlan(context, blocks) }
+  }
+  if (context.capabilities.pistonImmovable(cell.block)) {
+    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: 'immovable' } } }
+  }
+  if (blocks.length === PISTON_PUSH_LIMIT) {
+    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: 'too-long' } } }
+  }
+  return { block: { block: cell.block, position }, kind: 'joins-column' }
+}
+
+/**
+ * Terminates without an explicit bound check because `scanExtensionCell`'s own
+ * `blocks.length === PISTON_PUSH_LIMIT` guard proves it: reaching iteration N
+ * requires every earlier iteration to have taken the `joins-column` branch (any
+ * `settled` step returns immediately), and `joins-column` pushes exactly one
+ * entry per iteration. So by the `PISTON_PUSH_LIMIT`-th push, `blocks.length`
+ * is necessarily `PISTON_PUSH_LIMIT`, and that guard — checked unconditionally,
+ * ahead of `joins-column`, on every call — fires no later than the very next
+ * iteration. A bounded `for` here would need a trailing throw for a case that
+ * can provably never run; `while (true)` lets the loop's own return be the
+ * only exit, so there is no unreachable branch to prove dead or instrument
+ * around.
+ */
+const planExtension = (context: PistonPlanningContext): PistonMovementOutcome => {
+  const blocks: Array<ExtendedColumnBlock> = []
+  let distance = ADJACENT_CELL_DISTANCE
+  while (true) {
+    const position = pistonPositionAt(context.request.piston, context.request.facing, distance)
+    const step = scanExtensionCell(context, position, blocks)
+    if (step.kind === 'settled') {
+      return step.outcome
+    }
+    blocks.push(step.block)
+    distance += ADJACENT_CELL_DISTANCE
+  }
+}
+
+const resolvePistonTargetState = (powered: boolean): PistonState => {
+  if (powered) {
+    return 'extended'
+  }
+  return 'retracted'
+}
 
 /** Plans extension/retraction without mutating the supplied view. */
 export const planPistonTransition = (
@@ -233,138 +386,129 @@ export const planPistonTransition = (
   world: PistonWorldView,
   capabilities: BlockCapabilityLookup,
 ): PistonMovementOutcome => {
-  const targetState: PistonState = request.powered ? 'extended' : 'retracted'
-  if (request.state === targetState) return { kind: 'noop', state: request.state }
+  const targetState = resolvePistonTargetState(request.powered)
+  if (request.state === targetState) {
+    return { kind: 'noop', state: request.state }
+  }
 
+  const context: PistonPlanningContext = { capabilities, request, world }
   if (targetState === 'retracted') {
-    const base: PistonMovementPlan = {
-      piston: request.piston,
-      facing: request.facing,
-      kind: request.kind,
-      fromState: request.state,
-      toState: targetState,
-      moves: [],
-    }
-    if (request.kind === 'normal') return { kind: 'move', plan: base }
-
-    const source = pistonPositionAt(request.piston, request.facing, 2)
-    const cell = world.read(source)
-    if (cell.kind === 'missing' || cell.kind === 'out-of-world') {
-      return { kind: 'refused', refusal: { reason: cell.kind, position: source } }
-    }
-    if (cell.kind === 'empty' || capabilities.pistonImmovable(cell.block)) {
-      return { kind: 'move', plan: base }
-    }
-    return {
-      kind: 'move',
-      plan: {
-        ...base,
-        moves: [{ block: cell.block, from: source, to: pistonPositionAt(request.piston, request.facing, 1) }],
-      },
-    }
+    return planRetraction(context)
   }
 
-  const blocks: Array<{ readonly block: BlockRef; readonly position: PistonPosition }> = []
-  for (let distance = 1; distance <= PISTON_PUSH_LIMIT + 1; distance += 1) {
-    const position = pistonPositionAt(request.piston, request.facing, distance)
-    const cell = world.read(position)
-    if (cell.kind === 'missing' || cell.kind === 'out-of-world') {
-      return { kind: 'refused', refusal: { reason: cell.kind, position } }
-    }
-    if (cell.kind === 'empty') {
-      return {
-        kind: 'move',
-        plan: {
-          piston: request.piston,
-          facing: request.facing,
-          kind: request.kind,
-          fromState: request.state,
-          toState: targetState,
-          moves: blocks.toReversed().map(({ block, position: from }) => ({
-            block,
-            from,
-            to: pistonPositionAt(from, request.facing, 1),
-          })),
-        },
-      }
-    }
-    if (capabilities.pistonImmovable(cell.block)) {
-      return { kind: 'refused', refusal: { reason: 'immovable', position } }
-    }
-    if (blocks.length === PISTON_PUSH_LIMIT) {
-      return { kind: 'refused', refusal: { reason: 'too-long', position } }
-    }
-    blocks.push({ block: cell.block, position })
-  }
-  throw new Error('unreachable piston scan')
+  return planExtension(context)
 }
 
-export type PistonApplyPort<E = never> = {
+export type PistonApplyPort<Err = never> = {
   /** Must compare expected source blocks and commit all moves plus state together. */
-  readonly commit: (plan: PistonMovementPlan) => Effect.Effect<void, E>
+  readonly commit: (plan: PistonMovementPlan) => Effect.Effect<void, Err>
+}
+
+const resolveConflictPosition = (sourceAlreadyTaken: boolean, move: PistonMove): PistonPosition => {
+  if (sourceAlreadyTaken) {
+    return move.from
+  }
+  return move.to
+}
+
+const resolveMoveDirection = (toState: PistonState): number => {
+  if (toState === 'extended') {
+    return EXTEND_DIRECTION
+  }
+  return RETRACT_DIRECTION
+}
+
+/** Tracks which source/target cells earlier moves in the same plan already claim. */
+type ClaimedPositions = { readonly sources: Set<string>; readonly targets: Set<string> }
+
+const checkMoveAgainstClaims = (
+  move: PistonMove,
+  claimed: ClaimedPositions,
+  plan: PistonMovementPlan,
+): PistonPlanRefusal | undefined => {
+  const source = positionKey(move.from)
+  const target = positionKey(move.to)
+  if (claimed.sources.has(source) || claimed.targets.has(target)) {
+    return { position: resolveConflictPosition(claimed.sources.has(source), move), reason: 'duplicate' }
+  }
+  claimed.sources.add(source)
+  claimed.targets.add(target)
+  const direction = resolveMoveDirection(plan.toState)
+  if (target !== positionKey(pistonPositionAt(move.from, plan.facing, direction))) {
+    return { position: move.to, reason: 'collision' }
+  }
+  return
+}
+
+const findMoveConflict = (plan: PistonMovementPlan): PistonPlanRefusal | undefined => {
+  const claimed: ClaimedPositions = { sources: new Set<string>(), targets: new Set<string>() }
+  for (const move of plan.moves) {
+    const conflict = checkMoveAgainstClaims(move, claimed, plan)
+    if (conflict) {
+      return conflict
+    }
+  }
+  return
+}
+
+const validateExtendedPlan = (plan: PistonMovementPlan): PistonPlanRefusal | undefined => {
+  if (plan.moves.length > PISTON_PUSH_LIMIT) {
+    return {
+      position: pistonPositionAt(plan.piston, plan.facing, PISTON_PUSH_LIMIT + ADJACENT_CELL_DISTANCE),
+      reason: 'too-long',
+    }
+  }
+  for (const [index, move] of plan.moves.entries()) {
+    const expectedDistance = plan.moves.length - index
+    if (positionKey(move.from) !== positionKey(pistonPositionAt(plan.piston, plan.facing, expectedDistance))) {
+      return { position: move.from, reason: 'collision' }
+    }
+  }
+  return
+}
+
+const validateRetractionPlan = (plan: PistonMovementPlan): PistonPlanRefusal | undefined => {
+  if (plan.kind === 'normal' && plan.moves.length > NORMAL_PISTON_RETRACT_MOVE_LIMIT) {
+    return { position: plan.moves[FIRST_MOVE_INDEX]!.from, reason: 'invalid-transition' }
+  }
+  if (plan.moves.length > STICKY_PISTON_RETRACT_MOVE_LIMIT) {
+    return { position: plan.moves[SECOND_MOVE_INDEX]!.from, reason: 'invalid-transition' }
+  }
+  const [pull] = plan.moves
+  if (pull && (
+    positionKey(pull.from) !== positionKey(pistonPositionAt(plan.piston, plan.facing, STICKY_PULL_SOURCE_DISTANCE))
+    || positionKey(pull.to) !== positionKey(pistonPositionAt(plan.piston, plan.facing, ADJACENT_CELL_DISTANCE))
+  )) {
+    return { position: pull.from, reason: 'collision' }
+  }
+  return
 }
 
 /** A plan has the same bounded, deterministic shape as the pure planner emits. */
 export const validatePistonPlan = (plan: PistonMovementPlan): PistonPlanRefusal | undefined => {
   if (plan.fromState === plan.toState) {
-    return { reason: 'invalid-transition', position: plan.piston }
+    return { position: plan.piston, reason: 'invalid-transition' }
   }
 
-  const sources = new Set<string>()
-  const targets = new Set<string>()
-  for (const move of plan.moves) {
-    const source = positionKey(move.from)
-    const target = positionKey(move.to)
-    if (sources.has(source) || targets.has(target)) {
-      return { reason: 'duplicate', position: sources.has(source) ? move.from : move.to }
-    }
-    sources.add(source)
-    targets.add(target)
-    const direction = plan.toState === 'extended' ? 1 : -1
-    if (target !== positionKey(pistonPositionAt(move.from, plan.facing, direction))) {
-      return { reason: 'collision', position: move.to }
-    }
+  const conflict = findMoveConflict(plan)
+  if (conflict) {
+    return conflict
   }
 
   if (plan.toState === 'extended') {
-    if (plan.moves.length > PISTON_PUSH_LIMIT) {
-      return {
-        reason: 'too-long',
-        position: pistonPositionAt(plan.piston, plan.facing, PISTON_PUSH_LIMIT + 1),
-      }
-    }
-    for (const [index, move] of plan.moves.entries()) {
-      const expectedDistance = plan.moves.length - index
-      if (positionKey(move.from) !== positionKey(pistonPositionAt(plan.piston, plan.facing, expectedDistance))) {
-        return { reason: 'collision', position: move.from }
-      }
-    }
-    return undefined
+    return validateExtendedPlan(plan)
   }
-
-  if (plan.kind === 'normal' && plan.moves.length > 0) {
-    return { reason: 'invalid-transition', position: plan.moves[0]!.from }
-  }
-  if (plan.moves.length > 1) {
-    return { reason: 'invalid-transition', position: plan.moves[1]!.from }
-  }
-  const pull = plan.moves[0]
-  if (pull !== undefined && (
-    positionKey(pull.from) !== positionKey(pistonPositionAt(plan.piston, plan.facing, 2))
-    || positionKey(pull.to) !== positionKey(pistonPositionAt(plan.piston, plan.facing, 1))
-  )) {
-    return { reason: 'collision', position: pull.from }
-  }
-  return undefined
+  return validateRetractionPlan(plan)
 }
 
 /** Delegates one validated plan to one atomic host commit. */
-export const applyPistonPlan = <E>(
+export const applyPistonPlan = <Err>(
   plan: PistonMovementPlan,
-  port: PistonApplyPort<E>,
-): import('effect').Effect.Effect<void, E | PistonPlanRefusal> => {
+  port: PistonApplyPort<Err>,
+): import('effect').Effect.Effect<void, Err | PistonPlanRefusal> => {
   const refusal = validatePistonPlan(plan)
-  return refusal === undefined
-    ? port.commit(plan)
-    : Effect.fail(refusal)
+  if (refusal) {
+    return Effect.fail(refusal)
+  }
+  return port.commit(plan)
 }

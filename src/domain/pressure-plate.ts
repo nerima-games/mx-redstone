@@ -103,9 +103,18 @@ export const HEAVY_PLATE_CAPACITY = 150
  * been mis-configured. Degrading to the binary answer is the reading that keeps
  * a plate a plate.
  */
+/** Occupant counts at or below this mean "nobody is standing on the plate". */
+const NO_OCCUPANTS = 0
+
+/** The signal a plate emits when nothing is standing on it. */
+const UNPOWERED_SIGNAL: PowerLevel = 0
+
+/** A configured capacity at or below this is meaningless, not merely small. */
+const NON_POSITIVE_CAPACITY = 0
+
 export const plateSignal = (occupants: number, weighing: PlateWeighing): PowerLevel => {
-  if (!Number.isFinite(occupants) || occupants <= 0) {
-    return 0
+  if (!Number.isFinite(occupants) || occupants <= NO_OCCUPANTS) {
+    return UNPOWERED_SIGNAL
   }
 
   if (weighing.kind === 'binary') {
@@ -113,7 +122,7 @@ export const plateSignal = (occupants: number, weighing: PlateWeighing): PowerLe
   }
 
   const { capacity } = weighing
-  if (!Number.isFinite(capacity) || capacity <= 0) {
+  if (!Number.isFinite(capacity) || capacity <= NON_POSITIVE_CAPACITY) {
     return MAX_POWER_LEVEL
   }
 

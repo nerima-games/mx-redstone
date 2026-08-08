@@ -23,6 +23,14 @@ export const TORCH_BURNOUT_COOLDOWN_TICKS = 80
 
 const NO_TICKS = 0
 const NEXT_TICK = 1
+/** The power level meaning "unpowered". */
+const NO_POWER_LEVEL = 0
+/** A freshly placed repeater's delay, and the shortest delay it can be set to. */
+const MIN_REPEATER_DELAY_TICKS = 1
+/** The longest delay a repeater can be set to (four right-clicks). */
+const MAX_REPEATER_DELAY_TICKS = 4
+/** The shortest a button's pulse can be truncated to. */
+const MIN_BUTTON_PULSE_TICKS = 1
 
 export type RepeaterTimer = {
   readonly output: boolean
@@ -57,10 +65,25 @@ export const emptyTimedCircuitState: TimedCircuitState = {
 }
 
 const repeaterDelay = (component: Component): number =>
-  Math.max(1, Math.min(4, Math.trunc(component.delayTicks ?? 1)))
+  Math.max(
+    MIN_REPEATER_DELAY_TICKS,
+    Math.min(MAX_REPEATER_DELAY_TICKS, Math.trunc(component.delayTicks ?? MIN_REPEATER_DELAY_TICKS)),
+  )
 
 const buttonDuration = (component: Component): number =>
-  Math.max(1, Math.trunc(component.pulseTicks ?? DEFAULT_BUTTON_PULSE_TICKS))
+  Math.max(MIN_BUTTON_PULSE_TICKS, Math.trunc(component.pulseTicks ?? DEFAULT_BUTTON_PULSE_TICKS))
+
+/** How many ticks remain before `requestedOutput` takes effect. */
+const nextRemainingTicks = (
+  previous: RepeaterTimer | undefined,
+  requestedOutput: boolean,
+  delayTicks: number,
+): number => {
+  if (previous?.pendingOutput === requestedOutput) {
+    return previous.remainingTicks - NEXT_TICK
+  }
+  return delayTicks - NEXT_TICK
+}
 
 const advanceRepeater = (
   previous: RepeaterTimer | undefined,
@@ -69,31 +92,31 @@ const advanceRepeater = (
 ): RepeaterTimer => {
   const output = previous?.output ?? false
   if (requestedOutput === output) {
-    return { output, remainingTicks: 0 }
+    return { output, remainingTicks: NO_TICKS }
   }
 
-  const remaining =
-    previous?.pendingOutput === requestedOutput ? previous.remainingTicks - 1 : delayTicks - 1
-  if (remaining <= 0) {
-    return { output: requestedOutput, remainingTicks: 0 }
+  const remaining = nextRemainingTicks(previous, requestedOutput, delayTicks)
+  if (remaining <= NO_TICKS) {
+    return { output: requestedOutput, remainingTicks: NO_TICKS }
   }
   return { output, pendingOutput: requestedOutput, remainingTicks: remaining }
 }
 
 const repeaterIsLocked = (component: Component, previous: PowerMap): boolean =>
-  (component.sideInputs ?? []).some((side) => powerAt(previous, side) > 0)
+  (component.sideInputs ?? []).some((side) => powerAt(previous, side) > NO_POWER_LEVEL)
 
 const holdRepeater = (previous: RepeaterTimer | undefined): RepeaterTimer => ({
   output: previous?.output ?? false,
-  remainingTicks: 0,
+  remainingTicks: NO_TICKS,
 })
 
-const advanceOrHoldRepeater = (
-  component: Component,
-  previousPower: PowerMap,
-  previousTimer: RepeaterTimer | undefined,
-  requested: boolean,
-): RepeaterTimer => {
+const advanceOrHoldRepeater = (options: {
+  readonly component: Component
+  readonly previousPower: PowerMap
+  readonly previousTimer: RepeaterTimer | undefined
+  readonly requested: boolean
+}): RepeaterTimer => {
+  const { component, previousPower, previousTimer, requested } = options
   if (repeaterIsLocked(component, previousPower)) {
     return holdRepeater(previousTimer)
   }
@@ -109,9 +132,17 @@ const advanceTorch = (
   },
 ): TorchTimer => {
   const { previous, previousOutput, requestedOutput } = options
-  if ((previous?.burnoutRemainingTicks ?? NO_TICKS) > NEXT_TICK) {
+  /**
+   * Computed once and reused below: the guard and the return value must agree
+   * on the same reading of `previous`, and re-deriving it a second time would
+   * create a branch (the `?? NO_TICKS` fallback at this second site) that can
+   * never fire — the guard already proves the fallback wasn't needed to reach
+   * here, since NO_TICKS (0) can never satisfy `> NEXT_TICK`.
+   */
+  const burnoutRemainingTicks = previous?.burnoutRemainingTicks ?? NO_TICKS
+  if (burnoutRemainingTicks > NEXT_TICK) {
     return {
-      burnoutRemainingTicks: (previous?.burnoutRemainingTicks ?? NO_TICKS) - NEXT_TICK,
+      burnoutRemainingTicks: burnoutRemainingTicks - NEXT_TICK,
       output: false,
       recentOffTicks: [],
     }
@@ -135,6 +166,122 @@ const advanceTorch = (
   return { burnoutRemainingTicks: 0, output: requestedOutput, recentOffTicks }
 }
 
+/**
+ * `{ outputTo }` when `outputTo` is present, or an empty object otherwise — never
+ * `{ outputTo: undefined }`, which `exactOptionalPropertyTypes` treats as a
+ * different (and here wrong) thing from the key being absent.
+ */
+const outputToFields = (outputTo: PositionKey | undefined): Pick<Component, 'outputTo'> | Record<string, never> => {
+  if (outputTo) {
+    return { outputTo }
+  }
+  return {}
+}
+
+const requestedRepeaterOutput = (component: Component, previousPower: PowerMap): boolean => {
+  if (component.inputFrom) {
+    return powerAt(previousPower, component.inputFrom) > NO_POWER_LEVEL
+  }
+  return false
+}
+
+const applyRepeaterEntry = (params: {
+  readonly key: PositionKey
+  readonly component: Component
+  readonly previous: TimedCircuitState
+  readonly repeaters: Map<PositionKey, RepeaterTimer>
+  readonly components: Map<PositionKey, Component>
+}): void => {
+  const { component, components, key, previous, repeaters } = params
+  const requested = requestedRepeaterOutput(component, previous.power)
+  const prior = previous.repeaters.get(key)
+  const timer = advanceOrHoldRepeater({
+    component,
+    previousPower: previous.power,
+    previousTimer: prior,
+    requested,
+  })
+  repeaters.set(key, timer)
+  components.set(key, {
+    active: timer.output,
+    emits: MAX_POWER_LEVEL,
+    kind: 'observer',
+    ...outputToFields(component.outputTo),
+  })
+}
+
+/** The button's replacement `active` flag alongside its next timer. */
+const advanceButton = (
+  component: Component,
+  prior: ButtonTimer | undefined,
+  triggered: boolean,
+): { readonly active: boolean; readonly timer: ButtonTimer } => {
+  let available = prior?.remainingTicks ?? NO_TICKS
+  if (triggered) {
+    available = buttonDuration(component)
+  }
+  const active = available > NO_TICKS
+  const timer: ButtonTimer = {
+    inputActive: component.active === true,
+    remainingTicks: Math.max(NO_TICKS, available - NEXT_TICK),
+  }
+  return { active, timer }
+}
+
+const applyButtonEntry = (params: {
+  readonly key: PositionKey
+  readonly component: Component
+  readonly previous: TimedCircuitState
+  readonly pressedButtons: ReadonlySet<PositionKey>
+  readonly buttons: Map<PositionKey, ButtonTimer>
+  readonly components: Map<PositionKey, Component>
+}): void => {
+  const { buttons, component, components, key, pressedButtons, previous } = params
+  const prior = previous.buttons.get(key)
+  const risingEdge = component.active === true && prior?.inputActive !== true
+  const triggered = risingEdge || pressedButtons.has(key)
+  const { active, timer } = advanceButton(component, prior, triggered)
+  buttons.set(key, timer)
+  components.set(key, { ...component, active })
+}
+
+const applyTorchEntry = (params: {
+  readonly key: PositionKey
+  readonly component: Component
+  readonly previous: TimedCircuitState
+  readonly torches: Map<PositionKey, TorchTimer>
+  readonly components: Map<PositionKey, Component>
+}): void => {
+  const { component, components, key, previous, torches } = params
+  const invertedBy = component.invertedBy ?? null
+  const requested = invertedBy === null || powerAt(previous.power, invertedBy) === NO_TICKS
+  const prior = previous.torches?.get(key)
+  const previousOutput = prior?.output ?? powerAt(previous.power, key) > NO_TICKS
+  const timer = advanceTorch({ previous: prior, previousOutput, requestedOutput: requested })
+  torches.set(key, timer)
+  components.set(key, { ...component, active: timer.output })
+}
+
+const applyTimedEntry = (params: {
+  readonly key: PositionKey
+  readonly component: Component
+  readonly previous: TimedCircuitState
+  readonly pressedButtons: ReadonlySet<PositionKey>
+  readonly repeaters: Map<PositionKey, RepeaterTimer>
+  readonly buttons: Map<PositionKey, ButtonTimer>
+  readonly torches: Map<PositionKey, TorchTimer>
+  readonly components: Map<PositionKey, Component>
+}): void => {
+  const { buttons, component, components, key, pressedButtons, previous, repeaters, torches } = params
+  if (component.kind === 'repeater') {
+    applyRepeaterEntry({ component, components, key, previous, repeaters })
+  } else if (component.kind === 'button') {
+    applyButtonEntry({ buttons, component, components, key, pressedButtons, previous })
+  } else if (component.kind === 'torch') {
+    applyTorchEntry({ component, components, key, previous, torches })
+  }
+}
+
 /** Advances all timers exactly once, then computes this tick's 0–15 power map. */
 export const advanceTimedCircuit = (
   board: CircuitBoard,
@@ -147,42 +294,7 @@ export const advanceTimedCircuit = (
   const components = new Map<PositionKey, Component>()
 
   for (const [key, component] of componentEntriesForKinds(board, TIMED_COMPONENT_KINDS)) {
-    if (component.kind === 'repeater') {
-      const requested =
-        component.inputFrom !== undefined && powerAt(previous.power, component.inputFrom) > 0
-      const prior = previous.repeaters.get(key)
-      const timer = advanceOrHoldRepeater(component, previous.power, prior, requested)
-      repeaters.set(key, timer)
-      components.set(key, {
-        kind: 'observer',
-        active: timer.output,
-        emits: MAX_POWER_LEVEL,
-        ...(component.outputTo === undefined ? {} : { outputTo: component.outputTo }),
-      })
-      continue
-    }
-
-    if (component.kind === 'button') {
-      const prior = previous.buttons.get(key)
-      const risingEdge = component.active === true && prior?.inputActive !== true
-      const triggered = risingEdge || pressedButtons.has(key)
-      const available = triggered ? buttonDuration(component) : (prior?.remainingTicks ?? 0)
-      const active = available > 0
-      buttons.set(key, {
-        remainingTicks: Math.max(0, available - 1),
-        inputActive: component.active === true,
-      })
-      components.set(key, { ...component, active })
-    } else if (component.kind === 'torch') {
-      const invertedBy = component.invertedBy ?? null
-      const requested =
-        invertedBy === null || powerAt(previous.power, invertedBy) === NO_TICKS
-      const prior = previous.torches?.get(key)
-      const previousOutput = prior?.output ?? powerAt(previous.power, key) > NO_TICKS
-      const timer = advanceTorch({ previous: prior, previousOutput, requestedOutput: requested })
-      torches.set(key, timer)
-      components.set(key, { ...component, active: timer.output })
-    }
+    applyTimedEntry({ buttons, component, components, key, pressedButtons, previous, repeaters, torches })
   }
 
   return {

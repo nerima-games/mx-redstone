@@ -1,5 +1,5 @@
 /**
- * mx-redstone's contribution to the frame (plan.md §4.1).
+ * The mx-redstone module's contribution to the frame (plan.md §4.1).
  *
  * This module is the ENTIRE public surface of the repository. plan.md §3.12
  * spells it out: 「主要な公開API: stage登録のみ(電力グラフは内部実装)」. Nothing
@@ -25,23 +25,24 @@
  * below is bounded anyway, because relying on somebody else's clamp is how you
  * discover it was removed.
  */
+import type { DeltaTimeSecs, GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Option, Ref } from 'effect'
+import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
 import {
-  collectLampTransitions,
+  RedstoneWorldRuntime,
+  RedstoneWorldRuntimeLayer,
+  type RedstoneWorldState,
   collectHopperTransferEvents,
+  collectLampTransitions,
   collectPistonTransitions,
   collectPoweredComponentTransitions,
   collectTriggerEvents,
   makeRedstoneWorldState,
-  RedstoneWorldRuntime,
-  RedstoneWorldRuntimeLayer,
   redstoneWorldStateFor,
-  type RedstoneWorldState,
 } from '../application/world-runtime'
-import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
+import { type TimedCircuitState, advanceTimedCircuit } from '../domain/timed-power-graph'
 import type { CircuitBoard } from '../domain/power-graph'
-import { advanceTimedCircuit } from '../domain/timed-power-graph'
-import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
+import type { PositionKey } from '../domain/position-key'
 
 /** Vanilla redstone runs at 10 Hz: one tick every two game ticks. */
 export const REDSTONE_TICK_SECS = 0.1
@@ -64,8 +65,8 @@ export const MAX_TICKS_PER_FRAME = 4
  * and the scenario tests can install a fixture directly.
  */
 export const emptyCircuitBoard: CircuitBoard = {
-  components: new Map(),
   adjacency: new Map(),
+  components: new Map(),
 }
 
 export type RedstoneFrameState = RedstoneWorldState
@@ -77,6 +78,18 @@ export type RedstoneFrameState = RedstoneWorldState
  * world's refs and deadlocked.
  */
 export const makeRedstoneFrameState: Effect.Effect<RedstoneFrameState> = makeRedstoneWorldState
+
+/** How many ticks a frame contributes when `tickSecs` is misconfigured, or when nothing is due yet. */
+const NO_TICKS = 0
+
+/** A tick duration at or below this is misconfigured; treat the frame as advancing no ticks at all. */
+const NON_POSITIVE_TICK_SECS = 0
+
+/** `dt` never runs backwards: floor it here rather than trust that upstream's clamp always ran. */
+const MIN_DELTA_SECS = 0
+
+/** What the leftover time becomes when the per-frame tick cap bites: discarded, not banked. */
+const DISCARDED_REMAINDER_SECS = 0
 
 /**
  * How many redstone ticks a frame of `dt` seconds is worth, and what is left
@@ -94,21 +107,75 @@ export const ticksForFrame = (
 ): { readonly ticks: number; readonly remainderSecs: number } => {
   const tickSecs = options.tickSecs ?? REDSTONE_TICK_SECS
   const maxTicks = options.maxTicks ?? MAX_TICKS_PER_FRAME
-  if (tickSecs <= 0) {
-    return { ticks: 0, remainderSecs: accumulatedSecs }
+  if (tickSecs <= NON_POSITIVE_TICK_SECS) {
+    return { remainderSecs: accumulatedSecs, ticks: NO_TICKS }
   }
 
-  const available = accumulatedSecs + Math.max(0, dt)
+  const available = accumulatedSecs + Math.max(MIN_DELTA_SECS, dt)
   const wanted = Math.floor(available / tickSecs)
   const ticks = Math.min(wanted, maxTicks)
 
   // When the cap bites, the un-run time is DISCARDED rather than banked.
   // Banking it guarantees the next frame is also over budget, which is the
-  // spiral of death.
-  const remainderSecs = wanted > maxTicks ? 0 : available - ticks * tickSecs
+  // Spiral of death.
+  const remainderAfterCap = (): number => {
+    if (wanted > maxTicks) {
+      return DISCARDED_REMAINDER_SECS
+    }
+    return available - ticks * tickSecs
+  }
+  const remainderSecs = remainderAfterCap()
 
-  return { ticks, remainderSecs }
+  return { remainderSecs, ticks }
 }
+
+/** The first tick a frame runs; only this one gets the frame's pressed buttons. */
+const FIRST_TICK_INDEX = 0
+
+/** How much the tick counter advances per loop iteration. */
+const TICK_STEP = 1
+
+/**
+ * Runs `board` forward `ticks` redstone ticks from `seed.timed`, feeding the
+ * frame's pressed buttons into only the first one — the rest see none, since
+ * a button press is a one-tick edge and not a held condition.
+ *
+ * Pure and separate from the effectful stage below so that stage's statement
+ * count stays under the threshold; the loop itself is unchanged. `timed` and
+ * `pressedButtons` travel together in `seed` so the parameter count stays
+ * under its own threshold.
+ */
+const advancePower = (
+  board: CircuitBoard,
+  ticks: number,
+  seed: { readonly timed: TimedCircuitState; readonly pressedButtons: ReadonlySet<PositionKey> },
+): TimedCircuitState => {
+  const buttonsForTick = (tick: number): ReadonlySet<PositionKey> => {
+    if (tick === FIRST_TICK_INDEX) {
+      return seed.pressedButtons
+    }
+    return new Set()
+  }
+
+  let next = seed.timed
+  for (let tick = FIRST_TICK_INDEX; tick < ticks; tick += TICK_STEP) {
+    next = advanceTimedCircuit(board, next, buttonsForTick(tick))
+  }
+  return next
+}
+
+/**
+ * Writes one tick's outcome back into `state` and drains the hopper cadence.
+ * Split out of the power stage's `run` for the same statement-count reason
+ * `advancePower` is; the writes and their order are unchanged.
+ */
+const commitPowerTick = (state: RedstoneFrameState, next: TimedCircuitState, ticks: number) =>
+  Effect.gen(function* commitPowerTickEffect() {
+    yield* Ref.set(state.timedCircuit, next)
+    yield* Ref.set(state.power, next.power)
+    yield* collectHopperTransferEvents(state, ticks)
+    yield* Ref.update(state.tickCount, (count) => count + ticks)
+  })
 
 /**
  * The two stages mx-redstone registers.
@@ -119,54 +186,48 @@ export const ticksForFrame = (
  */
 export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRegistration> => [
   {
-    id: REDSTONE_STAGE_IDS.power,
     after: [UPSTREAM_STAGE_IDS.simPhysics],
+    id: REDSTONE_STAGE_IDS.power,
     run: (dt: DeltaTimeSecs) =>
-      Effect.gen(function* () {
+      Effect.gen(function* advancePowerStage() {
         const accumulated = yield* Ref.get(state.tickAccumulatorSecs)
         const { ticks, remainderSecs } = ticksForFrame(accumulated, dt)
         yield* Ref.set(state.tickAccumulatorSecs, remainderSecs)
 
-        if (ticks === 0) {
+        if (ticks === NO_TICKS) {
           return
         }
 
         const board = yield* Ref.get(state.board)
         // Each tick reads the PREVIOUS map: that one-tick lag is what makes a
-        // torch invert and therefore what makes every clock circuit work. See
-        // domain/power-graph.ts.
+        // Torch invert and therefore what makes every clock circuit work. See
+        // `domain/power-graph.ts`.
         const pressedButtons = yield* Ref.getAndSet(state.pendingButtonPresses, new Set())
         const timed = yield* Ref.get(state.timedCircuit)
-        let next = timed
-        for (let tick = 0; tick < ticks; tick += 1) {
-          next = advanceTimedCircuit(board, next, tick === 0 ? pressedButtons : new Set())
-        }
-        yield* Ref.set(state.timedCircuit, next)
-        yield* Ref.set(state.power, next.power)
-        yield* collectHopperTransferEvents(state, ticks)
-        yield* Ref.update(state.tickCount, (count) => count + ticks)
+        const next = advancePower(board, ticks, { pressedButtons, timed })
+        yield* commitPowerTick(state, next, ticks)
       }),
   },
   {
-    id: REDSTONE_STAGE_IDS.effects,
     after: [REDSTONE_STAGE_IDS.power],
+    id: REDSTONE_STAGE_IDS.effects,
     // Observable state transitions are recorded after power settles. The host
-    // drains these records and applies world changes; this runtime never mutates
-    // world blocks directly, which keeps the graph a pure function.
+    // Drains these records and applies world changes; this runtime never mutates
+    // World blocks directly, which keeps the graph a pure function.
     //
     // The DECISIONS those effects need are now all written and tested:
     // `domain/observer.ts` says which observers fired, `domain/dispenser.ts`
-    // which dispensers saw a rising edge, `domain/hopper.ts` which hoppers are
-    // locked and when they are due, `domain/pressure-plate.ts` how many
-    // occupants are worth how much signal, and `domain/comparator.ts` what a
-    // container reading means. Every one of them is a pure function whose
-    // memory is a VALUE — deliberately, because the reference held the
-    // observer's and the dispenser's in module-level `Map`s with reset
-    // functions beside them, and this stage is built from per-call `Ref`s for
-    // the reason DN-RS-8 gives.
+    // Which dispensers saw a rising edge, `domain/hopper.ts` which hoppers are
+    // Locked and when they are due, `domain/pressure-plate.ts` how many
+    // Occupants are worth how much signal, and `domain/comparator.ts` what a
+    // Container reading means. Every one of them is a pure function whose
+    // Memory is a VALUE — deliberately, because the reference held the
+    // Observer's and the dispenser's in module-level `Map`s with reset
+    // Functions beside them, and this stage is built from per-call `Ref`s for
+    // The reason DN-RS-8 gives.
     //
     // Hopper cadence is recorded in the power stage. The host drains it through
-    // the runtime and applies inventory changes via its own typed boundary.
+    // The runtime and applies inventory changes via its own typed boundary.
     run: () => Effect.all([
       collectLampTransitions(state),
       collectPistonTransitions(state),
@@ -198,7 +259,7 @@ export const makeRuntimeRedstoneStages: Effect.Effect<
 )
 
 /**
- * mx-redstone as a `GameModule` (plan.md §4.1).
+ * The mx-redstone module as a `GameModule` (plan.md §4.1).
  *
  * Its Layer provides the runtime port used by a host to replace dimension
  * snapshots and drain lamp transitions. Registration uses that same service
@@ -213,6 +274,6 @@ export const redstoneModule: GameModule<
   never,
   never
 > = {
-  layers: RedstoneWorldRuntimeLayer,
   frameStages: makeRuntimeRedstoneStages,
+  layers: RedstoneWorldRuntimeLayer,
 }

@@ -9,9 +9,11 @@ import {
   type RedstoneWorldRuntimeService,
   type RedstoneWorldSnapshot,
 } from '../src/application/world-runtime'
-import { DeltaTimeSecs, type StageRegistration } from '../src/domain/frame-contract'
+import { DeltaTimeSecs, type FrameServices, type StageRegistration } from '@nerima-games/mc-kernel'
 import { makeRuntimeRedstoneStages } from '../src/stages/registration'
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
+// eslint-disable-next-line sort-imports
+import { FrameServicesLayer } from './frame-services'
 
 const component = (
   x: number,
@@ -43,7 +45,7 @@ const stageById = (
 
 const runFrame = (
   stages: ReadonlyArray<StageRegistration>,
-): Effect.Effect<void> =>
+): Effect.Effect<void, never, FrameServices> =>
   Effect.gen(function* () {
     yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.1))
     yield* stageById(stages, REDSTONE_STAGE_IDS.effects).run(DeltaTimeSecs(0.1))
@@ -53,13 +55,16 @@ const runtimeProgram = <A>(
   use: (
     runtime: RedstoneWorldRuntimeService,
     stages: ReadonlyArray<StageRegistration>,
-  ) => Effect.Effect<A>,
+  ) => Effect.Effect<A, never, FrameServices>,
 ): Effect.Effect<A> =>
   Effect.gen(function* () {
     const runtime = yield* RedstoneWorldRuntime
     const stages = yield* makeRuntimeRedstoneStages
     return yield* use(runtime, stages)
-  }).pipe(Effect.provide(RedstoneWorldRuntimeLayer))
+  }).pipe(
+    Effect.provide(RedstoneWorldRuntimeLayer),
+    Effect.provide(FrameServicesLayer),
+  )
 
 describe('RedstoneWorldRuntime', () => {
   it.effect('derives comparator container signal from typed slot readings', () =>

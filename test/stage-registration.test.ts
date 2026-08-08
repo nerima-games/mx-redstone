@@ -11,7 +11,7 @@ import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
 } from '../src/application/world-runtime'
-import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from '../src/domain/frame-contract'
+import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from '@nerima-games/mc-kernel'
 import { MAX_POWER_LEVEL, powerAt, type CircuitBoard, type Component } from '../src/domain/power-graph'
 import {
   makeRedstoneFrameState,
@@ -253,24 +253,16 @@ describe('stage behaviour', () => {
   )
 })
 
-describe('the mirrored DeltaTimeSecs brand is kernel’s', () => {
+describe('the mc-kernel DeltaTimeSecs brand', () => {
   /*
-   * REGRESSION. `domain/frame-contract.ts` restates kernel's `DeltaTimeSecs`
-   * (`mc-kernel/domain/quantities.ts:37-42`), and a brand is keyed by its
-   * STRING: `Brand.Brand<'DeltaTimeSecs'>` here and in kernel are ONE TYPE to
-   * TypeScript, however differently the two constructors validate. So a mirror
-   * that refined differently would be a false guarantee the compiler could
-   * never contradict — which is exactly what mc-physics had, refining to the
-   * frame-loop clamp [0.001, 0.05] while kernel refines to "finite and
-   * non-negative". A kernel-built `DeltaTimeSecs(30)` satisfied its parameter
-   * types while breaking the invariant its comments claimed.
+   * REGRESSION. `DeltaTimeSecs` is imported from `@nerima-games/mc-kernel`, so
+   * this package cannot silently diverge from the published quantity contract.
+   * The kernel refinement is deliberately LOOSE: a zero delta is legal, while
+   * the frame-loop clamp [0.001, 0.05] belongs at the boundary that produces
+   * the delta rather than in the quantity itself.
    *
-   * Kernel's is the agreed refinement and it is deliberately LOOSE: a zero
-   * delta is legal, because a frame may be scheduled twice inside one clock
-   * tick, and the clamp of plan.md §3.4 is a frame-loop concern applied at the
-   * boundary by whoever PRODUCES the delta — mc-sim's `frame-timing.ts`,
-   * mc-physics' `clampDeltaTime` — never a property of the quantity itself.
-   * A stage receives whatever the loop produced and must cope.
+   * A frame may be scheduled twice inside one clock tick, and a stage must cope
+   * with whatever the loop produced, including a zero or delayed finite delta.
    */
   it.effect('accepts zero and any finite non-negative delta, and rejects nothing else', () =>
     Effect.sync(() => {

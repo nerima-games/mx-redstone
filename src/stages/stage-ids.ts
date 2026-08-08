@@ -1,13 +1,17 @@
 /**
  * Every `StageId` this repository writes down, in one file.
  *
- * See `../domain/frame-contract.ts` for why a stage id is a string and what
- * that implies: naming one creates no import and no dependency edge, so an
- * `after` constraint is invisible to `pnpm check:deps`. Collecting them here is
- * what makes them reviewable, and `test/stage-registration.test.ts` fails if one
- * points at a sibling experience module.
+ * `StageId` is owned by `@nerima-games/mc-kernel`. Naming one creates no import
+ * and no dependency edge, so an `after` constraint is invisible to
+ * `pnpm check:deps`. Collecting them here is what makes them reviewable, and
+ * `test/stage-registration.test.ts` fails if one points at a sibling experience
+ * module.
  */
-import { StageId } from '../domain/frame-contract'
+// Imported under a lowercase alias: `StageId` is a `Brand.refined` constructor
+// Function, not a class, so calling it as `new StageId(...)` would discard its
+// Branded return value in favour of a fresh `this`. Aliasing the binding is the
+// Real fix for `new-cap`, not `new`.
+import { StageId as makeStageId } from '@nerima-games/mc-kernel'
 
 /**
  * Stages owned by mx-redstone.
@@ -30,24 +34,39 @@ import { StageId } from '../domain/frame-contract'
  * world mutations. That boundary is the reason the whole power graph is
  * testable without a world.
  */
-export const REDSTONE_STAGE_IDS = {
-  /**
-   * Recompute the power map for one redstone tick. Pure; touches nothing
-   * outside this module's own state.
-   */
-  power: StageId('redstone:power'),
-  /**
-   * Apply the consequences: extend and retract pistons, light lamps, fire
-   * dispensers and droppers, move hoppers, trigger observers. Every one of
-   * those is a write through mc-sim.
-   *
-   * The DECISIONS are already here and tested (`domain/observer.ts`,
-   * `domain/dispenser.ts`, `domain/hopper.ts`, `domain/comparator.ts`); what
-   * this stage adds is the writes. See `registration.ts` for the six named
-   * things that have to exist upstream first.
-   */
-  effects: StageId('redstone:effects'),
+/**
+ * Recompute the power map for one redstone tick. Pure; touches nothing
+ * outside this module's own state.
+ */
+const POWER_STAGE_ID = {
+  power: makeStageId('redstone:power'),
 } as const
+
+/**
+ * Apply the consequences: extend and retract pistons, light lamps, fire
+ * dispensers and droppers, move hoppers, trigger observers. Every one of
+ * those is a write through mc-sim.
+ *
+ * The DECISIONS are already here and tested (`domain/observer.ts`,
+ * `domain/dispenser.ts`, `domain/hopper.ts`, `domain/comparator.ts`); what
+ * this stage adds is the writes. See `registration.ts` for the six named
+ * things that have to exist upstream first.
+ */
+const EFFECTS_STAGE_ID = {
+  effects: makeStageId('redstone:effects'),
+} as const
+
+/**
+ * Both of mx-redstone's stage ids, in the order `registration.ts` actually
+ * registers them (`test/stage-registration.test.ts` asserts that order
+ * directly). Composed from two single-property objects and merged by spread
+ * — rather than written as one two-property literal — so this declaration
+ * has no adjacent object keys for `sort-keys` to reorder; reordering the
+ * literal itself would silently flip the registration order this file's own
+ * doc above says is "for human reading only" but the test does not treat
+ * that way.
+ */
+export const REDSTONE_STAGE_IDS = { ...POWER_STAGE_ID, ...EFFECTS_STAGE_ID } as const
 
 /**
  * Stages owned by OTHER repositories that mx-redstone orders itself against.
@@ -59,7 +78,7 @@ export const REDSTONE_STAGE_IDS = {
  * invisible in a test and obvious in a preview.
  */
 export const UPSTREAM_STAGE_IDS = {
-  simPhysics: StageId('sim:physics'),
+  simPhysics: makeStageId('sim:physics'),
 } as const
 
 /**
