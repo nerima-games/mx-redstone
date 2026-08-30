@@ -1,5 +1,11 @@
 allowBuilds:
   esbuild: true
+overrides:
+  # GHSA-2v37-7h3g-55p8: custom generators can loop indefinitely when size is
+  # zero. Transitive via vitest's vite -> postcss -> nanoid (test tooling
+  # only, never in the shipped dist/), pinned here per §10 of the Wave 0
+  # toolchain-freeze procedure rather than waiting on vitest to bump it.
+  nanoid: '>=3.3.18'
 minimumReleaseAgeExclude:
   - '@nerima-games/mc-kernel@0.2.8 || 0.2.17'
   - '@nerima-games/mc-sim@0.1.24 || 0.1.39'

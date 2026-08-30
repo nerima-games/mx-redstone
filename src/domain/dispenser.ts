@@ -45,7 +45,7 @@
  * That is an EVENT, it names nothing outside this repository, and it is the
  * smallest thing that lets the rule live here and the consequence live there.
  */
-import type { PositionKey } from './position-key'
+import type { PositionKey } from './position-key.js'
 
 /** Whether each dispenser was powered on the tick that just finished. */
 export type PowerEdgeMemory = ReadonlyMap<PositionKey, boolean>

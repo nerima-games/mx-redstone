@@ -52,10 +52,10 @@
  * twice is the `ItemId` story mc-sim's `domain/inventory.ts` opens with. The
  * re-export is so that moving it changed no import anywhere else.
  */
-export type { BlockRef } from './block-ref'
+export type { BlockRef } from './block-ref.js'
 
 import { Effect } from 'effect'
-import type { BlockRef } from './block-ref'
+import type { BlockRef } from './block-ref.js'
 
 /**
  * The subset of mc-kernel's capability table that piston logic needs.

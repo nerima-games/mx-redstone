@@ -80,9 +80,9 @@
  * `dispenser`) appear here only as kinds, so that a board can contain them and
  * so that power stops at them.
  */
-import { type ComparatorMode, comparatorOutput } from './comparator'
-import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level'
-import type { PositionKey } from './position-key'
+import { type ComparatorMode, comparatorOutput } from './comparator.js'
+import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level.js'
+import type { PositionKey } from './position-key.js'
 
 /**
  * The signal range, re-exported.

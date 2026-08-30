@@ -27,7 +27,7 @@
  */
 import type { DeltaTimeSecs, GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Option, Ref } from 'effect'
-import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
+import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
 import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
@@ -39,10 +39,10 @@ import {
   collectTriggerEvents,
   makeRedstoneWorldState,
   redstoneWorldStateFor,
-} from '../application/world-runtime'
-import { type TimedCircuitState, advanceTimedCircuit } from '../domain/timed-power-graph'
-import type { CircuitBoard } from '../domain/power-graph'
-import type { PositionKey } from '../domain/position-key'
+} from '../application/world-runtime.js'
+import { type TimedCircuitState, advanceTimedCircuit } from '../domain/timed-power-graph.js'
+import type { CircuitBoard } from '../domain/power-graph.js'
+import type { PositionKey } from '../domain/position-key.js'
 
 /** Vanilla redstone runs at 10 Hz: one tick every two game ticks. */
 export const REDSTONE_TICK_SECS = 0.1

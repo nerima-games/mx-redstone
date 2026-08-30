@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  # Manual re-run for a version whose automatic publish failed after the
+  # version-bump push: dispatch publishes whatever package.json currently says.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Deciding whether to publish is separated from publishing on purpose.
+  #
+  # This job sets up neither Node nor pnpm, because it needs neither. When the
+  # two were fused, a push that correctly decided NOT to publish still ran
+  # actions/setup-node with `cache: pnpm`, skipped the install, and then failed
+  # in the cache's post step with "Path(s) specified in the action for caching
+  # do(es) not exist" — a red Release run reporting a decision that was right.
+  # A red gate is supposed to be evidence about the work, so a gate that goes
+  # red on its own success path has to be fixed rather than tolerated.
+  detect:
+    if: github.event_name == 'workflow_dispatch' || github.event.before != '0000000000000000000000000000000000000000'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.version.outputs.changed }}
+      version: ${{ steps.version.outputs.current }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The previous commit has to be readable to diff the version out of
+          # it; a shallow clone cannot answer that question.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check whether the package version changed
+        id: version
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            printf 'current=%s\n' "${current}" >> "${GITHUB_OUTPUT}"
+            printf 'changed=true\n' >> "${GITHUB_OUTPUT}"
+            printf 'manual dispatch: publishing %s\n' "${current}"
+            exit 0
+          fi
+          previous="$(git show "${BEFORE_SHA}:package.json" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
+
+          printf 'current=%s\n' "${current}" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${current}" == "${previous}" ]]; then
+            printf 'changed=false\n' >> "${GITHUB_OUTPUT}"
+            printf 'package version unchanged (%s); skipping publish\n' "${current}"
+          else
+            printf 'changed=true\n' >> "${GITHUB_OUTPUT}"
+            printf 'package version changed: %s -> %s\n' "${previous}" "${current}"
+          fi
+
+  publish:
+    needs: detect
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+          registry-url: https://npm.pkg.github.com
+
+      - name: Set up Nix
+        uses: ./.github/actions/nix-setup
+        with:
+          cachix-cache: ${{ vars.CACHIX_CACHE }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # mx-redstone depends on @nerima-games/mc-kernel, mc-sim and mc-worldgen,
+      # unlike mc-kernel itself (no sibling deps). Without this, install fails
+      # with ERR_PNPM_FETCH_401 resolving those from GitHub Packages.
+      - name: Configure GitHub Packages authentication
+        run: pnpm config set --location=user //npm.pkg.github.com/:_authToken "$NODE_AUTH_TOKEN"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: nix develop --command pnpm install --frozen-lockfile
+
+      # The same package checks the branch protection runs, repeated here
+      # because publishing is irreversible: a version number, once taken on the
+      # registry, cannot be reused.
+      - name: Verify package and tests
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          nix develop --command pnpm verify
+          nix develop --command pnpm package:verify
+
+      - name: Publish to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: nix develop --command pnpm publish --no-git-checks
+
+  # Publishing without tagging leaves the registry as the only record of what
+  # shipped: nineteen versions were published against a single tag before this
+  # job existed, so "which commit is 0.2.14?" had no answer in the repository.
+  # It runs after publish so a tag never claims a release that did not happen.
+  tag:
+    needs: [detect, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Tag the published version
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag "v${VERSION}" "${GITHUB_SHA}"
+          git push origin "v${VERSION}"

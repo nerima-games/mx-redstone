@@ -35,7 +35,7 @@ export type Rgb = readonly [number, number, number]
  */
 export const ESC: string = String.fromCharCode(27)
 
-export const RESET = `${ESC}[0m`
+export const RESET: string = `${ESC}[0m`
 
 const foreground = (color: Rgb): string =>
   `${ESC}[38;2;${String(color[0])};${String(color[1])};${String(color[2])}m`

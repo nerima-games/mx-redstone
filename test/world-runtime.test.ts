@@ -82,6 +82,40 @@ describe('RedstoneWorldRuntime', () => {
     ),
   )
 
+  it.effect('takes an explicit comparator container signal over deriving one from slots', () =>
+    runtimeProgram((runtime) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [{
+          ...component(0, 'comparator'),
+          containerSignal: 11,
+          containerSlots: [{ count: 64, maxStack: 64 }],
+        }]))
+
+        const board = yield* Ref.get(redstoneWorldStateFor(runtime).board)
+        const comparator = board.components.get(redstoneNodeId('overworld', { x: 0, y: 0, z: 0 }))
+        expect(comparator).toMatchObject({ containerSignal: 11 })
+      }),
+    ),
+  )
+
+  it.effect('translates repeater sideInputs positions into node ids', () =>
+    runtimeProgram((runtime) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [{
+          ...component(2, 'repeater', undefined, 0, 0, { delayTicks: 1 }),
+          inputFrom: { x: 1, y: 0, z: 0 },
+          sideInputs: [{ x: 2, y: 0, z: 1 }],
+        }]))
+
+        const board = yield* Ref.get(redstoneWorldStateFor(runtime).board)
+        const repeater = board.components.get(redstoneNodeId('overworld', { x: 2, y: 0, z: 0 }))
+        expect(repeater).toMatchObject({
+          sideInputs: [redstoneNodeId('overworld', { x: 2, y: 0, z: 1 })],
+        })
+      }),
+    ),
+  )
+
   it.effect('builds stable six-face topology without connecting dimensions or diagonals', () =>
     runtimeProgram((runtime) =>
       Effect.gen(function* () {
@@ -434,6 +468,49 @@ describe('RedstoneWorldRuntime', () => {
           { dimension: 'overworld', position: { x: 0, y: 0, z: 0 } },
         ])
         expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+      }),
+    ),
+  )
+
+  it.effect('REGRESSION: redstoneWorldStateFor rejects a runtime service not built by makeRedstoneWorldRuntime', () =>
+    Effect.sync(() => {
+      // The internal state lives in a WeakMap keyed by the exact runtime
+      // object `makeRedstoneWorldRuntime` returned. A conforming-but-foreign
+      // service — e.g. a hand-rolled test double — must fail loudly rather
+      // than silently reading another dimension's state or `undefined`.
+      const foreignRuntime: RedstoneWorldRuntimeService = {
+        drainHopperTransferEvents: Effect.succeed([]),
+        drainLampTransitions: Effect.succeed([]),
+        drainPistonTransitions: Effect.succeed([]),
+        drainPoweredComponentTransitions: Effect.succeed([]),
+        drainTriggerEvents: Effect.succeed([]),
+        pressButton: () => Effect.void,
+        syncSnapshot: () => Effect.void,
+      }
+      expect(() => redstoneWorldStateFor(foreignRuntime)).toThrow(
+        'RedstoneWorldRuntime was not created by makeRedstoneWorldRuntime',
+      )
+    }),
+  )
+
+  it.effect('orders simultaneous hopper transfer requests by node id', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(1, 'hopper', undefined, 0, 0),
+          component(0, 'hopper', undefined, 0, 0),
+        ]))
+
+        for (let tick = 0; tick < 3; tick += 1) {
+          yield* runFrame(stages)
+          expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+        }
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
+          { dimension: 'overworld', position: { x: 0, y: 0, z: 0 } },
+          { dimension: 'overworld', position: { x: 1, y: 0, z: 0 } },
+        ])
       }),
     ),
   )
