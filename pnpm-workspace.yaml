@@ -7,7 +7,7 @@ overrides:
   # toolchain-freeze procedure rather than waiting on vitest to bump it.
   nanoid: '>=3.3.18'
 minimumReleaseAgeExclude:
-  - '@nerima-games/mc-kernel@0.2.8 || 0.2.17'
+  - '@nerima-games/mc-kernel@0.2.8 || 0.2.17 || 0.5.1'
   - '@nerima-games/mc-sim@0.1.24 || 0.1.39'
   - '@nerima-games/mc-noise@0.2.0'
   - '@nerima-games/mc-physics@0.1.7'
