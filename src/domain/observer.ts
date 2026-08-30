@@ -67,8 +67,8 @@
  * mapping from observer to watched cell belongs to whoever owns the world, next
  * to the `active` flag it produces.
  */
-import type { BlockRef } from './block-ref'
-import type { PositionKey } from './position-key'
+import type { BlockRef } from './block-ref.js'
+import type { PositionKey } from './position-key.js'
 
 /**
  * How long an observer holds its output up, in redstone ticks.

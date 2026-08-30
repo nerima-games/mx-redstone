@@ -1,0 +1,27 @@
+id: no-wall-clock-read
+language: TypeScript
+severity: error
+files:
+  - "src/**/*.ts"
+message: >-
+  Read the time through the injected ClockPort, not a process-global clock.
+note: >-
+  A direct read makes replay and fast-forward nondeterministic, which is why the
+  ban is one of the rules every repository in the org shares. Fixed-rate
+  simulation is this repository's determinism guarantee (docs/design-notes.md
+  DN-RS-9); a wall-clock read breaks it silently.
+
+  This rule exists because oxlint implements none of no-restricted-syntax,
+  no-restricted-properties, or no-restricted-globals (checked against the
+  version in the devShell: `oxlint --rules | grep no-restricted` returns
+  nothing), so the ban had no mechanical gate and was carried by review alone.
+
+  Matching is structural rather than textual on purpose: this repository
+  explains the ban in prose next to the code, and a grep would fail the very
+  comments that document it.
+rule:
+  any:
+    - pattern: Date.now()
+    - pattern: performance.now()
+    - pattern: new Date()
+    - pattern: new Date($$$ARGS)

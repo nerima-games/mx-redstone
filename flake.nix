@@ -32,23 +32,31 @@
           # the `packageManager` field in package.json — one source of truth
           # instead of two that can drift.
           #
-          # oxlint is the opposite case: it is NOT a package.json devDependency.
-          # It used to be, and every repo in the org independently drifted onto
-          # a different version without anyone noticing. A single pinned
-          # Nix-provided oxlint is now the one source of truth instead of 16
-          # independently-drifting npm pins.
+          # oxlint and ast-grep are the opposite case: neither is a package.json
+          # devDependency. oxlint used to be, and every repo in the org
+          # independently drifted onto a different version without anyone
+          # noticing. A single pinned Nix-provided oxlint/ast-grep is now the one
+          # source of truth instead of 16 independently-drifting npm pins.
+          #
+          # nixpkgs is locked to a specific revision rather than tracking
+          # nixos-unstable's HEAD: the current nixos-unstable ships oxlint
+          # 1.79.0, whose `no-redeclare` rule falsely flags this repository's
+          # `type X = ... & Brand` plus `const X = Brand.refined(...)` idiom
+          # (A/B-proven against 1.75.0, which is clean). Re-check on the next
+          # deliberate bump of this pin.
           default = pkgs.mkShell {
             packages = [
               pkgs.nodejs_24
               pkgs.corepack_24
               pkgs.typescript-language-server
               pkgs.oxlint
+              pkgs.ast-grep
             ];
 
             shellHook = ''
-              mkdir -p "$PWD/.corepack"
-              corepack enable --install-directory "$PWD/.corepack"
-              export PATH="$PWD/.corepack:$PATH"
+              corepackDir="$(mktemp -d "''${TMPDIR:-/tmp}/mx-redstone-corepack.XXXXXX")"
+              corepack enable --install-directory "$corepackDir"
+              export PATH="$corepackDir:$PATH"
             '';
           };
         }

@@ -20,30 +20,28 @@
 
 ## 2. 今日のゲート
 
+Wave 0（toolchain freeze、2026-08-30）で org 標準の 3 段 `verify` + 別ステップの coverage/package/audit 形に揃えた。
+`check:deps` / `api:check`（api-lock.md、`scripts/check-dependency-whitelist.ts`）は DEPENDENCY_POLICY 運用の変更で
+既に廃止済みであり、依存境界は `.oxlintrc.json` の `no-restricted-imports`（Tier3、DEPENDENCY_POLICY.md §1）が担う。
+
 ```console
-$ pnpm verify        # typecheck && lint && check:deps && api:check && test
-$ pnpm test:coverage # 99% ゲート。verify には含まれないので別に走らせる
+$ pnpm verify         # typecheck && lint && test
+$ pnpm test:coverage  # 100% ゲート。verify には含まれないので別に走らせる
+$ pnpm package:verify # build && node scripts/verify-package.mjs — 配布物の境界検査
+$ pnpm audit           # 依存の既知脆弱性
 ```
 
-| ゲート | 何を捕まえるか | 実測（2026-07-27） |
-| --- | --- | --- |
-| `pnpm typecheck` | `tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` の 3 プロジェクトで型エラー | エラーなし |
-| `pnpm lint` | oxlint。**このリポジトリ唯一の lint / format 設定**（prettier も biome も `.editorconfig` も置かない） | `Found 0 warnings and 0 errors`（37 ファイル / 97 ルール）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
-| `pnpm check:deps` | 未許可 import / 推移閉包違反 / kit の実行時依存 / 循環 / 壁時計直読み | `OK — 37 file(s) scanned, allowed direct dependencies: @nerima-games/mc-sim, @nerima-games/mc-worldgen (plus @nerima-games/mc-kernel …)` |
-| `pnpm api:check` | `api-lock.md` と公開 API の乖離 | `OK — api-lock.md matches the public API` |
-| `pnpm test` | vitest | 11 ファイル / **181 テスト** pass |
-| `pnpm test:coverage` | カバレッジ計測 + **99% ゲート**（4 指標すべて）。**`verify` には含まれない**ので別に走らせる | 100 / 100 / 100 / 100（§6） |
+| ゲート | 何を捕まえるか |
+| --- | --- |
+| `pnpm typecheck` | `tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` の 3 プロジェクトで型エラー |
+| `pnpm lint` | oxlint（`--deny-warnings`）+ `ast-grep scan`。**このリポジトリ唯一の lint / format 設定**（prettier も biome も `.editorconfig` も置かない）。`no-restricted-imports` が Tier3 の依存境界を、`.ast-grep/rules/no-wall-clock-read.yml` が壁時計直読み禁止を機械的に強制する |
+| `pnpm test` | vitest |
+| `pnpm test:coverage` | カバレッジ計測 + **100% ゲート**（4 指標すべて、`src/**/*.ts` 全体が対象）。**`verify` には含まれない**ので別に走らせる（§6） |
+| `pnpm package:verify` | `pnpm build`（`tsc -p tsconfig.release.json` による `dist/` emit）の後、`scripts/verify-package.mjs` が pack → 展開 → クリーンな consumer からの import と型検査で配布物の境界を検証する |
+| `pnpm audit` | 依存ツリー全体の既知脆弱性（`pnpm-workspace.yaml` の `overrides` で個別 pin） |
 
-**`apps/` は `SCAN_ROOTS` にも lint 対象にも入っている。** プレビューは `pnpm verify` で*実行*されないが、
-型検査・lint・依存ゲート・壁時計禁止はすべて適用される。
-「dev アプリだから検査しない」にすると、依存を 1 つ足すのに最も抵抗の少ない場所ができてしまう。
-
-`pnpm check:deps` が捕まえるものは 5 種類あり、typecheck と lint のどちらにも見えないものばかりである。
-特に「stage の `after` に兄弟モジュールを書く」違反は check:deps にも見えず、
-`pnpm test` 側で塞いである（[design-notes.md](./design-notes.md) DN-RS-7）。
-
-CI（`.github/workflows/ci.yaml`）は同じ 4 つを個別ステップとして走らせ、
-最後に `pnpm test:coverage` を **99% ゲートとして**実行し、`coverage/` をアーティファクトとして残す。
+CI（`.github/workflows/ci.yaml`）は `pnpm verify` の後、`Changeset status`（PR のみ）、`Coverage`（100% ゲート）、
+`Verify package boundary`、`Audit dependencies` を個別ステップとして走らせ、`coverage/` をアーティファクトとして残す。
 **`pnpm verify` は CI と同じ内容ではない**——カバレッジを含まないので、`domain/` や `stages/` の分岐に
 触ったら `pnpm test:coverage` も走らせること（§6）。
 
@@ -355,28 +353,24 @@ plan.md §3.12 が要求する「部品を置いて動かすサンドボック�
 この 3 つが揃っているので、「fixture 回路 → 期待状態」は**毎回同じ答えを返す**。
 1 つでも崩すと、シナリオテストは flaky テストに変わる。
 
-## 6. カバレッジ — 99% ゲートは有効である
+## 6. カバレッジ — 100% ゲートは有効である
 
-**閾値は 4 指標すべてに設定してある。** 参照実装（`takeokunn/ts-minecraft`）と同じ 99% である。
+**閾値は 4 指標すべてに設定してある。** Wave 0（toolchain freeze）で org 標準に合わせ 99% → 100% に上げた。
 
 ```typescript
 // vitest.config.ts
-thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
+thresholds: { branches: 100, functions: 100, lines: 100, statements: 100 },
 ```
 
-現在の実測値は **statements 100 / branch 100 / functions 100 / lines 100**（181 テスト、2026-07-27）。
+`coverage.include` も同時に `src/**/*.ts` 全体へ広げた（従来は `index.ts` / `domain/**` / `stages/**` のみで
+`src/application/world-runtime.ts` が計測対象外だった）。ギャップが実測で見つかった場合は、テストを書くか
+証明可能な到達不能コードを削除して塞ぐ——閾値を下げる、または無視することはしない。
 
-閾値を置かなかった理由は「スケルトンに課しても意味がない」であり、その前提はもう成り立たない。
-`domain/` は電力グラフ・コンパレータ演算・ピストン押し出し・オブザーバ・ホッパー・ディスペンサ・
-重量感圧板を持ち、`stages/` は stage 契約を持つので、パーセンテージがようやく
-**実装の挙動についての主張**になった。
+閾値を 99% に置いていた理由は「現在値ぴったりに固定すると無関係なリファクタのたびに赤くなり、
+『テストを書く』ではなく『数字を下げる』を学習させてしまう」だった。org 標準はこの余裕を取らず、
+4 指標すべてを 100% で固定する——退行だけでなく「未測定のまま残る分岐」自体をゼロにする方針である。
 
-実測が 100 でも閾値を 100 にしないのは、ゲートが守るのは**退行**だからである。
-現在値ぴったりに固定すると無関係なリファクタのたびに赤くなり、
-「テストを書く」ではなく「数字を下げる」を学習させてしまう。1% はこのパッケージでは分岐 1 本強にあたる
-——コミット 1 つ分の余裕であって、機能 1 つをテスト無しで入れられる幅ではない。
-
-`vitest.config.ts` と CI ワークフロー（`Coverage (99% gate)` ステップ）の**両方**で有効にしてある。
+`vitest.config.ts` と CI ワークフロー（`Coverage` ステップ）の**両方**で有効にしてある。
 閾値そのものは `vitest.config.ts` にしか書かない——`vitest run --coverage` が自力で非ゼロ終了するので
 CI 側に追加のフラグは要らず、そうしておけば手元の `pnpm test:coverage` と CI が同じ判定をする。
 **「push して初めて落ちるゲート」を作らないための配置**である。

@@ -104,6 +104,21 @@ describe('indexed power graph', () => {
     }),
   )
 
+  it.effect('skips a componentKeysByKind entry whose component is absent from board.components (a stale index)', () =>
+    Effect.sync(() => {
+      // A board can carry a component-key index that has drifted from
+      // `components` — e.g. a component is removed but the index bucket is
+      // not rebuilt. `indexedComponentEntries` must skip such a key rather
+      // than yielding a missing component.
+      const board: CircuitBoard = {
+        adjacency: new Map(),
+        componentKeysByKind: new Map([['button', ['stale-button']]]),
+        components: new Map(),
+      }
+      expect([...componentEntriesForKinds(board, new Set<ComponentKind>(['button']))]).toStrictEqual([])
+    }),
+  )
+
   it.effect('matches the full-scan oracle across boundaries, edits, continuous ticks and reruns', () =>
     Effect.sync(() => {
       const makeBoard = (includeTail: boolean) =>

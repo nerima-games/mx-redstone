@@ -7,16 +7,16 @@ import {
   emptyPowerMap,
   isLit,
   isPowered,
-} from '../domain/power-graph'
-import { type ComparatorMode, type ContainerSlot, containerSignalStrength } from '../domain/comparator'
+} from '../domain/power-graph.js'
+import { type ComparatorMode, type ContainerSlot, containerSignalStrength } from '../domain/comparator.js'
 import { Context, Effect, Layer, Ref } from 'effect'
-import type { PistonFacing, PistonKind, PistonState, PistonTransitionRequest } from '../domain/piston'
+import type { PistonFacing, PistonKind, PistonState, PistonTransitionRequest } from '../domain/piston.js'
 import {
   type TimedCircuitState,
   emptyTimedCircuitState,
-} from '../domain/timed-power-graph'
-import type { PositionKey } from '../domain/position-key'
-import { hopperTransferDue } from '../domain/hopper'
+} from '../domain/timed-power-graph.js'
+import type { PositionKey } from '../domain/position-key.js'
+import { hopperTransferDue } from '../domain/hopper.js'
 
 export type RedstonePosition = {
   readonly x: number
@@ -127,12 +127,20 @@ export type RedstoneWorldRuntimeService = {
  * `Context.Tag` is an Effect factory, not a constructor, so it is invoked without `new` even
  * though its name is capitalized; aliasing it to a lower-case binding keeps the call site
  * itself unambiguous to `new-cap` without changing what is called or how.
+ *
+ * The intermediate `RedstoneWorldRuntimeBase` binding — with an explicit
+ * `Context.TagClass` annotation — is required by `isolatedDeclarations`: an
+ * `extends` clause must be a bare reference, not an invoked expression.
  */
 const makeContextTag = Context.Tag
 
-export class RedstoneWorldRuntime extends makeContextTag(
+const RedstoneWorldRuntimeBase: Context.TagClass<
+  RedstoneWorldRuntime,
   '@nerima-games/mx-redstone/RedstoneWorldRuntime',
-)<RedstoneWorldRuntime, RedstoneWorldRuntimeService>() {}
+  RedstoneWorldRuntimeService
+> = makeContextTag('@nerima-games/mx-redstone/RedstoneWorldRuntime')<RedstoneWorldRuntime, RedstoneWorldRuntimeService>()
+
+export class RedstoneWorldRuntime extends RedstoneWorldRuntimeBase {}
 
 const copyPosition = ({ x, y, z }: RedstonePosition): RedstonePosition => ({ x, y, z })
 

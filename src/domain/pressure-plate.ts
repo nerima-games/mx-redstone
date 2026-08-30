@@ -70,7 +70,7 @@
  * observer's pulse and this. The power map has no cell for it and the board is
  * an input. It goes with the tick counter in `stages/registration.ts`.
  */
-import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level'
+import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level.js'
 
 /**
  * How a plate turns a count into a level.

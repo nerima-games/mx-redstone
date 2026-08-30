@@ -8,13 +8,12 @@ description: >-
 # Copy this directory to <repo>/.github/actions/nix-setup/ verbatim.
 # It is the single place where the nix-installer and cachix-action SHAs are
 # pinned; bumping them here bumps every workflow in the repository. Mirrors
-# nerima-lisp/.github/templates/actions/nix-setup — nerima-games uses ONE
-# shared cache (`takeokunn-nerima-games`, see private-terraform's
-# projects/cachix/caches.tf and projects/github/repos_nerima_games.tf) across
-# all 16 repos rather than nerima-lisp's one-cache-per-repo convention,
-# because every repo's devShell is nixpkgs-only
-# (nodejs_24/corepack_24/typescript-language-server/oxlint, no
-# repository-specific build output).
+# nerima-lisp/.github/templates/actions/nix-setup exactly — nerima-games uses
+# ONE shared cache (`takeokunn-nerima-games`) across all 16 repos rather than
+# nerima-lisp's one-cache-per-repo convention, because every repo's devShell
+# is nixpkgs-only (nodejs_24/corepack_24/typescript-language-server/oxlint,
+# no repository-specific build output) — see repos_nerima_games.tf's Cachix
+# comment in private-terraform.
 
 # NOTE: `actions/checkout` intentionally lives in the caller, not here: a
 # local composite action cannot check the repository out, because its own

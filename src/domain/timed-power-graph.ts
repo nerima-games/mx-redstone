@@ -7,8 +7,8 @@ import {
   emptyPowerMap,
   powerAt,
   propagateTick,
-} from './power-graph'
-import type { PositionKey } from './position-key'
+} from './power-graph.js'
+import type { PositionKey } from './position-key.js'
 
 const TIMED_COMPONENT_KINDS: ReadonlySet<Component['kind']> = new Set([
   'repeater',
@@ -275,11 +275,20 @@ const applyTimedEntry = (params: {
   const { buttons, component, components, key, pressedButtons, previous, repeaters, torches } = params
   if (component.kind === 'repeater') {
     applyRepeaterEntry({ component, components, key, previous, repeaters })
-  } else if (component.kind === 'button') {
-    applyButtonEntry({ buttons, component, components, key, pressedButtons, previous })
-  } else if (component.kind === 'torch') {
-    applyTorchEntry({ component, components, key, previous, torches })
+    return
   }
+  if (component.kind === 'button') {
+    applyButtonEntry({ buttons, component, components, key, pressedButtons, previous })
+    return
+  }
+  /**
+   * `advanceTimedCircuit` only ever calls this for `TIMED_COMPONENT_KINDS`
+   * members (`componentEntriesForKinds` filters upstream), so having ruled out
+   * 'repeater' and 'button', `component.kind` is provably 'torch' here. A
+   * trailing `else if ('torch')` would leave a branch no test can reach
+   * (DN-RS-11), so this is an unconditional call instead of a third guard.
+   */
+  applyTorchEntry({ component, components, key, previous, torches })
 }
 
 /** Advances all timers exactly once, then computes this tick's 0–15 power map. */

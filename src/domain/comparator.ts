@@ -38,7 +38,7 @@
  * fixtures, which matters because the failure mode of an off-by-one here is a
  * circuit that is right for most inputs.
  */
-import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level'
+import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level.js'
 
 export type ComparatorMode = 'compare' | 'subtract'
 

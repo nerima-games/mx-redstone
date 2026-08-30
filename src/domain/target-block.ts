@@ -11,7 +11,7 @@ export type TargetHit = {
   readonly vertical: number
 }
 
-import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level'
+import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level.js'
 
 const FACE_MIN = 0
 const FACE_MAX = 1

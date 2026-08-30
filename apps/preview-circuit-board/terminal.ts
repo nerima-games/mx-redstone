@@ -42,7 +42,7 @@ export const write = (text: string): void => {
   process.stdout.write(text)
 }
 
-export const NEWLINE = String.fromCharCode(10)
+export const NEWLINE: string = String.fromCharCode(10)
 
 export const writeLine = (text = ''): void => {
   process.stdout.write(`${text}${NEWLINE}`)

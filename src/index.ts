@@ -30,7 +30,7 @@
 export {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
-} from './application/world-runtime'
+} from './application/world-runtime.js'
 export type {
   LampTransition,
   HopperTransferEvent,
@@ -43,19 +43,19 @@ export type {
   RedstoneWorldRuntimeService,
   RedstoneWorldSnapshot,
   TriggeredComponentKind,
-} from './application/world-runtime'
+} from './application/world-runtime.js'
 
-export * from './domain/comparator'
-export * from './domain/dispenser'
-export * from './domain/hopper'
-export * from './domain/observer'
-export * from './domain/piston'
-export * from './domain/power-graph'
-export * from './domain/timed-power-graph'
-export * from './domain/pressure-plate'
-export * from './domain/target-block'
-export * from './stages/registration'
-export * from './stages/stage-ids'
+export * from './domain/comparator.js'
+export * from './domain/dispenser.js'
+export * from './domain/hopper.js'
+export * from './domain/observer.js'
+export * from './domain/piston.js'
+export * from './domain/power-graph.js'
+export * from './domain/timed-power-graph.js'
+export * from './domain/pressure-plate.js'
+export * from './domain/target-block.js'
+export * from './stages/registration.js'
+export * from './stages/stage-ids.js'
 
 // --- Provisional ---------------------------------------------------------------
 // Frame-stage vocabulary is imported from @nerima-games/mc-kernel and is NOT

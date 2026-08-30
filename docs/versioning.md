@@ -2,9 +2,11 @@
 
 ## 1. 現状
 
-- **バージョン: `0.2.4`。**
-- **自動 publish パイプラインは無い。** `package.json` の `exports` は TypeScript ソース（`./src/index.ts`）を直接指しており、
-  `tsconfig.base.json:59` が `noEmit: true` なので `dist/` は存在しない。
+- **バージョン: `0.2.7`。**
+- **自動 publish パイプラインがある。** Wave 0（toolchain freeze、2026-08-30）で `tsconfig.release.json` による
+  `tsc` emit へ切り替え、`package.json` の `exports` は `dist/` を指すようになった。`.github/workflows/release.yaml`
+  が `main` への push を検知して `pnpm verify && pnpm package:verify` の再検証後に GitHub Packages へ publish し、
+  publish 後に `v<version>` タグを打つ。changesets（`.changeset/config.json`）でバージョン運用する。
 - **実行時依存は `effect` と公開済みの `mc-kernel` / `mc-sim` / `mc-worldgen`。**
   GitHub Packages に公開されたバージョンを pin する。
 - 開発中は `mc-dev-meta` workspace（16 リポジトリを `repos/` に clone して 1 つの pnpm workspace として束ねる）による
@@ -39,32 +41,35 @@ plan.md §8 のリスク表も同じことを別角度から書いている。
 
 ## 3. 公開先
 
-**GitHub Packages**（`https://npm.pkg.github.com`、`access: restricted`）。
-`package.json` の `publishConfig` に設定済みで、検証済みソースパッケージを手動 publish する。
+**GitHub Packages**（`https://npm.pkg.github.com`、`access: public`）。
+`package.json` の `publishConfig` に設定済みで、`.github/workflows/release.yaml` が検証済みビルド成果物を
+`main` への push（または `workflow_dispatch` での手動再実行）を契機に自動 publish する。
 
 ```json
 "publishConfig": {
   "registry": "https://npm.pkg.github.com",
-  "access": "restricted"
+  "access": "public"
 }
 ```
 
-`.npmrc` にレジストリ設定は入っていない。現在の `.npmrc` は `fast-check` / `pure-rand` の
-hoist 設定だけであり、`@nerima-games:registry=` の行と認証トークンの受け渡しは
-publish パイプラインを追加するときに足す。
+`.npmrc` は `fast-check` / `pure-rand` の hoist 設定に加え、`@nerima-games:registry=https://npm.pkg.github.com`
+を持つ。CI・release ワークフローは `Install dependencies` の前に `pnpm config set --location=user
+//npm.pkg.github.com/:_authToken "$NODE_AUTH_TOKEN"` で認証トークンを渡す。
 
-### 3-1. build / publish は完成条件到達時に追加する
+### 3-1. build / publish（Wave 0 で追加済み）
 
-完成条件（[testing.md](./testing.md) §4）に到達した時点で以下を追加する。
+以前は「完成条件到達時に追加する」計画だったが、Wave 0（toolchain freeze）で org 標準の一部として前倒しで追加した。
 
-1. `tsconfig.build.json` を emit ありに変更し、`dist/` を生成する
-2. `package.json` の `main` / `types` / `exports` を `dist/` に向ける
-3. `files` から `domain` / `stages` を外し `dist` を入れる
-4. GitHub Actions に publish job を追加する（tag push トリガ）
-5. changesets を導入する
+1. `tsconfig.release.json`（emit あり）が `dist/` を生成する。`tsconfig.build.json` は check-only のまま
+2. `package.json` の `main` / `types` / `exports` は `dist/` を指す
+3. `files` は `dist` / `LICENSE` / `README.md`（`domain` / `stages` などソースは含まない）
+4. `.github/workflows/release.yaml` が publish job を持つ（`main` push + `workflow_dispatch` トリガ）
+5. changesets（`.changeset/config.json`、`access: public`）を導入した
 
-**先にやらない理由**: ビルド成果物を介すと型エラーがビルド時にしか出なくなり、
-16 リポジトリを 1 つの workspace で開発している間の DX が落ちる。
+**先にやらなかった理由（Wave 0 以前）**: ビルド成果物を介すと型エラーがビルド時にしか出なくなり、
+16 リポジトリを 1 つの workspace で開発している間の DX が落ちる、というものだった。この判断は org 全体の
+toolchain freeze（Wave 0）で上書きされた——`dist/` を介した検証（`pnpm package:verify`）自体が
+`exports` サブパスと宣言ファイルの一致を保証するゲートになったため、DX 上のコストより境界検査の価値が上回った。
 
 ## 4. ボトムアップの publish-then-pin
 

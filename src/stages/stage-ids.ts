@@ -11,7 +11,7 @@
 // Function, not a class, so calling it as `new StageId(...)` would discard its
 // Branded return value in favour of a fresh `this`. Aliasing the binding is the
 // Real fix for `new-cap`, not `new`.
-import { StageId as makeStageId } from '@nerima-games/mc-kernel'
+import { type StageId, StageId as makeStageId } from '@nerima-games/mc-kernel'
 
 /**
  * Stages owned by mx-redstone.
@@ -66,7 +66,10 @@ const EFFECTS_STAGE_ID = {
  * doc above says is "for human reading only" but the test does not treat
  * that way.
  */
-export const REDSTONE_STAGE_IDS = { ...POWER_STAGE_ID, ...EFFECTS_STAGE_ID } as const
+export const REDSTONE_STAGE_IDS: { readonly power: StageId; readonly effects: StageId } = {
+  ...POWER_STAGE_ID,
+  ...EFFECTS_STAGE_ID,
+} as const
 
 /**
  * Stages owned by OTHER repositories that mx-redstone orders itself against.
@@ -77,7 +80,7 @@ export const REDSTONE_STAGE_IDS = { ...POWER_STAGE_ID, ...EFFECTS_STAGE_ID } as 
  * flicker every time they move, which is exactly the kind of bug that is
  * invisible in a test and obvious in a preview.
  */
-export const UPSTREAM_STAGE_IDS = {
+export const UPSTREAM_STAGE_IDS: { readonly simPhysics: StageId } = {
   simPhysics: makeStageId('sim:physics'),
 } as const
 

@@ -24,6 +24,7 @@
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
+    "strictBuiltinIteratorReturn": true,
     "strictFunctionTypes": true,
     "strictBindCallApply": true,
     "strictPropertyInitialization": true,
@@ -45,6 +46,21 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
+    // Public declarations must be derivable from each source file's explicit
+    // annotations. This prevents an implementation-only inference change from
+    // silently changing the package API.
+    "isolatedDeclarations": true,
+    // A type-only import must say so. The emitted JavaScript then follows from
+    // the import statement alone, with no whole-program analysis deciding which
+    // specifiers survive — which is what a package shipping ESM to consumers
+    // wants.
+    "verbatimModuleSyntax": true,
+    // Nothing that needs a runtime transform to have meaning: no enum, no
+    // namespace, no parameter property. The domain is types and const data
+    // already, so this pins the property rather than requesting a change.
+    "erasableSyntaxOnly": true,
+    // A side-effect import that resolves to nothing is an error, not a no-op.
+    "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
     "resolvePackageJsonExports": true,
     "resolvePackageJsonImports": true,
@@ -53,9 +69,9 @@
     "newLine": "lf",
     "stripInternal": true,
 
-    // No build step yet (see README 現状). Every tsconfig here is check-only;
-    // `package.json#exports` points at TypeScript source. The emitting
-    // build/publish pipeline is added when this repo reaches completion.
+    // The default remains check-only. `tsconfig.release.json` is the sole
+    // emitting configuration, so source imports stay type-safe while the
+    // published package exposes only generated JavaScript and declarations.
     "noEmit": true,
 
   }
