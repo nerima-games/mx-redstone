@@ -157,9 +157,21 @@ try {
       2,
     )}\n`,
   );
+  // The `@nerima-games/*` deps above are already `file:` paths, so this
+  // install never actually queries GitHub Packages for them (that is the
+  // whole point of resolving them locally — see the comment above). This
+  // .npmrc is written anyway per the Wave 0 org decision (verify-package.mjs
+  // must be able to authenticate to GitHub Packages, since most repos in the
+  // org do need it here): `${NODE_AUTH_TOKEN}` is the literal placeholder
+  // npm expands from its own environment, never the token value itself.
+  await writeFile(
+    join(consumerDirectory, ".npmrc"),
+    `@nerima-games:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=\${NODE_AUTH_TOKEN}\n`,
+  );
   run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", archivePath], {
     cwd: consumerDirectory,
     timeoutMs: 180_000,
+    env: { ...process.env, NODE_AUTH_TOKEN: process.env.NODE_AUTH_TOKEN ?? "" },
   });
 
   const probe = `
