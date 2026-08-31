@@ -1,5 +1,11 @@
 # @nerima-games/mx-redstone
 
+## 0.3.1
+
+### Patch Changes
+
+- [#16](https://github.com/nerima-games/mx-redstone/pull/16) [`d0e0027`](https://github.com/nerima-games/mx-redstone/commit/d0e002779a70f6a3160e3697a27ad56c3bca4d22) Thanks [@takeokunn](https://github.com/takeokunn)! - Align pinned `@nerima-games/*` dependency versions with the current org release set: `mc-kernel` 0.5.1 -> 0.7.0, `mc-sim` 0.1.39 -> 0.4.1, `mc-worldgen` 0.1.14 -> 0.3.1. No source change: `mc-sim` and `mc-worldgen` are declared dependencies this package does not yet import from, and the one `mc-kernel` surface this package consumes (`blockIdOf`, `capabilityOfBlockId`, `isBlockType`, the `pistonImmovable` capability flag) is unchanged in shape and behavior across the jump.
+
 ## 0.3.0
 
 ### Minor Changes
