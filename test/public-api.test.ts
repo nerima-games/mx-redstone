@@ -37,6 +37,11 @@ describe('public API surface', () => {
         'RedstoneWorldRuntimeLayer',
         'REDSTONE_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
+        // the host boundary (§5.3 W1-L4'): a host builds a snapshot through
+        // `redstoneSnapshotFromRealm` and applies drained events through
+        // `applyRedstoneHostEvents`, against its own `RedstoneHostRealm`.
+        'redstoneSnapshotFromRealm',
+        'applyRedstoneHostEvents',
       ]
 
       for (const name of contract) {
@@ -111,6 +116,10 @@ describe('public API surface', () => {
         'emptyCircuitBoard',
         'EXPERIENCE_MODULE_STAGE_PREFIXES',
         'OWN_STAGE_PREFIX',
+        // the host boundary's own internals — visible so a host or a test can
+        // drive classification and piston-capability lookup directly.
+        'componentForBlock',
+        'kernelPistonCapabilities',
       ]
 
       for (const name of internal) {

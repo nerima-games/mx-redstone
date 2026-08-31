@@ -44,6 +44,18 @@ export type {
   RedstoneWorldSnapshot,
   TriggeredComponentKind,
 } from './application/world-runtime.js'
+export {
+  applyRedstoneHostEvents,
+  componentForBlock,
+  kernelPistonCapabilities,
+  redstoneSnapshotFromRealm,
+} from './application/redstone-host-port.js'
+export type {
+  RedstoneHostBlock,
+  RedstoneHostLookup,
+  RedstoneHostRealm,
+  RedstoneHostWritePort,
+} from './application/redstone-host-port.js'
 
 export * from './domain/comparator.js'
 export * from './domain/dispenser.js'

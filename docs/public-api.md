@@ -210,6 +210,27 @@ mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしてお�
 
 snapshot から `CircuitBoard` を構築する関数、内部 state、node ID はバレルへ公開しない。
 
+### `application/redstone-host-port.ts`
+
+§5.3 W1-L4' の降ろし先。旧 mc-compose `apps/multiplayer-server/redstone-runtime.ts` が
+持っていたホスト境界（ブロック文字列 → `RedstoneComponentSnapshot` の分類と、drain した
+イベントの適用）がここに来た。ホストは自分の `MultiplayerServerCore` 相当の実装を
+`RedstoneHostRealm`（`lookup` + `port`）として渡すだけでよい。
+
+| エクスポート | 区分 | 備考 |
+| --- | --- | --- |
+| `redstoneSnapshotFromRealm` | **契約** | ホストの生ブロック列から 1 dimension 分の `RedstoneWorldSnapshot` を組む |
+| `applyRedstoneHostEvents` | **契約** | runtime の 5 queue を drain し、`RedstoneHostRealm` ごとに適用する |
+| `RedstoneHostBlock` / `RedstoneHostLookup` / `RedstoneHostWritePort` / `RedstoneHostRealm` | **契約** | ホストが実装する Port の形。ブロック名の語彙は含まない（`applyLampTransition` 等は真偽値を取る） |
+| `componentForBlock` | 内部（可視） | ブロック文字列 1 つの分類。テストとホストの直接検証のために可視 |
+| `kernelPistonCapabilities` | 内部（可視） | mc-kernel の `pistonImmovable` 能力テーブルを読む `BlockCapabilityLookup` |
+
+`applyRedstoneHostEvents` は mc-compose 版から 2 つの穴をそのまま引き継いでいる
+（ソース自身に対応する host 操作が無かったため、直す側で発明しない）:
+`RedstoneTriggerEvent` の `'note-block'` と `PoweredComponentTransition` の
+`'trapdoor'` は drain されるが host には渡らない。`componentForBlock` の `piston`
+ケースも `pistonFacing: 'north'` / `pistonKind: 'sticky'` 固定のまま。
+
 ### `stages/stage-ids.ts`
 
 | エクスポート | 区分 | 備考 |
