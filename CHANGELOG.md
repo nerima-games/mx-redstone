@@ -1,5 +1,17 @@
 # @nerima-games/mx-redstone
 
+## 0.3.0
+
+### Minor Changes
+
+- [#14](https://github.com/nerima-games/mx-redstone/pull/14) [`719e88a`](https://github.com/nerima-games/mx-redstone/commit/719e88aca7a34f389043d653cf47344020450cc8) Thanks [@takeokunn](https://github.com/takeokunn)! - Add the redstone host boundary: componentForBlock (the component roster this package always owned), kernelPistonCapabilities, and a host Port (lookup + write) with snapshot-in / events-out helpers, so a host runs redstone without reimplementing the per-tick sync-run-drain loop.
+
+- [#14](https://github.com/nerima-games/mx-redstone/pull/14) [`719e88a`](https://github.com/nerima-games/mx-redstone/commit/719e88aca7a34f389043d653cf47344020450cc8) Thanks [@takeokunn](https://github.com/takeokunn)! - Add the host boundary this repository's stages cross: `src/application/redstone-host-port.ts` exports `RedstoneHostRealm`/`RedstoneHostLookup`/`RedstoneHostWritePort`/`RedstoneHostBlock`, `redstoneSnapshotFromRealm`, `applyRedstoneHostEvents`, `componentForBlock`, and `kernelPistonCapabilities`. A host implements the Port against its own block-world state instead of reimplementing block classification and drain-event dispatch itself.
+
+### Patch Changes
+
+- [#13](https://github.com/nerima-games/mx-redstone/pull/13) [`2af2ea5`](https://github.com/nerima-games/mx-redstone/commit/2af2ea565bb15c641fbe2b80d13c84dcc68100f9) Thanks [@takeokunn](https://github.com/takeokunn)! - Complete the org toolchain devDependency pin set: knip 6.33.0 (its verify gate arrives in Wave 3; the pin belongs to the Wave 0 table) plus @effect/vitest 0.30.0 where it was missing.
+
 ## 0.2.8
 
 ### Patch Changes
