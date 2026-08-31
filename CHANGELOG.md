@@ -1,5 +1,16 @@
 # @nerima-games/mx-redstone
 
+## 0.3.2
+
+### Patch Changes
+
+- [#18](https://github.com/nerima-games/mx-redstone/pull/18) [`23a318c`](https://github.com/nerima-games/mx-redstone/commit/23a318c9642dc6736b9d4df795346560a8b23d62) Thanks [@takeokunn](https://github.com/takeokunn)! - Align internal pins to the current published versions
+  
+  - `@nerima-games/mc-sim` to 0.4.2
+  - `@nerima-games/mc-worldgen` to 0.3.2
+  Each of these upstream releases contained a pin change and no source change,
+  so no behaviour moves with this bump.
+
 ## 0.3.1
 
 ### Patch Changes
