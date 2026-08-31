@@ -12,14 +12,14 @@ importers:
   .:
     dependencies:
       '@nerima-games/mc-kernel':
-        specifier: 0.5.1
-        version: 0.5.1
+        specifier: 0.7.0
+        version: 0.7.0
       '@nerima-games/mc-sim':
-        specifier: 0.1.39
-        version: 0.1.39
+        specifier: 0.4.1
+        version: 0.4.1
       '@nerima-games/mc-worldgen':
-        specifier: 0.1.14
-        version: 0.1.14
+        specifier: 0.3.1
+        version: 0.3.1
       effect:
         specifier: 3.22.1
         version: 3.22.1
@@ -352,33 +352,41 @@ packages:
       '@emnapi/core': ^1.7.1 || ^2.0.0-alpha.4
       '@emnapi/runtime': ^1.7.1 || ^2.0.0-alpha.4
 
-  '@nerima-games/mc-kernel@0.2.17':
-    resolution: {integrity: sha512-AXHZzXvLWYrnVFwgNy4iWIUJRRvbNnkAsMngjACcPAHBInAdUHcEDlRZPEEON+ofCqfsvG3FOglXkr+RANpy6Q==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.2.17/8a2900e6fb1add68699490181f4772c3ccab7832}
+  '@nerima-games/mc-kernel@0.4.0':
+    resolution: {integrity: sha512-kUqt04yFmmo0RGQEROzjruIkKVbiH9PM9+noMxk6OGk3qWVlT5jRSvIehYwZy4wh9yOK+ZhtG0QjAUeXAC0R1A==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.4.0/9342d6e28b483341137f64f9e6a93f467924d45c}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+    peerDependencies:
+      effect: ^3.22.1
 
-  '@nerima-games/mc-kernel@0.5.1':
-    resolution: {integrity: sha512-DlyTf/UUDZh8SKPO+H0mSCL7ywGiIa5KqZJs/xIqj/MpCKLma6lu9QxlnmvWyH0ikV32lyw+Z6yIgCaVIaFCdg==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.5.1/0637d8dce6026f6ef114455f0d8f0969a99333f3}
+  '@nerima-games/mc-kernel@0.5.0':
+    resolution: {integrity: sha512-Siy5d91Asd+7c4ALskhL19Yoc+8H6y9BlB73FLMAd4s/jokU1yk09AliENFDaVv0to6Wg9KvgU8qGDKflv4CeQ==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.5.0/9488ca427acfb5eef363aeecf1195326d8893612}
+    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+    peerDependencies:
+      effect: ^3.22.1
+
+  '@nerima-games/mc-kernel@0.7.0':
+    resolution: {integrity: sha512-JrIshLsxTAbP6cARvuI/9BeORONp+3Xa8rtW1S2prB7C9A1nLiHtZrUI9FQ6eJba+9XcHdQ7tU4S88cHzXlMpA==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.7.0/257fba8aa871ea57c036e9fe89284e4f57aff6be}
     engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
-  '@nerima-games/mc-noise@0.2.0':
-    resolution: {integrity: sha512-b39/9ugZvF59ZvO4J/M6CMZZgziZa3keVzxt/6RQo+mYS3a33suB0wvBF2xOlE+cKw1cKO7xe25WM2Xxu7XshQ==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-noise/0.2.0/33559f7c79806dc9412b8193fb8be0b76c5a9a53}
-    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+  '@nerima-games/mc-noise@0.3.0':
+    resolution: {integrity: sha512-ntPWqPFWH2VADOF0Q4a3qgdvgndo472/FFhzJnVKNANhChvCLbcZ2754+NeOWI56Bw2ZOGYUUD3u116dKBB15Q==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-noise/0.3.0/598f4b65934dad3ae5b16b3250a7084b9a221496}
+    engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
-  '@nerima-games/mc-physics@0.1.7':
-    resolution: {integrity: sha512-ptuMTPm8B+/h+TYDKpA9XBmRVuLsSWrFWRPl7TpESsmb1Ma67oXYbUwdYbEaToymu1oDmbzuSK1yDKhT0iQRww==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-physics/0.1.7/639e9afb98458abbba391bcc750dd7eff9a1ee75}
-    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+  '@nerima-games/mc-physics@0.2.1':
+    resolution: {integrity: sha512-x2Q7d4Q2hGYvzOlVE3C6mgpEzuHqm0QmVtusU9iKbLMHVfWFvRp23TzxsnM6xXFMMC2eMmtH8A/vHhe3zwjQKg==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-physics/0.2.1/017b8c15f1a9f5a880cdb4437fbd25149b89eb09}
+    engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
-  '@nerima-games/mc-save@0.2.2':
-    resolution: {integrity: sha512-RfBRez6UxbmepJ9b1H9z+lM/jeHCYgcFura1dVFa7rnr+DLHy8pZuGzeASytnNyyHL1fXqtsf202fZKvxFwiog==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-save/0.2.2/86bae2e984e31d03dbe474e61c8cdc0a86e34b12}
-    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+  '@nerima-games/mc-save@0.4.1':
+    resolution: {integrity: sha512-bhqxFU51XGe8khixIXeGnDgDrVH83ahHPRXAbN6w5BasprAm9Z8wqN933Wdn0h0ER4lQ0vZi/6VA1tdbszJSoA==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-save/0.4.1/15cc97d1b6ca60ed23d5a84b5055fcab9622661d}
+    engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
-  '@nerima-games/mc-sim@0.1.39':
-    resolution: {integrity: sha512-atfciqOkqzLbsn3ZX+kjFboav4C615trhv5JOJruX1xcwj85hHVOjOw2iTBaEGRud2aUzsr85ZQRd6FvrEjCig==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-sim/0.1.39/660c2053407898537eddb3a4e1030e3734b110b6}
-    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+  '@nerima-games/mc-sim@0.4.1':
+    resolution: {integrity: sha512-ZHaqCaRp6DdmIZV65lNxXtxIBGzj/pHc/cZj14BAvIV74to1oXCbEgL1PqXHhx3dJJi+Qb0Nfj8UgxetEKWNgQ==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-sim/0.4.1/70ce7cf918c6b57d5d30ec9501c62e5bec247530}
+    engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
-  '@nerima-games/mc-worldgen@0.1.14':
-    resolution: {integrity: sha512-v9RzxGuqro90Ou4mBsMSYkAGHE5WCcLO0bkx7bXFnMKI29QPTIUEHOabCa93WR0CKTxv1gTRhH8aH6BviTDhgQ==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-worldgen/0.1.14/941dc634384bdad39503bf49702e85ca0b6809cb}
-    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+  '@nerima-games/mc-worldgen@0.3.1':
+    resolution: {integrity: sha512-mfLCq2Aq355fPDFlBOXjrnsaJBJNArYZFXSUUDZdxGsBS85YoT5mCtmnKQYk/bcArJ+m0CpDX3xUe+w5Chgwxw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-worldgen/0.3.1/a2668cbc56af9a7d9e4f9ce333cabf4505927308}
+    engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
   '@oxc-parser/binding-android-arm-eabi@0.147.0':
     resolution: {integrity: sha512-fOtoGvIoirkvxQVw9J1WJPxz571XPgLsPf9uhRD+PJteUnvrJHMDmK9pw2yZEGGyismtRoEsp+JcXUdF/JDMDw==}
@@ -1550,40 +1558,46 @@ snapshots:
       '@tybys/wasm-util': 0.10.3
     optional: true
 
-  '@nerima-games/mc-kernel@0.2.17':
+  '@nerima-games/mc-kernel@0.4.0(effect@3.22.1)':
     dependencies:
       effect: 3.22.1
 
-  '@nerima-games/mc-kernel@0.5.1':
+  '@nerima-games/mc-kernel@0.5.0(effect@3.22.1)':
     dependencies:
       effect: 3.22.1
 
-  '@nerima-games/mc-noise@0.2.0':
+  '@nerima-games/mc-kernel@0.7.0':
     dependencies:
       effect: 3.22.1
 
-  '@nerima-games/mc-physics@0.1.7':
+  '@nerima-games/mc-noise@0.3.0':
     dependencies:
-      '@nerima-games/mc-kernel': 0.2.17
+      '@nerima-games/mc-kernel': 0.4.0(effect@3.22.1)
       effect: 3.22.1
 
-  '@nerima-games/mc-save@0.2.2':
+  '@nerima-games/mc-physics@0.2.1':
     dependencies:
+      '@nerima-games/mc-kernel': 0.5.0(effect@3.22.1)
       effect: 3.22.1
 
-  '@nerima-games/mc-sim@0.1.39':
+  '@nerima-games/mc-save@0.4.1':
     dependencies:
-      '@nerima-games/mc-kernel': 0.2.17
-      '@nerima-games/mc-physics': 0.1.7
-      '@nerima-games/mc-save': 0.2.2
-      '@nerima-games/mc-worldgen': 0.1.14
+      '@nerima-games/mc-kernel': 0.7.0
       effect: 3.22.1
 
-  '@nerima-games/mc-worldgen@0.1.14':
+  '@nerima-games/mc-sim@0.4.1':
     dependencies:
-      '@nerima-games/mc-kernel': 0.2.17
-      '@nerima-games/mc-noise': 0.2.0
-      '@nerima-games/mc-save': 0.2.2
+      '@nerima-games/mc-kernel': 0.7.0
+      '@nerima-games/mc-physics': 0.2.1
+      '@nerima-games/mc-save': 0.4.1
+      '@nerima-games/mc-worldgen': 0.3.1
+      effect: 3.22.1
+
+  '@nerima-games/mc-worldgen@0.3.1':
+    dependencies:
+      '@nerima-games/mc-kernel': 0.7.0
+      '@nerima-games/mc-noise': 0.3.0
+      '@nerima-games/mc-save': 0.4.1
       effect: 3.22.1
 
   '@oxc-parser/binding-android-arm-eabi@0.147.0':
@@ -2251,8 +2265,8 @@ snapshots:
   vite@7.3.6(@types/node@26.4.0)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0):
     dependencies:
       esbuild: 0.28.1
-      fdir: 6.5.0(picomatch@4.0.5)
-      picomatch: 4.0.5
+      fdir: 6.5.0(picomatch@4.0.7)
+      picomatch: 4.0.7
       postcss: 8.5.23
       rollup: 4.62.3
       tinyglobby: 0.2.17

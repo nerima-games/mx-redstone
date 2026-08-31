@@ -57,9 +57,9 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm test"
   },
   "dependencies": {
-    "@nerima-games/mc-kernel": "0.5.1",
-    "@nerima-games/mc-sim": "0.1.39",
-    "@nerima-games/mc-worldgen": "0.1.14",
+    "@nerima-games/mc-kernel": "0.7.0",
+    "@nerima-games/mc-sim": "0.4.1",
+    "@nerima-games/mc-worldgen": "0.3.1",
     "effect": "3.22.1"
   },
   "devDependencies": {
