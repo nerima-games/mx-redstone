@@ -197,7 +197,7 @@ plan.md §8 のリスク表も同じことを別角度から言っている。
 | 参照実装 | 何を主張しているか | 移植しない理由 |
 | --- | --- | --- |
 | `redstone-simulation.test.ts` `neighborsOf` / `normalizeComponentPosition` | ボクセル 6 面の隣接、座標の floor | **幾何。** ここに幾何は無い（`domain/power-graph.ts:23-27`）。座標型は mc-kernel の資産 |
-| 同 `decayButtonTimers`（3 例） | ボタンの残 tick が 1→0 で `active` が false になる | **移植済み。** `advanceTimedCircuit` が残り時間を持ち、runtime stage が dimension ごとの状態を進める。`test/timed-power-graph.test.ts` と `test/world-runtime.test.ts` が停止を固定する |
+| 同 `decayButtonTimers`（3 例） | ボタンの残 tick が 1→0 で `active` が false になる | **移植済み。** `advanceTimedCircuit` が残り時間を持ち、runtime stage が dimension ごとの状態を進める。`test/power-timing.test.ts` と `test/world-runtime.test.ts` が停止を固定する |
 | 同 `updatePistons`（4 例） | 通電でピストンが `pistonExtended` になる | **実装済み。** `piston` component の通電変化を `drainPistonTransitions` から取得する |
 | 同 `computeNeedsPropagation`（5 例） | dirty フラグと「期限切れボタンの残留電力」で再伝播が要る | **最適化の主張。** ここは固定レートで無条件に tick する（DN-RS-3）ので、対応する概念が無い |
 | 同 `sortedPowerSnapshot` / `RedstonePowerLevel.toNumber` | 読み出しの決定性、ブランドの往復 | 決定性は上の 4 本目に**畳み込んで移植した**。ブランドの往復変換は主張を運ばない |
@@ -208,7 +208,7 @@ plan.md §8 のリスク表も同じことを別角度から言っている。
 | 同 `button emits temporary power and decays` | press(2) → 14, 14, 0 | **移植済み。** `pressButton` と `pulseTicks` により押下、再押下、期限切れを検査する |
 | `redstone-service-snapshot.test.ts`（11 例） | tick カウンタ、キャッシュ、`setComponent` の再配置 | **境界**（同上）。`torch inversion (NOT gate)` の往復は下記 |
 | 同 `torch inversion (NOT gate)`:127-158 | 入力が消えるとトーチは**点き直す** | **主張を運ばない。** `propagateTick` は (board, previous) の純関数なので、点き直した後の状態は**一度も通電されなかったトーチと同一**である。両半分は既に別々に固定されている（`:277` と `:308`）。この往復を落とす production の変異は存在しない |
-| 同 `repeater delay: 2-tick` | リピーターの遅延段数 | **移植済み。** `delayTicks` は 1–4 に clamp され、ON/OFF の両遷移を同じ遅延で確定する。境界とキャンセルは `test/timed-power-graph.test.ts` が固定する |
+| 同 `repeater delay: 2-tick` | リピーターの遅延段数 | **移植済み。** `delayTicks` は 1–4 に clamp され、ON/OFF の両遷移を同じ遅延で確定する。境界とキャンセルは `test/power-timing.test.ts` が固定する |
 | 同 `stacked wires never conduct vertically` | 上下のワイヤは導通しない | **幾何** |
 | `redstone-piston-world-effects.test.ts`（19 例） | 押し出し、facing、腕の描画、エンティティの押し退け | **境界。** facing 付き移動は純粋に計画し、世界更新はホストの atomic commit。腕の描画とエンティティ押し退けはホスト責務 |
 | 同 `refuses trains longer than the 12-block limit` | 13 個で拒否 | **既にある**（`test/piston.test.ts:98`、`PISTON_PUSH_LIMIT`） |

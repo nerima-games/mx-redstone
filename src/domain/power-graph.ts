@@ -434,6 +434,23 @@ const repeaterSourceLevel = (component: Component, previous: PowerMap): PowerLev
   return NO_POWER_LEVEL
 }
 
+/**
+ * A raw board repeater never carries `active` — `domain/power-timing.ts` is
+ * the one caller that sets it, on the override it builds after its own timer
+ * has already resolved this tick's output from a delayed `inputFrom` read
+ * that override does not repeat. Trusting that resolved value the same way
+ * `externalSourceLevel` trusts an observer's is what lets the override omit
+ * `inputFrom` entirely: recomputing from `previous` here would read the
+ * CURRENT tick's raw input and discard the delay `advanceOrHoldRepeater`
+ * just spent ticks counting down.
+ */
+const resolvedOrLiveRepeaterSourceLevel = (component: Component, previous: PowerMap): PowerLevel => {
+  if (typeof component.active === 'boolean') {
+    return externalSourceLevel(component)
+  }
+  return repeaterSourceLevel(component, previous)
+}
+
 const comparatorSourceLevel = (component: Component, previous: PowerMap): PowerLevel => {
   // The rear is either a container's reading or the cell behind, never
   // Both: in the world that cell holds one or the other. Both are read from
@@ -459,7 +476,7 @@ const sourceLevelFor = (component: Component, previous: PowerMap): PowerLevel =>
     return torchSourceLevel(component, previous)
   }
   if (component.kind === 'repeater') {
-    return repeaterSourceLevel(component, previous)
+    return resolvedOrLiveRepeaterSourceLevel(component, previous)
   }
   if (component.kind === 'comparator') {
     return comparatorSourceLevel(component, previous)

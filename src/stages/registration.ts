@@ -40,7 +40,7 @@ import {
   makeRedstoneWorldState,
   redstoneWorldStateFor,
 } from '../application/world-runtime.js'
-import { type TimedCircuitState, advanceTimedCircuit } from '../domain/timed-power-graph.js'
+import { type TimedCircuitState, advanceTimedCircuit } from '../domain/power-timing.js'
 import type { CircuitBoard } from '../domain/power-graph.js'
 import type { PositionKey } from '../domain/position-key.js'
 

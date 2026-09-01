@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks'
 import type { CircuitBoard, Component, ComponentKind } from '../src/domain/power-graph'
-import { advanceTimedCircuit, emptyTimedCircuitState } from '../src/domain/timed-power-graph'
+import { advanceTimedCircuit, emptyTimedCircuitState } from '../src/domain/power-timing'
 
 const INERT_COMPONENTS = 100_000
 const MEASURED_TICKS = 100

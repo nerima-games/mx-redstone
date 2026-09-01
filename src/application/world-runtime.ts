@@ -14,7 +14,7 @@ import type { PistonFacing, PistonKind, PistonState, PistonTransitionRequest } f
 import {
   type TimedCircuitState,
   emptyTimedCircuitState,
-} from '../domain/timed-power-graph.js'
+} from '../domain/power-timing.js'
 import type { PositionKey } from '../domain/position-key.js'
 import { hopperTransferDue } from '../domain/hopper.js'
 

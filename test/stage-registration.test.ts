@@ -45,6 +45,22 @@ const leverAndWire: CircuitBoard = {
   ]),
 }
 
+/** A lever driving a repeater of `delayTicks`, so the frame test below can watch one delayed transition. */
+const leverRepeaterWire = (delayTicks: number): CircuitBoard => ({
+  components: new Map<string, Component>([
+    ['lever', { kind: 'lever', active: true }],
+    ['rear', { kind: 'wire' }],
+    ['repeater', { delayTicks, inputFrom: 'rear', kind: 'repeater', outputTo: 'out' }],
+    ['out', { kind: 'wire' }],
+  ]),
+  adjacency: new Map([
+    ['lever', ['rear']],
+    ['rear', ['lever', 'repeater']],
+    ['repeater', ['rear', 'out']],
+    ['out', ['repeater']],
+  ]),
+})
+
 describe('§2.3-1 zero edges between experience modules', () => {
   it.effect(
     'REGRESSION: no `after` edge names another experience module, even though §4.2 puts redstone between gameplay stages',
@@ -227,6 +243,49 @@ describe('stage behaviour', () => {
       expect((yield* Ref.get(state.power)).size).toBe(0)
       expect(yield* Ref.get(state.tickCount)).toBe(MAX_TICKS_PER_FRAME)
     }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect(
+    "REGRESSION: a repeater's delay holds at the exact redstone-tick count, whatever frame rate chops it into",
+    () =>
+      Effect.gen(function* () {
+        // `ticksForFrame` (tested above in isolation) and the delay logic in
+        // `domain/power-timing.ts` (tested above against raw tick counts) are
+        // each correct on their own; this is the one test that drives them
+        // TOGETHER, because a delay that only ever gets ticked at a whole
+        // multiple of its own frame size is the classic place this class of
+        // bug hides. None of `FRAME_SECS_CASES` divides `REDSTONE_TICK_SECS`
+        // evenly, so every case guarantees some frame straddles a tick
+        // boundary rather than landing exactly on one.
+        const DELAY_TICKS = 3
+        const FRAME_SECS_CASES = [1 / 60, 1 / 50, 1 / 33, 1 / 24, 0.037]
+
+        for (const frameSecs of FRAME_SECS_CASES) {
+          const state = yield* makeRedstoneFrameState
+          const power = redstoneStages(state).find((stage) => stage.id === REDSTONE_STAGE_IDS.power)
+          yield* Ref.set(state.board, leverRepeaterWire(DELAY_TICKS))
+
+          // Run one frame at a time and check `out` against `tickCount`
+          // itself, not against a frame count — the frame count for a given
+          // redstone tick differs case to case, and hard-coding it back in
+          // would just re-derive `ticksForFrame` inside the test.
+          let sawOutPowered = false
+          const MAX_FRAMES = 2000
+          for (let frame = 0; frame < MAX_FRAMES && !sawOutPowered; frame += 1) {
+            yield* power?.run(DeltaTimeSecs(frameSecs)) ?? Effect.void
+            const tickCount = yield* Ref.get(state.tickCount)
+            const settled = yield* Ref.get(state.power)
+            if (tickCount <= DELAY_TICKS) {
+              expect(powerAt(settled, 'out')).toBe(0)
+            } else {
+              expect(tickCount).toBe(DELAY_TICKS + 1)
+              expect(powerAt(settled, 'out')).toBe(MAX_POWER_LEVEL)
+              sawOutPowered = true
+            }
+          }
+          expect(sawOutPowered).toBe(true)
+        }
+      }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('every stage tolerates dt = 0', () =>

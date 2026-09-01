@@ -247,7 +247,7 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 
 1 つも契約ではない（§2）。
 
-### `domain/timed-power-graph.ts` — すべて内部（可視）
+### `domain/power-timing.ts` — すべて内部（可視）
 
 `DEFAULT_BUTTON_PULSE_TICKS` / `TORCH_BURNOUT_TOGGLE_LIMIT` / `TORCH_BURNOUT_WINDOW_TICKS` /
 `TORCH_BURNOUT_COOLDOWN_TICKS` / `RepeaterTimer` / `ButtonTimer` / `TorchTimer` / `TimedCircuitState` /

@@ -202,10 +202,21 @@ const applyRepeaterEntry = (params: {
     requested,
   })
   repeaters.set(key, timer)
+  /**
+   * `kind: 'repeater'`, not the component's other placement fields — this
+   * override REPLACES the board entry rather than extending it, and that is
+   * deliberate. `inputFrom`/`sideInputs` are omitted on purpose: the timer
+   * above already resolved this tick's output from them, and the shared
+   * `power-graph.ts` recognises an `active`-bearing repeater as pre-resolved
+   * (`sourceLevelFor`) rather than re-deriving it from a rear input this
+   * entry does not carry. Carrying `inputFrom` through instead would make
+   * `sourcesOf` re-read the RAW, undelayed input on every tick and silently
+   * defeat the whole point of `advanceOrHoldRepeater`.
+   */
   components.set(key, {
     active: timer.output,
     emits: MAX_POWER_LEVEL,
-    kind: 'observer',
+    kind: 'repeater',
     ...outputToFields(component.outputTo),
   })
 }

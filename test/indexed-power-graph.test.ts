@@ -14,7 +14,7 @@ import {
   type TimedCircuitState,
   advanceTimedCircuit,
   emptyTimedCircuitState,
-} from '../src/domain/timed-power-graph'
+} from '../src/domain/power-timing'
 
 const indexedLine = (cells: ReadonlyArray<readonly [string, Component]>): CircuitBoard => {
   const componentKeysByKind = new Map<ComponentKind, Array<string>>()
