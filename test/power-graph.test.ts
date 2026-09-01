@@ -668,6 +668,58 @@ describe('repeaters — a diode, which means both ends are named', () => {
       }
     }),
   )
+
+  it.effect('REGRESSION: an `active`-bearing repeater is read as pre-resolved, not re-derived from inputFrom', () =>
+    Effect.sync(() => {
+      // `domain/power-timing.ts` overrides a repeater's board entry once its
+      // timer has decided this tick's output, and that override carries
+      // `active` but deliberately omits `inputFrom` — the whole point is to
+      // stop `sourcesOf` from re-reading the RAW, undelayed input. A repeater
+      // with `active: true` and no `inputFrom` at all can only be answered
+      // correctly if the `active` field wins; falling through to
+      // `repeaterSourceLevel`'s `inputPowerAt(previous, undefined)` would
+      // read nothing and report unpowered regardless of `active`.
+      const resolvedOn: CircuitBoard = {
+        components: new Map<string, Component>([['repeater', { active: true, kind: 'repeater' }]]),
+        adjacency: new Map([['repeater', []]]),
+      }
+      expect(sourcesOf(resolvedOn, emptyPowerMap).get('repeater')).toBe(MAX_POWER_LEVEL)
+
+      const resolvedOff: CircuitBoard = {
+        components: new Map<string, Component>([['repeater', { active: false, kind: 'repeater' }]]),
+        adjacency: new Map([['repeater', []]]),
+      }
+      expect(sourcesOf(resolvedOff, emptyPowerMap).has('repeater')).toBe(false)
+
+      // The stronger form of the same claim: `active: false` must win even
+      // when `inputFrom` is ALSO present and powered — proving this reads
+      // `active` rather than merely falling back to it when `inputFrom` is
+      // absent. A timer that just decided "not yet, still delaying" must not
+      // be overridden by the very input it was delaying.
+      const lockedLowDespitePoweredInput: CircuitBoard = {
+        components: new Map<string, Component>([
+          ['lever', { active: true, kind: 'lever' }],
+          ['repeater', { active: false, inputFrom: 'lever', kind: 'repeater' }],
+        ]),
+        adjacency: new Map([
+          ['lever', ['repeater']],
+          ['repeater', ['lever']],
+        ]),
+      }
+      const power = new Map([['lever', MAX_POWER_LEVEL]])
+      expect(sourcesOf(lockedLowDespitePoweredInput, power).has('repeater')).toBe(false)
+
+      // And a raw board repeater — no `active` field at all, the shape every
+      // other test in this file uses — is unaffected: it still derives from
+      // `inputFrom` exactly as `repeaterSourceLevel` always has.
+      const raw: CircuitBoard = line([
+        ['lever', { active: true, kind: 'lever' }],
+        ['repeater', { inputFrom: 'lever', kind: 'repeater' }],
+      ])
+      expect(sourcesOf(raw, emptyPowerMap).get('repeater')).toBe(undefined)
+      expect(settle(raw).oscillating).toBe(false)
+    }),
+  )
 })
 
 describe('degenerate boards', () => {

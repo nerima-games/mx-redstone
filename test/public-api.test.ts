@@ -18,7 +18,7 @@ import { Effect } from 'effect'
 import * as redstone from '../src/index'
 import { planPush } from '../src/domain/piston'
 import { propagateTick } from '../src/domain/power-graph'
-import { advanceTimedCircuit } from '../src/domain/timed-power-graph'
+import { advanceTimedCircuit } from '../src/domain/power-timing'
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 
 describe('public API surface', () => {

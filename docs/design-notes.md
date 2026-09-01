@@ -696,7 +696,7 @@ runtime では `stages/registration.ts` が dimension ごとの `TimedCircuitSta
 | `a named output that is not a declared edge drives nothing — adjacency is still the graph` | 隣接に無いセルを名指しても何も駆動しない |
 | `REGRESSION: a torch does not power the cell it inverts, so an inverter is steady rather than a 2-tick blinker` | レバー OFF で 20 tick、トーチは 15 のまま、支持セルは 0 のまま |
 | `legacy propagation keeps its one-tick repeater contract when delay metadata is present` | 旧 API は `delayTicks` を解釈せず、従来どおり各リピーターを 1 tick で伝播する |
-| `test/timed-power-graph.test.ts` の repeater / button 節 | 1–4 tick の境界、遷移キャンセル、パルス停止、再押下、挿入順非依存を固定する |
+| `test/power-timing.test.ts` の repeater / button 節 | 1–4 tick の境界、遷移キャンセル、パルス停止、再押下、挿入順非依存を固定する |
 
 ---
 

@@ -208,7 +208,7 @@ porting.md §3-0 に旧値と新値の両方を残した——**§2-1 が plan.m
 #### 移植が露出させた production の穴（残り 1 つ）
 
 ボタンのパルス長は `advanceTimedCircuit` と `RedstoneWorldRuntime.pressButton` に実装し、
-`test/timed-power-graph.test.ts` と `test/world-runtime.test.ts` で停止と再押下まで固定した。
+`test/power-timing.test.ts` と `test/world-runtime.test.ts` で停止と再押下まで固定した。
 未解決なのは次の 1 点である。
 
 1. **ピストンがエッジ駆動であること。** 参照実装の

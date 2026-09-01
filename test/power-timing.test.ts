@@ -8,7 +8,7 @@ import {
   TORCH_BURNOUT_COOLDOWN_TICKS,
   TORCH_BURNOUT_TOGGLE_LIMIT,
   type TimedCircuitState,
-} from '../src/domain/timed-power-graph'
+} from '../src/domain/power-timing'
 
 const NEXT_TICK = 1
 const NO_TICKS = 0
@@ -362,6 +362,57 @@ describe('timed redstone', () => {
         output: true,
         recentOffTicks: [],
       })
+    }),
+  )
+
+  it.effect('a non-clock circuit reaches a fixed point and stays there, rather than drifting or oscillating', () =>
+    Effect.sync(() => {
+      // Two repeaters at different delays feeding a permanently-locked third:
+      // everything here settles, unlike the self-inverting torch above, which
+      // is a clock by construction and must never stop toggling. A circuit
+      // that quietly drifts — a timer field that keeps counting past zero, a
+      // `Map` entry that keeps getting rebuilt with a new identity each tick
+      // — would pass every single-state assertion elsewhere in this file
+      // while still failing this one, since none of them re-tick after the
+      // state they check.
+      const board = line([
+        ['lever', { active: true, kind: 'lever' }],
+        ['rear', { kind: 'wire' }],
+        ['fast', { delayTicks: 1, inputFrom: 'rear', kind: 'repeater', outputTo: 'mid' }],
+        ['mid', { kind: 'wire' }],
+        ['slow', { delayTicks: 4, inputFrom: 'mid', kind: 'repeater', outputTo: 'lockedIn' }],
+        ['lockedIn', { kind: 'wire' }],
+      ])
+      const boardWithLockedTail: CircuitBoard = {
+        ...board,
+        components: new Map(board.components)
+          .set('lockLever', { active: true, kind: 'lever' })
+          .set('locked', {
+            delayTicks: 2,
+            inputFrom: 'lockedIn',
+            kind: 'repeater',
+            outputTo: 'out',
+            sideInputs: ['lockLever'],
+          })
+          .set('out', { kind: 'wire' }),
+        adjacency: new Map(board.adjacency)
+          .set('lockLever', [])
+          .set('locked', ['lockedIn', 'out'])
+          .set('out', ['locked']),
+      }
+
+      const SETTLE_TICKS = 12
+      const EXTRA_TICKS = 6
+      const settled = ticks(boardWithLockedTail, SETTLE_TICKS)
+      // `locked`'s side is permanently powered, so it never gets to finish a
+      // transition — the state most likely to be mistaken for "still moving".
+      expect(settled.repeaters.get('locked')).toStrictEqual({ output: false, remainingTicks: 0 })
+
+      let state = settled
+      for (let tick = 0; tick < EXTRA_TICKS; tick += 1) {
+        state = advanceTimedCircuit(boardWithLockedTail, state)
+        expect(state).toStrictEqual(settled)
+      }
     }),
   )
 })
