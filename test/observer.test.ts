@@ -151,9 +151,24 @@ describe('observer change detection', () => {
   it.effect('the pulse length is two redstone ticks, and this file does not count it', () =>
     Effect.sync(() => {
       // The constant is the RULE and lives here; the countdown is remaining
-      // time, which is state, and goes with the tick counter in
-      // `stages/registration.ts` — the same answer the button's pulse got.
-      // Matching `redstone-observer-world-effects.ts:17`.
+      // time, which is state, and belongs to whoever owns the world.
+      //
+      // NOT the same answer the button's pulse got, despite what this comment
+      // used to claim. The button IS counted here — `'button'` is in
+      // `power-timing.ts`'s `TIMED_COMPONENT_KINDS` and `stages/registration.ts`
+      // drives its countdown. The observer is NOT: `'observer'` is absent from
+      // that list, no stage samples block changes, and
+      // `application/redstone-host-port.ts` has no observer builder, so a host
+      // cannot even obtain one through the classification path.
+      //
+      // That asymmetry is deliberate, per design-notes DN-RS-15 §15-3: detecting
+      // that a watched block CHANGED needs world reads this package's frame
+      // state does not hold, so the host samples and this package only supplies
+      // the rule. The consequence to know: the multi-tick hold this constant
+      // describes is exercised nowhere in this package's production path, so
+      // the number below is a published contract rather than something a test
+      // here can observe in motion. A host that reimplements the duration
+      // instead of importing this constant is the failure mode to watch for.
       expect(OBSERVER_PULSE_TICKS).toBe(2)
       expect(Object.keys(observeChanges(new Map(), new Map())).sort()).toStrictEqual([
         'fired',
