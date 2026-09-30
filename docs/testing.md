@@ -46,15 +46,15 @@ CI（`.github/workflows/ci.yaml`）は `pnpm verify` の後、`Changeset status`
 
 ## 3. 現在のテストスイート
 
-14 ファイル / 216 テスト。各ファイルの件数は `vitest run --reporter=dot` の出力から転記している。
-`it.effect` の宣言は208件で、通常の Vitest test 宣言も含む。実行環境は `environment: 'node'`。
+14 ファイル / 216 実行テスト。各ファイルの件数は `vitest run --reporter=dot` の出力から転記している。
+ソース上の `it.effect` 宣言は208件だが、fixture ループの展開を含む実行数は216件である。実行環境は `environment: 'node'`。
 
 | ファイル | テスト数 | 対象 |
 | --- | ---: | --- |
 | `test/power-graph.test.ts` | 64 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター / コンパレータ / オブザーバ / 感圧板 / 収束と発振 / `sourcesOf` / ボタン） |
 | `test/stage-registration.test.ts` | 20 | 固定レート tick、stage 挙動、kernel stage contract の回帰 |
 | `test/world-runtime.test.ts` | 18 | runtime snapshot と transition drain |
-| `test/redstone-host-port.test.ts` | 17 | host lookup と event application |
+| `test/redstone-host-port.test.ts` | 25 | host lookup と event application（17宣言、ループ展開を含む） |
 | `test/comparator.test.ts` | 13 | コンパレータの算術を**全数**（16 x 16 x 2）＋コンテナ充填率の写像 |
 | `test/piston.test.ts` | 18 | 能力フラグ、方向付き押し出し、sticky pull、atomic apply |
 | `test/observer.test.ts` | 9 | 変化検出、armed 規則、記憶が値であること（DN-RS-15） |
