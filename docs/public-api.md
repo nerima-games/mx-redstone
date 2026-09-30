@@ -59,7 +59,7 @@ interface StageRegistration {
 }
 ```
 
-`domain/frame-contract.ts:98-102` は plan.md からこの `interface` を字面ごと再掲している。
+`@nerima-games/mc-kernel` が plan.md の contract の正本であり、mx-redstone はそれを import する。
 oxlint は `@typescript-eslint/consistent-type-definitions: ["warn", "type"]` を設定しているが、
 この 1 箇所だけ `interface` のままなのは意図的で、`.oxlintrc.json` のコメントに免除理由が書いてある
 ——**仕様とコードが同じ字面であることのほうが、ローカルなスタイル統一より価値が高い**。
@@ -165,18 +165,19 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 > 「見えるが契約ではない」の管理はドキュメントでできるが、
 > 「所有していないものを公開する」はドキュメントでは止められない——消えるのが約束だからである。
 
-### `domain/frame-contract.ts` — kernel から借用中。**バレルには載せない**
+### mc-kernel stage contract — **バレルには載せない**
 
-`index.ts` はこのファイルを `export *` **しない**。末尾のコメントが存在と削除予定を記すだけである。
+`StageId`、`DeltaTimeSecs`、`FrameServices`、`StageRegistration` は `@nerima-games/mc-kernel` から利用し、
+`index.ts` から再エクスポートしない。
 
 | エクスポート | 区分 | 備考 |
 | --- | --- | --- |
 | `StageId`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | kernel 公開時に kernel のものへ差し替え |
 | `DeltaTimeSecs`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | 同上 |
-| `FrameServices` | **非公開**（所有者は kernel） | 現在 `never`。意図的な乖離（`frame-contract.ts:65-80`） |
+| `FrameServices` | **非公開**（所有者は kernel） | runtime service context は kernel が所有 |
 | `StageRegistration` | **非公開**（所有者は kernel） | plan.md §4.1 の字面どおり。`makeRedstoneStages` の**戻り値の形**としてだけ観測される |
 
-これらは「mx-redstone の契約」ではなく「mc-kernel の契約を mx-redstone が仮置きしているもの」である。
+これらは「mx-redstone の契約」ではなく mc-kernel が所有する契約である。
 
 **だから re-export しない。** バレルに載せると `StageId` / `DeltaTimeSecs` / `StageRegistration` が
 **所有していないパッケージの公開 API** になり、ヘッダが約束している
@@ -288,7 +289,7 @@ runtime の powered transition は node ID 順で、観測した給電エッジ�
 
 `PositionKey`（= `string`）。ブランドを**付けていない**のは意図的で、
 ブランドを付けると本リポジトリが座標概念の所有者を騙ることになるためである（`domain/position-key.ts:11-15`）。
-kernel 公開時に削除。`frame-contract.ts` と同じ理由で `index.ts` から re-export していない
+kernel 所有の座標語彙であり、`index.ts` から re-export していない
 ——座標語彙も所有していないものだからである。
 
 ## 6. `GameModule` を実装した（`redstoneModule`）

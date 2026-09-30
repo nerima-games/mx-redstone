@@ -1,7 +1,7 @@
 # アーキテクチャ
 
 出典: plan.md §2。本書は plan.md の構成を mx-redstone 視点で読み直し、
-`scripts/check-dependency-whitelist.ts` と `test/stage-registration.test.ts` が機械的に強制している内容と対応づけたもの。
+`package.json`、lint、typecheck、test が機械的に検証する内容と対応づけたもの。
 
 ## 1. 4 階層
 
@@ -93,14 +93,11 @@ graph BT
   compose --> render
 ```
 
-このグラフは `scripts/check-dependency-whitelist.ts` の `REPOSITORY_POLICY.dependencyGraph`（:127-212）に全 16 行転記されており、
-`test/check-dependency-whitelist.test.ts` の
-`carries the complete 16-repository roster, so cycle detection can see the whole organisation`
-が「16 行あること」と `checkPolicyConfiguration()` が空であること（= 自己依存なし・kernel 行なし・行先欠落なし・循環なし）を検査している。
+このグラフの runtime edge は各 package の `dependencies` と CI の lint/typecheck で検証する。
 
 kit のエッジ（`gameplay -.-> kit` / `redstone -.-> kit`）は**この Map には書かれていない**。
 kit は devDependency 専用で実行時エッジではなく、実行時グラフに載せると `kit -> sim` と `redstone -> sim` により循環に見えてしまうためである
-（`check-dependency-whitelist.ts:157-165` のコメント）。
+（`package.json` の `devDependencies` 境界）。
 
 ## 3. 中心規則 — 基盤 = 名詞、体験 = 動詞（plan.md §2.3-1）
 
@@ -176,10 +173,10 @@ plan.md §2.3-1 が「体験モジュール間の依存エッジはゼロ」と�
 
 | 検査 | 捕まえるもの | 実装 |
 | --- | --- | --- |
-| `pnpm check:deps` | `import ... from '@nerima-games/mx-gameplay'` | `scripts/check-dependency-whitelist.ts` の `classifyImport`（`not-whitelisted`） |
+| `pnpm lint` / package manifest | `import ... from '@nerima-games/mx-gameplay'` | 現行 lint と `package.json` の dependency boundary |
 | `pnpm test` | `after: [StageId('gameplay:fluids')]` | `test/stage-registration.test.ts` の `REGRESSION: no \`after\` edge names another experience module, even though §4.2 puts redstone between gameplay stages` |
 
-**import ゲートは後者を見られない。** `StageId` は文字列であり（`domain/frame-contract.ts:41`）、
+**import ゲートは後者を見られない。** `StageId` は kernel 所有の文字列ブランドであり、
 他モジュールの stage を名指ししても import 文は 1 行も増えない。
 「文字列で書ける依存」は静的解析の対象にならないので、テストで固定するしかない。
 `stages/stage-ids.ts` が「このリポジトリが書き下す `StageId` を 1 ファイルに集める」構成になっているのは、
@@ -199,7 +196,7 @@ plan.md §5.3 の細分化棄却表に、mx-redstone は他と違う形で登場
 ——「電力の伝播」という規則が、他のゲームルールの中身を知らずに閉じるからである。
 
 **そしてこれは過去についての事実ではなく、維持すべき性質である。**
-`test/check-dependency-whitelist.test.ts` の冒頭コメント（:1-8）がそう書いているのは、
+この責務を package manifest と lint/typecheck が検証するのは、
 「かつて自己完結していた」ことが「これからも自己完結している」ことを何も保証しないからである。
 ディスペンサがアイテムを撃ち出す、ホッパーが中身を移す、オブザーバがブロック変更を検知する——
 いずれも「ちょっとだけ mx-gameplay を見たい」誘惑がある。その誘惑に負けた瞬間、
@@ -207,8 +204,7 @@ plan.md §5.3 の細分化棄却表に、mx-redstone は他と違う形で登場
 
 ## 6. 推移閉包は認めない
 
-依存は**その依存先を import してよいという許可であって、その先を import してよいという許可ではない**
-（`scripts/check-dependency-whitelist.ts` rule 3）。
+依存は**その依存先を import してよいという許可であって、その先を import してよいという許可ではない**。
 
 mx-redstone の親は `mc-sim` と `mc-worldgen` の 2 つだけなので、次のものはすべて手の届かない場所にある。
 
@@ -220,7 +216,7 @@ mx-redstone の親は `mc-sim` と `mc-worldgen` の 2 つだけなので、次�
 | `mc-meshing` / `mc-render` | 到達経路なし | `not-whitelisted` |
 | `mx-gameplay` / `mx-ui` / `mx-multiplayer` | 到達経路なし（§4） | `not-whitelisted` |
 
-メッセージの形はこうなる（`classifyImport` の `transitive-import` 分岐、`check-dependency-whitelist.ts:756-763`）。
+transitive dependency は package manifest に直接 pin せず、直接 import しない。
 
 ```
 stages/registration.ts:12 [transitive-import] imports @nerima-games/mc-physics, which
@@ -234,8 +230,7 @@ import licence. Either declare it as a direct dependency (REPOSITORY_POLICY.depe
 書いた人はたいてい「でも mc-sim が使っているのに」と思う。経路を見せると
 「mc-sim が使っているのはまさに理由にならない」ことが同じ行で伝わる。
 
-直接依存でない場合は `not-whitelisted` になり、許可リストが列挙される
-（`describeAllowed()`、`check-dependency-whitelist.ts:790-794`）。
+直接依存でない package は import しない。
 
 ```
 stages/registration.ts:1 [not-whitelisted] imports @nerima-games/mx-gameplay, which is not
@@ -245,25 +240,13 @@ a direct dependency of @nerima-games/mx-redstone. Allowed: @nerima-games/mc-sim,
 
 違反ゼロのときの出力は次の形で、これが現在の実測値である。
 
-```console
-$ pnpm check:deps
-check-dependency-whitelist: OK — 13 file(s) scanned, allowed direct dependencies:
-@nerima-games/mc-sim, @nerima-games/mc-worldgen (plus @nerima-games/mc-kernel, which every
-repository may import).
-```
+依存境界の検証は `nix develop --command pnpm verify` に含まれる typecheck と lint、
+および `package.json` の direct dependency declaration で行う。
 
-`test/check-dependency-whitelist.test.ts` の `no transitive closure` ブロックが、
-mc-physics / mc-save / mc-noise の 3 経路をメッセージ本文ごと固定している。
+### 6-1. 依存境界の確認
 
-### 6-1. 他リポジトリの席から roster を読む
-
-このゲートの各コピーは**全 16 行**を持っているが、import 検査が実際に参照するのは
-`thisPackage` の行だけである。したがって**他所の行の誤りは、この席からは見えない**。
-
-そのため検査関数群は `PolicyView`（`check-dependency-whitelist.ts:553`）を受け取れるようになっており、
-「もしこのゲートが別のリポジトリに置かれていたら何と言うか」をテストできる
-（`test/check-dependency-whitelist.test.ts:49-53` の `seatOf`）。
-mc-kernel の同ファイルも同じ仕組みを持っている。
+direct dependency は `package.json` に exact pin し、transitive dependency は直接 import しない。
+変更時は `pnpm typecheck` と `pnpm lint` を実行して境界を確認する。
 
 | テスト名 | 主張 |
 | --- | --- |
@@ -291,9 +274,7 @@ kit が mc-render に依存すること自体は何の問題もない。
 エッジを 1 本足すことは、mx-redstone の検証単位に mc-audio を巻き込むことであり、
 plan.md §2.1 のグラフを変えることである。import 文の 1 行として静かに追加してよい類のものではない。
 
-`test/check-dependency-whitelist.test.ts` の
-`REGRESSION: mc-audio is NOT a parent, so a click sound is requested through mc-sim`
-が、この不在を「うっかり足されない不在」に変えている。
+この不在は package manifest と lint/typecheck の検証で維持する。
 
 ## 8. リポジトリ / パッケージ / プレビューを混同しない（plan.md §2.4）
 
@@ -303,5 +284,5 @@ plan.md §2.1 のグラフを変えることである。import 文の 1 行と�
 | パッケージ | 依存境界の単位（リポジトリ内 workspace で維持） | 自由に細かく |
 | プレビュー | 起動の単位 | 1 リポジトリに複数可 |
 
-mx-redstone は現在パッケージ分割しておらず、`domain/` + `stages/` の 2 ディレクトリである。
+mx-redstone は現在パッケージ分割しておらず、`domain/` + `application/` + `stages/` の構成である。
 回路盤サンドボックスを `apps/preview-circuit-board/` に足しても（plan.md §4.1）リポジトリは増えない。

@@ -2,7 +2,7 @@
 
 ## 1. 現状
 
-- **バージョン: `0.2.7`。**
+- **現在のバージョンは `package.json` の `version` を正とする。**
 - **自動 publish パイプラインがある。** Wave 0（toolchain freeze、2026-08-30）で `tsconfig.release.json` による
   `tsc` emit へ切り替え、`package.json` の `exports` は `dist/` を指すようになった。`.github/workflows/release.yaml`
   が `main` への push を検知して `pnpm verify && pnpm package:verify` の再検証後に GitHub Packages へ publish し、
@@ -17,7 +17,7 @@
 **mc-compose が実際に契約を消費するまで `0.x` から出ない。**
 
 `1.0.0` は「機能が揃った」という宣言ではない。**「この界面が実際に使われ、使えることが確認された」という宣言**である。
-このリポジトリの公開 API は `makeRedstoneStages` ただ 1 つ（[public-api.md](./public-api.md)）なので、
+このリポジトリの公開 API は stage 登録と意味的 runtime/host port（[public-api.md](./public-api.md)）なので、
 その検証は「mc-compose がそれを受け取り、全順序に組み込み、フレームが回った」以外の方法では成立しない。
 
 plan.md §6 Step 3:
@@ -37,7 +37,7 @@ plan.md §8 のリスク表も同じことを別角度から書いている。
 
 `0.x` は semver 上「マイナー bump で破壊してよい」区間である。
 机上で正しい API と実際に使える API は違う。特に `FrameServices` が現在 `never` である以上
-（`domain/frame-contract.ts:81`）、実行時に何が要るかはまだ誰も知らない。
+（mc-kernel の `FrameServices` 契約）、実行時に何が要るかはまだ誰も知らない。
 
 ## 3. 公開先
 
@@ -74,7 +74,7 @@ toolchain freeze（Wave 0）で上書きされた——`dist/` を介した検�
 ## 4. ボトムアップの publish-then-pin
 
 **組織全体で「下から公開して、公開されたものをピン留めする」順序を守る。**
-これが「本リポジトリの実行時依存が `effect` だけ」であることの直接の理由である。
+現在の runtime dependency pin は `package.json` が正である。
 
 plan.md §6 Step 2 の構築順:
 
@@ -91,18 +91,17 @@ kernel
                   → compose
 ```
 
-mx-redstone は最後から 4 番目のグループにいる。前にあるものが 1 つも公開されていない現在、
-`dependencies` に `@nerima-games/mc-sim` を書くことはできない——インストールできない依存を宣言すると、
-ビルドすらできないスケルトンになる。
+mx-redstone は最後から 4 番目のグループにいる。前段の公開後は、公開済みの exact version を
+`@nerima-games/mc-kernel`、`@nerima-games/mc-sim`、`@nerima-games/mc-worldgen` として pin する。
 
 したがって現在の姿は次のようになっている。
 
 | 本来 | 現在 |
 | --- | --- |
-| `import type { StageRegistration } from '@nerima-games/mc-kernel'` | `domain/frame-contract.ts` にローカル再掲 |
+| `import type { StageRegistration } from '@nerima-games/mc-kernel'` | mc-kernel の正本を直接利用 |
 | kernel の `Position` キー符号化 | `domain/position-key.ts` にプレースホルダ |
 | kernel の能力アクセサ | `domain/piston.ts` の `BlockCapabilityLookup` |
-| mc-sim / mc-worldgen のサービス呼び出し | 未実装（`redstone:effects` の `run` は `Effect.void`） |
+| mc-sim / mc-worldgen のサービス呼び出し | `redstone:effects` が runtime port の transition を収集・適用 |
 
 npm 公開・バージョン bump 運用は**界面が実際に上位階層(mc-compose)に消費され、動作確認が完了するまで開始しない**。
 1.0.0 への昇格を含め、日数計測ベースの自動フリーズゲート(旧「API ロック 4 週間無変更」)は採用せず、
@@ -139,14 +138,14 @@ PATCH で済む世界の差は、本リポジトリの実装期間を通じて�
 
 > **`0.x` の間の読み替え（全 16 リポジトリ共通の方針）**
 >
-> 本リポジトリは `0.1.0` であり、下流が契約を実際に消費して確認するまで `0.x` から出ない。
-> **semver では `0.x` の破壊的変更は major bump ではなく minor bump である**（`0.1.0` → `0.2.0`）。
+> 本リポジトリは `0.x` であり、下流が契約を実際に消費して確認するまで `0.x` から出ない。
+> **semver では `0.x` の破壊的変更は major bump ではなく minor bump である。**
 > したがって以下の MAJOR / MINOR / PATCH は **`1.0.0` 到達後の分類**であり、
 > `0.x` の間は次のように読み替える。
 >
 > | 分類 | `1.0.0` 到達後 | `0.x` の間（現在） |
 > | --- | --- | --- |
-> | MAJOR | major bump | **minor bump**（`0.1.0` → `0.2.0`） |
+> | MAJOR | major bump | **minor bump** |
 > | MINOR | minor bump | patch bump |
 > | PATCH | patch bump | patch bump |
 >
@@ -171,13 +170,11 @@ PATCH で済む世界の差は、本リポジトリの実装期間を通じて�
 
 | 対象 | 差し替え先 |
 | --- | --- |
-| `domain/frame-contract.ts`（ファイルごと削除） | `import type { StageRegistration } from '@nerima-games/mc-kernel'` |
+| kernel stage contract imports | `@nerima-games/mc-kernel` の正本を直接利用 |
 | `domain/position-key.ts`（ファイルごと削除） | kernel の `Position` とそのキー符号化 |
 | `domain/piston.ts` の `BlockCapabilityLookup` / `BlockRef` | kernel の能力アクセサと `BlockType` |
 
-前 2 つは型の置き換えであり、機械的である。`frame-contract.ts:14-20` は
-「kernel のコピーと**文字レベルで同一**に保つ」ことをファイルの契約として宣言しており、
-差し替えは import 文 1 本になるよう設計されている。
+前 2 つは型の置き換えであり、機械的である。stage contract は mc-kernel の正本を直接 import する。
 
 **前 2 つが PATCH で済むのは、どちらも `index.ts` から re-export していないからである。**
 `export *` していた時期があり、その形のままだと `StageId` / `DeltaTimeSecs` / `StageRegistration` が

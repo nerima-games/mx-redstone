@@ -12,7 +12,7 @@
 | 部品ごとの規則テスト | 実装済み（`test/comparator.test.ts` / `observer.test.ts` / `hopper.test.ts` / `dispenser.test.ts` / `pressure-plate.test.ts`） |
 | ピストン押し出しの規則テスト | 実装済み（`test/piston.test.ts`） |
 | stage 契約の回帰テスト | 実装済み（`test/stage-registration.test.ts`） |
-| 依存境界ゲート | 実装済み（`test/check-dependency-whitelist.test.ts`） |
+| 依存境界ゲート | `package.json` の direct dependencies と lint 設定で検証 |
 | **回路盤サンドボックスプレビュー** | **実装済み**（`apps/preview-circuit-board/`、§4-1） |
 
 **両方が揃ったので、plan.md §6 Step 2 の完了条件のうち「テスト green + プレビュー操作可能」の 2 つは満たしている**
@@ -21,8 +21,7 @@
 ## 2. 今日のゲート
 
 Wave 0（toolchain freeze、2026-08-30）で org 標準の 3 段 `verify` + 別ステップの coverage/package/audit 形に揃えた。
-`check:deps` / `api:check`（api-lock.md、`scripts/check-dependency-whitelist.ts`）は DEPENDENCY_POLICY 運用の変更で
-既に廃止済みであり、依存境界は `.oxlintrc.json` の `no-restricted-imports`（Tier3、DEPENDENCY_POLICY.md §1）が担う。
+依存境界は現行の `package.json` と lint 設定が担う。廃止済みの `check:deps`、`api:check`、api-lock の記述は参照しない。
 
 ```console
 $ pnpm verify         # typecheck && lint && test
@@ -47,21 +46,24 @@ CI（`.github/workflows/ci.yaml`）は `pnpm verify` の後、`Changeset status`
 
 ## 3. 現在のテストスイート
 
-11 ファイル / 181 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
+14 ファイル / 216 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
 
 | ファイル | テスト数 | 対象 |
 | --- | ---: | --- |
-| `test/power-graph.test.ts` | 59 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター（ダイオード） / **コンパレータ** / **オブザーバ** / **感圧板** / **アクチュエータ** / 退化した盤面 / 収束と発振 / `sourcesOf` / ボタン / **参照実装から移植したオラクル 4 本**（§4-3）） |
-| `test/api-lock.test.ts` | 26 | `api-lock.md` 生成器の挙動（plan.md §6 Step 0-3） |
-| `test/stage-registration.test.ts` | 19 | §2.3-1 / §2.3-3 の回帰、固定レート tick、stage 挙動、ミラーした `DeltaTimeSecs` ブランドが kernel と一致すること |
-| `test/check-dependency-whitelist.test.ts` | 19 | 依存ポリシー、体験モジュール間ゼロエッジ、推移閉包、kit の dev 専用、壁時計禁止、**他リポジトリの席から読んだ roster** |
+| `test/power-graph.test.ts` | 64 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター / コンパレータ / オブザーバ / 感圧板 / 収束と発振 / `sourcesOf` / ボタン） |
+| `test/stage-registration.test.ts` | 20 | 固定レート tick、stage 挙動、kernel stage contract の回帰 |
+| `test/world-runtime.test.ts` | 18 | runtime snapshot と transition drain |
+| `test/redstone-host-port.test.ts` | 25 | host lookup と event application |
 | `test/comparator.test.ts` | 13 | コンパレータの算術を**全数**（16 x 16 x 2）＋コンテナ充填率の写像 |
-| `test/piston.test.ts` | 14 | 能力フラグ、方向付き押し出し、sticky pull、atomic apply |
+| `test/piston.test.ts` | 18 | 能力フラグ、方向付き押し出し、sticky pull、atomic apply |
 | `test/observer.test.ts` | 9 | 変化検出、armed 規則、記憶が値であること（DN-RS-15） |
 | `test/dispenser.test.ts` | 7 | 立ち上がりエッジ、オブザーバとの非対称（DN-RS-15） |
 | `test/pressure-plate.test.ts` | 7 | スイッチ板と重量板の写像（DN-RS-17） |
 | `test/public-api.test.ts` | 7 | バレル（`index.ts`）の再エクスポートを名前で固定。契約と内部の区別を台帳化 |
 | `test/hopper.test.ts` | 6 | ロックの反転と搬送周期（DN-RS-16 §16-1） |
+| `test/dispenser.test.ts` | 7 | 立ち上がりエッジ |
+| `test/indexed-power-graph.test.ts` | 4 | インデックス化した power graph |
+| `test/target-block.test.ts` | 4 | target block signal |
 
 ### 3-00. コンパレータだけ全数テストである理由
 
@@ -89,7 +91,7 @@ CI（`.github/workflows/ci.yaml`）は `pnpm verify` の後、`Changeset status`
 | --- | --- |
 | `REGRESSION: exports no block roster — the immovable set belongs to mc-kernel` | `PISTON_IMMOVABLE_BLOCKS` / `BLOCK_TYPES` / `blockTypeToIndex` が**エクスポートに現れない**（DN-RS-1） |
 | `REGRESSION: exports nothing that would let a consumer resolve a total stage order` | `sortStages` / `totalOrder` / `framePipeline` / `runFrame` が現れない（§2.3-3、DN-RS-7） |
-| `REGRESSION: does not republish mc-kernel’s vocabulary as its own` | `StageId` / `DeltaTimeSecs` が現れない。バレルは以前 `domain/frame-contract.ts` と `domain/position-key.ts` を `export *` しており、**所有していない語彙**を公開していた（[public-api.md](./public-api.md) §5） |
+| `REGRESSION: does not republish mc-kernel’s vocabulary as its own` | `StageId` / `DeltaTimeSecs` が現れない。**所有していない kernel 語彙**を公開しない（[public-api.md](./public-api.md) §5） |
 
 「無いことをテストする」形になっているのは、**この 3 つが生えてくるのは自然な流れだから**である。
 ピストンを実装すればブロック名簿が欲しくなり、プレビューを書けば順序解決器が欲しくなり、
@@ -158,7 +160,7 @@ plan.md §6 Step 2 の完了条件は 2 つある。
 | 4 | 参照実装のテスト資産（**2,658 行**）をオラクルとして移植 | **一巡した。4 本を移植し、残りは理由つきで見送った**（§4-3、[porting.md](./porting.md) §3-1） |
 | 5 | **回路盤サンドボックスプレビューが操作可能** | ✅（§4-1） |
 | 6 | スティッキーピストン / 引き寄せ | ❌（意図的にスコープ外、DN-RS-10） |
-| 7 | 99% カバレッジゲートが有効 | ✅（`vitest.config.ts` の `thresholds` + CI の `Coverage (99% gate)` ステップ。実測 100/100/100/100、§6） |
+| 7 | 100% カバレッジゲートが有効 | ✅（branches/functions/lines/statements、`vitest.config.ts`） |
 
 ### 4-3. 完成条件 #4 — 移植して分かった 2 つのこと
 
@@ -378,7 +380,7 @@ CI 側に追加のフラグは要らず、そうしておけば手元の `pnpm t
 なお `pnpm verify` はカバレッジを含まない（`pnpm test` であって `pnpm test:coverage` ではない）。
 `domain/` や `stages/` の分岐に触ったら `pnpm test:coverage` も走らせること。
 
-計測対象は `index.ts` / `domain/**/*.ts` / `stages/**/*.ts`（`vitest.config.ts:31`）。
+計測対象は `src/**/*.ts`（`vitest.config.ts:24`）。
 `scripts/` と `test/` は対象外。
 
 ### 6-1. 有効化に要したテストは 1 本だった（そしてそれが DN-RS-11 の請求書である）
