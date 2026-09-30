@@ -20,8 +20,8 @@
 
 ## 2. 今日のゲート
 
-Wave 0（toolchain freeze、2026-08-30）で org 標準の 3 段 `verify` + 別ステップの coverage/package/audit 形に揃えた。
-依存境界は現行の `package.json` と lint 設定が担う。廃止済みの `check:deps`、`api:check`、api-lock の記述は参照しない。
+このリポジトリは 3 段の `verify` と、別ステップの coverage/package/audit を使用する。
+依存境界は現行の `package.json` と lint 設定が担う。
 
 ```console
 $ pnpm verify         # typecheck && lint && test
@@ -46,14 +46,15 @@ CI（`.github/workflows/ci.yaml`）は `pnpm verify` の後、`Changeset status`
 
 ## 3. 現在のテストスイート
 
-14 ファイル / 216 テスト。すべて `@effect/vitest` の `it.effect` を使い、`environment: 'node'`（`vitest.config.ts:5`）。
+14 ファイル / 216 テスト。各ファイルの件数は `vitest run --reporter=dot` の出力から転記している。
+`it.effect` の宣言は208件で、通常の Vitest test 宣言も含む。実行環境は `environment: 'node'`。
 
 | ファイル | テスト数 | 対象 |
 | --- | ---: | --- |
 | `test/power-graph.test.ts` | 64 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター / コンパレータ / オブザーバ / 感圧板 / 収束と発振 / `sourcesOf` / ボタン） |
 | `test/stage-registration.test.ts` | 20 | 固定レート tick、stage 挙動、kernel stage contract の回帰 |
 | `test/world-runtime.test.ts` | 18 | runtime snapshot と transition drain |
-| `test/redstone-host-port.test.ts` | 25 | host lookup と event application |
+| `test/redstone-host-port.test.ts` | 17 | host lookup と event application |
 | `test/comparator.test.ts` | 13 | コンパレータの算術を**全数**（16 x 16 x 2）＋コンテナ充填率の写像 |
 | `test/piston.test.ts` | 18 | 能力フラグ、方向付き押し出し、sticky pull、atomic apply |
 | `test/observer.test.ts` | 9 | 変化検出、armed 規則、記憶が値であること（DN-RS-15） |
@@ -61,9 +62,9 @@ CI（`.github/workflows/ci.yaml`）は `pnpm verify` の後、`Changeset status`
 | `test/pressure-plate.test.ts` | 7 | スイッチ板と重量板の写像（DN-RS-17） |
 | `test/public-api.test.ts` | 7 | バレル（`index.ts`）の再エクスポートを名前で固定。契約と内部の区別を台帳化 |
 | `test/hopper.test.ts` | 6 | ロックの反転と搬送周期（DN-RS-16 §16-1） |
-| `test/dispenser.test.ts` | 7 | 立ち上がりエッジ |
 | `test/indexed-power-graph.test.ts` | 4 | インデックス化した power graph |
 | `test/target-block.test.ts` | 4 | target block signal |
+| `test/power-timing.test.ts` | 14 | button、repeater、torch timing |
 
 ### 3-00. コンパレータだけ全数テストである理由
 
@@ -345,19 +346,19 @@ plan.md §3.12 が要求する「部品を置いて動かすサンドボック�
 
 1. **固定レート tick。** 経過時間は `ticksForFrame` で整数の tick 数に量子化される。
    フレームレートは結果に影響しない（DN-RS-3）。
-2. **壁時計を読まない。** `Date.now()` / `new Date()` / `performance.now()` は `pnpm check:deps` で禁止（DN-RS-9）。
+2. **壁時計を読まない。** `Date.now()` / `new Date()` / `performance.now()` は `.ast-grep/rules/no-wall-clock-read.yml` で禁止（DN-RS-9）。
 3. **シードがない。** `propagateTick` / `settle` / `planPush` はすべて純粋関数で、乱数を使わない。
    参照実装は作物のドロップ等で乱数を使うが、それは mx-gameplay の資産である
    （`mc-kernel/docs/capability-flag-audit.md` §6-9）。
 
-`vitest.config.ts:23-26` は `sequence.seed: 0` を固定しており、テストの実行順も再現する。
+Vitest の `test.sequence.seed` は `0` に固定されており、テストの実行順も再現する。
 
 この 3 つが揃っているので、「fixture 回路 → 期待状態」は**毎回同じ答えを返す**。
 1 つでも崩すと、シナリオテストは flaky テストに変わる。
 
 ## 6. カバレッジ — 100% ゲートは有効である
 
-**閾値は 4 指標すべてに設定してある。** Wave 0（toolchain freeze）で org 標準に合わせ 99% → 100% に上げた。
+**閾値は 4 指標すべてに100%で設定してある。**
 
 ```typescript
 // vitest.config.ts

@@ -3,7 +3,7 @@
 ## 1. 現状
 
 - **現在のバージョンは `package.json` の `version` を正とする。**
-- **自動 publish パイプラインがある。** Wave 0（toolchain freeze、2026-08-30）で `tsconfig.release.json` による
+- **自動 publish パイプラインがある。** `tsconfig.release.json` による
   `tsc` emit へ切り替え、`package.json` の `exports` は `dist/` を指すようになった。`.github/workflows/release.yaml`
   が `main` への push を検知して `pnpm verify && pnpm package:verify` の再検証後に GitHub Packages へ publish し、
   publish 後に `v<version>` タグを打つ。changesets（`.changeset/config.json`）でバージョン運用する。
@@ -56,9 +56,9 @@ plan.md §8 のリスク表も同じことを別角度から書いている。
 を持つ。CI・release ワークフローは `Install dependencies` の前に `pnpm config set --location=user
 //npm.pkg.github.com/:_authToken "$NODE_AUTH_TOKEN"` で認証トークンを渡す。
 
-### 3-1. build / publish（Wave 0 で追加済み）
+### 3-1. build / publish
 
-以前は「完成条件到達時に追加する」計画だったが、Wave 0（toolchain freeze）で org 標準の一部として前倒しで追加した。
+ビルドと publish は現行の org 標準に従う。
 
 1. `tsconfig.release.json`（emit あり）が `dist/` を生成する。`tsconfig.build.json` は check-only のまま
 2. `package.json` の `main` / `types` / `exports` は `dist/` を指す
@@ -66,9 +66,9 @@ plan.md §8 のリスク表も同じことを別角度から書いている。
 4. `.github/workflows/release.yaml` が publish job を持つ（`main` push + `workflow_dispatch` トリガ）
 5. changesets（`.changeset/config.json`、`access: public`）を導入した
 
-**先にやらなかった理由（Wave 0 以前）**: ビルド成果物を介すと型エラーがビルド時にしか出なくなり、
+**設計上の理由**: ビルド成果物を介すと型エラーがビルド時にしか出なくなり、
 16 リポジトリを 1 つの workspace で開発している間の DX が落ちる、というものだった。この判断は org 全体の
-toolchain freeze（Wave 0）で上書きされた——`dist/` を介した検証（`pnpm package:verify`）自体が
+現在は `dist/` を介した検証（`pnpm package:verify`）自体が
 `exports` サブパスと宣言ファイルの一致を保証するゲートになったため、DX 上のコストより境界検査の価値が上回った。
 
 ## 4. ボトムアップの publish-then-pin
