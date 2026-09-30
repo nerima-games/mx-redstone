@@ -1,5 +1,5 @@
 /**
- * Coverage for the host boundary moved here from mc-compose (§5.3 W1-L4').
+ * Coverage for the host boundary moved here from mc-compose.
  *
  * Two suites go beyond fixture-based unit coverage, per this task's
  * verification-depth directive:
