@@ -157,7 +157,9 @@ const withOptional = <Key extends string, Value>(
   if (typeof value === 'undefined') {
     return {}
   }
-  return { [key]: value } as Partial<Record<Key, Value>>
+  const result: Partial<Record<Key, Value>> = {}
+  Object.defineProperty(result, key, { enumerable: true, value })
+  return result
 }
 
 /** Includes `key: project(value)` only when `value` is present — the mapped counterpart of
@@ -170,7 +172,9 @@ const withOptionalMapped = <Key extends string, Value, Projected>(
   if (typeof value === 'undefined') {
     return {}
   }
-  return { [key]: project(value) } as Partial<Record<Key, Projected>>
+  const result: Partial<Record<Key, Projected>> = {}
+  Object.defineProperty(result, key, { enumerable: true, value: project(value) })
+  return result
 }
 
 /** An explicit `containerSignal` wins; otherwise it is derived from `containerSlots` when any
@@ -539,6 +543,12 @@ export const collectPistonTransitions = (state: RedstoneWorldState): Effect.Effe
 const TRIGGERED_KINDS = new Set<ComponentKind>(['dispenser', 'dropper', 'note-block'])
 const POWERED_KINDS = new Set<ComponentKind>(['powered-rail', 'door', 'trapdoor'])
 
+const isTriggeredComponentKind = (kind: ComponentKind): kind is TriggeredComponentKind =>
+  TRIGGERED_KINDS.has(kind)
+
+const isPoweredComponentKind = (kind: ComponentKind): kind is PoweredComponentKind =>
+  POWERED_KINDS.has(kind)
+
 type TriggerEventResult = {
   readonly current: ReadonlyMap<PositionKey, boolean>
   readonly triggered: ReadonlyArray<readonly [PositionKey, RedstoneTriggerEvent]>
@@ -552,13 +562,13 @@ const triggerEventEntry = (
   const { component, dimension, nodeId } = entry
   const powered = isPowered(circuit.board, circuit.power, nodeId)
   const wasPowered = previous.get(nodeId) ?? false
-  if (wasPowered || !powered) {
+  if (wasPowered || !powered || !isTriggeredComponentKind(component.kind)) {
     return { events: [], powered }
   }
   return {
     events: [[nodeId, {
       dimension,
-      kind: component.kind as TriggeredComponentKind,
+      kind: component.kind,
       position: copyPosition(component.position),
     }]],
     powered,
@@ -689,14 +699,14 @@ const poweredComponentEntry = (
   const { component, dimension, nodeId } = entry
   const powered = isPowered(circuit.board, circuit.power, nodeId)
   const observed = previous.get(nodeId) ?? component.powered ?? false
-  if (observed === powered) {
+  if (observed === powered || !isPoweredComponentKind(component.kind)) {
     return { powered, transitions: [] }
   }
   return {
     powered,
     transitions: [[nodeId, {
       dimension,
-      kind: component.kind as PoweredComponentKind,
+      kind: component.kind,
       position: copyPosition(component.position),
       powered,
     }]],
