@@ -1,5 +1,11 @@
 # @nerima-games/mx-redstone
 
+## 0.4.0
+
+### Minor Changes
+
+- [#31](https://github.com/nerima-games/mx-redstone/pull/31) [`ff1eac7`](https://github.com/nerima-games/mx-redstone/commit/ff1eac7ae179970130310e7b565295fd4b9f0972) Thanks [@takeokunn](https://github.com/takeokunn)! - Enforce the no-type-assertion lint rule as an error and align documentation with the current public package boundary.
+
 ## 0.3.3
 
 ### Patch Changes
