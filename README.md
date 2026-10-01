@@ -14,16 +14,14 @@ mx-redstone は**体験モジュール**であり、plan.md §2.3-1 の言う**�
 `@nerima-games/mc-sim` と `@nerima-games/mc-worldgen`（+ 普遍的に import 可能な `@nerima-games/mc-kernel`）。
 `@nerima-games/mc-playground-kit` は **devDependency 専用**。
 
-これは設計上の制約であり、`pnpm check:deps` で機械的に強制されている
-（`scripts/check-dependency-whitelist.ts` の `REPOSITORY_POLICY`）。
-違反があれば CI は必ず非ゼロ終了する。
+これは設計上の制約であり、`package.json` の direct dependencies と lint/typecheck で検証される。
+違反があれば CI は非ゼロ終了する。
 
 **`mc-audio` は親ではない。** レバーはカチッと鳴り、ピストンは伸縮音を出すが、
 plan.md §3.12 は mx-gameplay（§3.11）と違ってこのリポジトリに audio エッジを与えていない。
 したがって音は mc-sim 経由で要求する。**エッジを足すことは plan.md を変えることであって、
 import 文を 1 行足すことではない。**
-`test/check-dependency-whitelist.test.ts` の
-`REGRESSION: mc-audio is NOT a parent, so a click sound is requested through mc-sim` がこの不在を守っている。
+`test/stage-registration.test.ts` が stage 順序の不在を回帰検査している。
 
 ## このリポジトリの位置づけ
 
@@ -54,17 +52,12 @@ plan.md §5.3 の細分化棄却表に、レッドストーンは他と違う形
 | mc-playground-kit は devDependency 専用 | `dependencies` に入れてはならない。実行時依存になると、出荷ビルドから入力処理が消える |
 | 壁時計の直読み禁止 | 時刻はすべて注入された Clock Port から取得する |
 
-`scripts/check-dependency-whitelist.ts` は 16 リポジトリ共通のテンプレートである。
-姉妹リポジトリへ移植する際は、ファイル冒頭で囲ってある `REPOSITORY_POLICY` 定数だけを書き換えればよい。
-
-`REPOSITORY_POLICY.dependencyGraph` には **plan.md §2.1 の全 16 リポジトリ**が転記されている。
-これにより、このリポジトリのコピーだけで組織全体の循環を検出でき、
-推移閉包違反にも「なぜ違反なのか」の経路つきで説明できる。
+依存境界の一次資料は `package.json` であり、transitive dependency を直接 import しない。
 
 ### import ゲートに見えない違反が 1 つある
 
 `StageId` は文字列である。`after: [StageId('gameplay:fluids')]` と書いても import 文は 1 行も増えないため、
-**`pnpm check:deps` はこれを見られない**。この穴は `test/stage-registration.test.ts` が塞いでいる。
+静的な import 検査はこれを見られない。この穴は `test/stage-registration.test.ts` が塞いでいる。
 詳細は [docs/design-notes.md](./docs/design-notes.md) DN-RS-7。
 
 ### 壁時計直読み禁止の実装方法
@@ -73,8 +66,8 @@ oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装�
 `no-restricted-globals` は `oxlint --rules` の一覧に出るものの実装されていない
 （0.12.0 で実測確認済み。3 ルールすべてを設定した状態でも診断が 0 件）。
 
-そのため禁止は **`scripts/check-dependency-whitelist.ts` 側で実装**している。
-コメント・文字列リテラル・正規表現リテラルの中身はマスクされるので誤検知しない。
+そのため禁止は **`.ast-grep/rules/no-wall-clock-read.yml` 側で実装**している。
+コメント・文字列リテラル・正規表現リテラルの中身は AST 検査の対象外である。
 oxlint が該当ルールを実装したら .oxlintrc.json 側へ移す。
 
 固定レートのシミュレーションが壁時計を読んだ瞬間、それは再現しなくなる。
@@ -112,23 +105,15 @@ $ corepack prepare pnpm@11.24.0 --activate
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:watch` | vitest watch |
 | `pnpm test:coverage` | カバレッジ計測（閾値は未設定。[docs/testing.md](./docs/testing.md) §6） |
-| `pnpm check:deps` | 依存ホワイトリスト + 循環検査 + 壁時計直読み禁止の検査 |
 | `pnpm preview` | 回路盤サンドボックス（[apps/preview-circuit-board/](./apps/preview-circuit-board/README.md)）。**`pnpm verify` には入れていない** |
-| `pnpm verify` | `typecheck && lint && check:deps && api:check && test`。CI と同じ内容 |
+| `pnpm verify` | `typecheck && lint && test` |
 
 ## 現状
 
 電力グラフに加え、ホストから世界スナップショットを同期して frame stage を実行する runtime port を持つ。
 
-- **実行時依存は `effect` だけ。** 組織内でまだ何も公開されていないため、
-  `@nerima-games/mc-sim` にも `@nerima-games/mc-worldgen` にも依存できない（ボトムアップの publish-then-pin、plan.md §6）。
-- **`domain/frame-contract.ts` と `domain/position-key.ts` は mc-kernel の型のローカル再掲であり、削除期日つきである。**
-  mc-kernel が公開された瞬間に両ファイルとも消え、import 文 1 本に置き換わる。
-  `domain/piston.ts` の `BlockCapabilityLookup` も同時に kernel の能力アクセサへ差し替わる
-  （[docs/versioning.md](./docs/versioning.md) §6）。
-  **この 2 ファイルは `index.ts` から re-export していない。** 所有していない語彙（`StageId` /
-  `DeltaTimeSecs` / `StageRegistration`）を公開 API に載せると、上記の削除が
-  すべての消費者にとっての破壊的変更になるためである。
+- **実行時依存は `effect` と公開済みの `mc-kernel` / `mc-sim` / `mc-worldgen` である。**
+  exact pin は `package.json` を正本とし、lockfile も同じ版へ固定する。
 - **`RedstoneWorldRuntime` は dimension 単位の完全スナップショットを受け取る。**
   `redstone:power` が 6 近傍の回路盤を進め、`redstone:effects` がランプの on/off 変化だけを蓄積する。
   ホストは stage 実行後に `drainLampTransitions` と `drainPistonTransitions` を呼ぶ。
@@ -187,13 +172,11 @@ $ corepack prepare pnpm@11.24.0 --activate
   **4 件を修正し、残る 3 件は現在の挙動を名指しするテストを置いた。**
   `--stats` の行は pin ではない（測るだけで期待値を記録しないので、直すと finding は静かに消える）。
   pin は `test/power-graph.test.ts` の側にある。
-- **`dist` と自動 publish パイプラインはまだない。** `exports` は TypeScript ソースを直接指しており、
-  `noEmit: true` なので、検証済みのソースパッケージを GitHub Packages へ手動公開する。`version` は `0.x` に留める。
-- **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
-  （`vitest.config.ts` にコメントとして置いてある）。
+- **`dist` は `pnpm build` で生成し、`pnpm package:verify` で配布境界を検査する。**
+- **カバレッジは 4 指標すべて 100% をゲートとする。** `pnpm test:coverage` は `verify` とは別に実行する。
 
-`pnpm verify` は green（typecheck エラーなし / oxlint 0 件 / check:deps OK /
-api-lock 一致 / vitest 12 ファイル 186 テスト）。
+`pnpm verify` は typecheck、lint、test を実行する。配布物は `pnpm package:verify`、
+カバレッジは `pnpm test:coverage` で別途検証する。
 
 ## ドキュメント
 
@@ -206,7 +189,7 @@ api-lock 一致 / vitest 12 ファイル 186 テスト）。
 | [docs/public-api.md](./docs/public-api.md) | **公開 API は stage 登録と意味的 runtime port。** 電力グラフが内部でなければならない理由 |
 | [docs/design-notes.md](./docs/design-notes.md) | 設計注意 DN-RS-1〜11。参照実装の `path:line` と回帰テスト名つき |
 | [docs/porting.md](./docs/porting.md) | 移植元の**実測 LOC**、plan.md との差異、移植順序 |
-| [docs/testing.md](./docs/testing.md) | 検証ゲート、fixture 回路テスト、完成条件、99% カバレッジゲートの投入時期 |
+| [docs/testing.md](./docs/testing.md) | 検証ゲート、fixture 回路テスト、完成条件、100% カバレッジゲート |
 | [docs/versioning.md](./docs/versioning.md) | 0.x → 1.0.0 方針、GitHub Packages、**このリポジトリで破壊的変更とは何か** |
 
 能力フラグの権威は `mc-kernel/docs/capability-flag-audit.md` である。
