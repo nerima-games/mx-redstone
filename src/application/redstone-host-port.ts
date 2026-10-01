@@ -1,8 +1,8 @@
 /**
  * The host boundary this repository's own stages never cross.
  *
- * §5.3 (W1-L4') of the org runbook moves this file's responsibility out of
- * mc-compose — it used to be `apps/multiplayer-server/redstone-runtime.ts`,
+ * The host-boundary split moves this file's responsibility out of mc-compose —
+ * it used to be `apps/multiplayer-server/redstone-runtime.ts`,
  * hand-rolled per host — and into its real home. Classifying a block string
  * into a `RedstoneComponentSnapshot` is this repository's own component
  * roster (docs/responsibility.md §2-1: 「レッドストーン部品はどれか」という名簿は

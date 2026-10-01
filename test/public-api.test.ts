@@ -37,7 +37,7 @@ describe('public API surface', () => {
         'RedstoneWorldRuntimeLayer',
         'REDSTONE_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
-        // the host boundary (§5.3 W1-L4'): a host builds a snapshot through
+        // the host boundary: a host builds a snapshot through
         // `redstoneSnapshotFromRealm` and applies drained events through
         // `applyRedstoneHostEvents`, against its own `RedstoneHostRealm`.
         'redstoneSnapshotFromRealm',

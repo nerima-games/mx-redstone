@@ -89,17 +89,12 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | `@nerima-games/mc-kernel` | `dependencies`（普遍） | 共有語彙。許可リストに書かずに import 可、ただし `package.json` への記載は必要 |
 | `@nerima-games/mc-playground-kit` | **`devDependencies` のみ** | 回路盤プレビューの起動ハーネス |
 
-> **現状**: この表は**意図された最終形**であって、現在の `package.json` の内容ではない。
-> `dependencies` は `effect` のみで、`@nerima-games/*` は 1 つも宣言されていない
-> （どれもまだ publish されていないため。plan.md §6 Step 3 の bottom-up publish-then-pin）。
-> `mc-playground-kit` を `devDependencies` に書くのは、kit が publish され、
-> かつ `apps/preview-circuit-board/` を作るときである（現在プレビューは存在しない）。
-> 依存グラフの権威は `package.json` ではなく
-> `scripts/check-dependency-whitelist.ts` の roster であり、そちらは今日から実在する。
+> **現状**: runtime dependency の exact pin と公開境界の権威は `package.json` である。
+> 現在は `@nerima-games/mc-kernel`、`@nerima-games/mc-sim`、`@nerima-games/mc-worldgen`、`effect` を宣言している。
+> `mc-playground-kit` はこの package の runtime dependency ではない。
 
 親が 2 つ（+ kernel）しかないことは
-`test/check-dependency-whitelist.test.ts` の
-`declares exactly the parents plan.md §3.12 gives it: sim and worldgen` が固定している。
+`package.json` の dependency declaration が direct parent を固定している。
 
 ### 3-1. なぜ kit が devDependency 専用なのか（plan.md §2.3-2）
 
@@ -120,9 +115,7 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | kit が `dependencies` にある | `dev-only-package-in-dependencies` |
 | kit を出荷ソース（`index.ts` / `domain/` / `stages/`）から import している | `dev-only-package-in-shipped-source` |
 
-「出荷ソースかどうか」の判定は `isToolingOrTestPath`（`scripts/check-dependency-whitelist.ts:898-903`）にあり、
-**`stages/` が出荷ソース側であること**を `test/check-dependency-whitelist.test.ts` の
-`REGRESSION: \`stages/\` counts as shipped source, not as tooling` が固定している。
+`stages/` と `application/` は出荷ソースであり、lint と build の対象である。
 この述語を寛容な方向に間違えると、本プロジェクトが最も禁じたい import が静かに合法になる。
 
 `test/` と `scripts/` からの kit import は許される。
@@ -132,8 +125,10 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 
 ```
 index.ts                      # 公開バレル。ただし「公開」の意味は public-api.md を読むこと
+application/
+  world-runtime.ts            # runtime の意味的 port
+  redstone-host-port.ts       # host との読み書き境界
 domain/
-  frame-contract.ts           # plan.md §4.1 の契約をローカルに再掲。kernel 公開時に削除
   position-key.ts             # Position のキー表現。kernel 公開時に削除
   block-ref.ts                # ブロックの不透明な参照。kernel 公開時に削除
   signal-level.ts             # 信号の値域（0-15）。規則 3 つが共有するので独立している
@@ -146,9 +141,7 @@ domain/
   dispenser.ts                # 立ち上がりエッジ検出
 stages/
   stage-ids.ts                # このリポジトリが書き下す StageId を 1 ファイルに集約
-  registration.ts             # StageRegistration の生成 = 唯一の公開 API
-scripts/
-  check-dependency-whitelist.ts   # 16 リポジトリ共通の境界ゲート（テンプレート）
+  registration.ts             # StageRegistration の生成
 ```
 
 **1 規則 1 ファイル**である（plan.md §3.11）。`power-graph.ts` が規則を持たないのはその帰結で、

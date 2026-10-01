@@ -36,7 +36,7 @@ export type ViewMode = 'board' | 'power' | 'timeline'
 export const VIEW_MODES: ReadonlyArray<ViewMode> = ['board', 'power', 'timeline']
 
 export const isViewMode = (value: string): value is ViewMode =>
-  (VIEW_MODES as ReadonlyArray<string>).includes(value)
+  VIEW_MODES.some((mode) => mode === value)
 
 const EMPTY: Rgb = [58, 62, 70]
 const GUTTER: Rgb = [110, 118, 130]

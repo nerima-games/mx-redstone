@@ -426,7 +426,7 @@ export type PushRefusal = {
 plan.md §2.3-3。詳細は [public-api.md](./public-api.md) §3-1 / §4-1 に書いたので、ここでは
 **なぜこれが import ゲートで守れないか**だけを繰り返す。
 
-`StageId` は文字列である（`domain/frame-contract.ts:41`）。
+`StageId` は mc-kernel が所有する文字列ブランドである。
 
 ```typescript
 export type StageId = string & Brand.Brand<'StageId'>
@@ -435,13 +435,13 @@ export type StageId = string & Brand.Brand<'StageId'>
 文字列であることは意図的で、`after: [StageId('sim:physics')]` と書けば
 mc-sim の stage モジュールを import せずに順序を表現できる。
 しかし同じ性質により、`after: [StageId('gameplay:fluids')]` と書いても
-**`pnpm check:deps` には何も見えない**。import 文が 1 行も増えないからである。
+静的な import 検査には何も見えない。import 文が 1 行も増えないからである。
 
 だから穴は 2 つあり、塞ぐものも 2 つある。
 
 | 破り方 | 塞ぐもの |
 | --- | --- |
-| `import ... from '@nerima-games/mx-gameplay'` | `scripts/check-dependency-whitelist.ts` |
+| `import ... from '@nerima-games/mx-gameplay'` | package manifest と lint 構成 |
 | `after: [StageId('gameplay:fluids')]` | `test/stage-registration.test.ts` |
 
 **回帰テスト**: `test/stage-registration.test.ts`
@@ -510,21 +510,21 @@ DN-RS-3 のとおり、レッドストーンは**固定レートのシミュレ�
 tick が壁時計と無関係だからである（[testing.md](./testing.md) §5）。
 他リポジトリでは「決定論のために望ましい」規則だが、ここでは**検証手法の前提条件**である。
 
-### 実装が oxlint ではなく `check:deps` にある理由
+### 壁時計読み取りを ast-grep で検査する理由
 
 oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装しておらず、
 `no-restricted-globals` は `oxlint --rules` の一覧に出るが実装されていない。
 3 ルールすべてを設定した状態でも `Date.now()` を含むファイルの診断が 0 件であることが
-0.12.0 で実測確認されている（`.oxlintrc.json` の冒頭コメント、`scripts/check-dependency-whitelist.ts:43-49`）。
+0.12.0 で実測確認されている（`.ast-grep/rules/no-wall-clock-read.yml` の注記）。
 
-そのため禁止は `findBannedTimeSources`（`check-dependency-whitelist.ts:847-875`）にある。
-コメント・文字列リテラル・正規表現リテラルの中身は `maskSource` でマスクされるので誤検知しない。
+そのため禁止は `.ast-grep/rules/no-wall-clock-read.yml` にある。
+コメント・文字列リテラル・正規表現リテラルの中身は AST 検査の対象外なので誤検知しない。
 クロック Port の実装アダプタだけは実クロックを読む必要があるため、
 `mc-kernel-allow-time-source` コメントで除外できる。
 
 oxlint が該当ルールを実装したら `.oxlintrc.json` 側へ移す。
 
-**回帰テスト**: `test/check-dependency-whitelist.test.ts`
+**回帰テスト**: `test/stage-registration.test.ts` と lint gate
 `describe('§4.3: the clock is injected, never read from a global')`
 
 | テスト名 | 主張 |

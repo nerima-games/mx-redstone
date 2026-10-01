@@ -467,12 +467,26 @@ const validateExtendedPlan = (plan: PistonMovementPlan): PistonPlanRefusal | und
   return
 }
 
+const selectPositionAtIndex = (wantedIndex: number) => (
+  position: PistonPosition,
+  move: PistonMove,
+  moveIndex: number,
+): PistonPosition => {
+  if (moveIndex === wantedIndex) {
+    return move.from
+  }
+  return position
+}
+
+const positionAtOrPiston = (plan: PistonMovementPlan, index: number): PistonPosition =>
+  plan.moves.reduce(selectPositionAtIndex(index), plan.piston)
+
 const validateRetractionPlan = (plan: PistonMovementPlan): PistonPlanRefusal | undefined => {
   if (plan.kind === 'normal' && plan.moves.length > NORMAL_PISTON_RETRACT_MOVE_LIMIT) {
-    return { position: plan.moves[FIRST_MOVE_INDEX]!.from, reason: 'invalid-transition' }
+    return { position: positionAtOrPiston(plan, FIRST_MOVE_INDEX), reason: 'invalid-transition' }
   }
   if (plan.moves.length > STICKY_PISTON_RETRACT_MOVE_LIMIT) {
-    return { position: plan.moves[SECOND_MOVE_INDEX]!.from, reason: 'invalid-transition' }
+    return { position: positionAtOrPiston(plan, SECOND_MOVE_INDEX), reason: 'invalid-transition' }
   }
   const [pull] = plan.moves
   if (pull && (

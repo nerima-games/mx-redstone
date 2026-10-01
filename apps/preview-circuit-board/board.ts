@@ -358,8 +358,8 @@ export const circuitBoardOf = (parts: PartMap): CircuitBoard => {
  * without that list existing anywhere in the shipped source.
  */
 export const PREVIEW_BLOCKS = {
-  movable: 'PREVIEW_STONE' as BlockRef,
-  immovable: 'PREVIEW_OBSIDIAN' as BlockRef,
+  movable: 'PREVIEW_STONE',
+  immovable: 'PREVIEW_OBSIDIAN',
 } as const
 
 export const previewCapabilities: BlockCapabilityLookup = {

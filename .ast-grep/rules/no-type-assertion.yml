@@ -1,10 +1,6 @@
 id: no-type-assertion
 language: TypeScript
-# Wave 0 installs this rule at warning because the repo has pre-existing hits
-# (2 non-null assertions in src/domain/piston.ts, 4 `as` casts in
-# src/application/world-runtime.ts); W3-mx-redstone removes them and raises
-# this to error.
-severity: warning
+severity: error
 files:
   - "src/**/*.ts"
   - "src/**/*.tsx"

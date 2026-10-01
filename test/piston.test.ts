@@ -146,8 +146,10 @@ describe('push planning', () => {
 const cells = (entries: ReadonlyArray<readonly [number, BlockRef]>) => {
   const world = new Map(entries.map(([x, block]) => [x, block]))
   return {
-    read: ({ x }: { readonly x: number }) =>
-      world.has(x) ? { kind: 'block' as const, block: world.get(x)! } : { kind: 'empty' as const },
+    read: ({ x }: { readonly x: number }) => {
+      const block = world.get(x)
+      return block === undefined ? { kind: 'empty' as const } : { kind: 'block' as const, block }
+    },
   }
 }
 
@@ -299,9 +301,13 @@ describe('positioned piston movement', () => {
         moves: [{ block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }],
       }
       expect(validatePistonPlan(validPlan)).toBeUndefined()
+      const [firstMove] = validPlan.moves
+      if (!firstMove) {
+        throw new Error('validPlan must contain one move')
+      }
       expect(validatePistonPlan({
         ...validPlan,
-        moves: [validPlan.moves[0]!, { block: 'DIRT', from: { x: 3, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }],
+        moves: [firstMove, { block: 'DIRT', from: { x: 3, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }],
       })).toMatchObject({ reason: 'duplicate' })
 
       let committed = false

@@ -11,8 +11,8 @@ plan.md §3.12 は本リポジトリの公開 API を 1 行で書いている。
 `RedstoneWorldRuntime` の意味的 port に限定している。`CircuitBoard`、`PowerMap`、`planPush` は
 引き続き他リポジトリから名前で参照してはならない。
 
-`index.ts` はそれらを再エクスポートしている（`index.ts:30-33`）。矛盾ではない。
-理由は `index.ts:17-23` に書いてある:
+`src/index.ts` はそれらを再エクスポートしている。矛盾ではない。
+理由は barrel の public/internal boundary comment に書いてある:
 
 > `domain/power-graph.ts` and `domain/piston.ts` are re-exported below because this
 > repository's tests and its circuit-board preview import them by name, and a package that
@@ -59,7 +59,7 @@ interface StageRegistration {
 }
 ```
 
-`domain/frame-contract.ts:98-102` は plan.md からこの `interface` を字面ごと再掲している。
+`@nerima-games/mc-kernel` が plan.md の contract の正本であり、mx-redstone はそれを import する。
 oxlint は `@typescript-eslint/consistent-type-definitions: ["warn", "type"]` を設定しているが、
 この 1 箇所だけ `interface` のままなのは意図的で、`.oxlintrc.json` のコメントに免除理由が書いてある
 ——**仕様とコードが同じ字面であることのほうが、ローカルなスタイル統一より価値が高い**。
@@ -156,7 +156,7 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 > あちらの 1 つ目のリストは「stage 登録まわりのエクスポート」を落とさないための固定であって、
 > 各名前が契約であるという主張ではない（`redstoneStages` / `makeRedstoneFrameState` /
 > `UPSTREAM_STAGE_IDS` は下表では内部扱いである）。
-> どれが契約かの権威は本表であり、`index.ts:22-23` と `test/public-api.test.ts:13-14` の
+> どれが契約かの権威は本表であり、`src/index.ts` と `test/public-api.test.ts` の
 > 両方がそう書いている。
 >
 > 同ファイルには**不在**を固定するテストもある。
@@ -165,18 +165,19 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 > 「見えるが契約ではない」の管理はドキュメントでできるが、
 > 「所有していないものを公開する」はドキュメントでは止められない——消えるのが約束だからである。
 
-### `domain/frame-contract.ts` — kernel から借用中。**バレルには載せない**
+### mc-kernel stage contract — **バレルには載せない**
 
-`index.ts` はこのファイルを `export *` **しない**。末尾のコメントが存在と削除予定を記すだけである。
+`StageId`、`DeltaTimeSecs`、`FrameServices`、`StageRegistration` は `@nerima-games/mc-kernel` から利用し、
+`index.ts` から再エクスポートしない。
 
 | エクスポート | 区分 | 備考 |
 | --- | --- | --- |
 | `StageId`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | kernel 公開時に kernel のものへ差し替え |
 | `DeltaTimeSecs`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | 同上 |
-| `FrameServices` | **非公開**（所有者は kernel） | 現在 `never`。意図的な乖離（`frame-contract.ts:65-80`） |
+| `FrameServices` | **非公開**（所有者は kernel） | runtime service context は kernel が所有 |
 | `StageRegistration` | **非公開**（所有者は kernel） | plan.md §4.1 の字面どおり。`makeRedstoneStages` の**戻り値の形**としてだけ観測される |
 
-これらは「mx-redstone の契約」ではなく「mc-kernel の契約を mx-redstone が仮置きしているもの」である。
+これらは「mx-redstone の契約」ではなく mc-kernel が所有する契約である。
 
 **だから re-export しない。** バレルに載せると `StageId` / `DeltaTimeSecs` / `StageRegistration` が
 **所有していないパッケージの公開 API** になり、ヘッダが約束している
@@ -212,7 +213,7 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 
 ### `application/redstone-host-port.ts`
 
-§5.3 W1-L4' の降ろし先。旧 mc-compose `apps/multiplayer-server/redstone-runtime.ts` が
+旧 mc-compose `apps/multiplayer-server/redstone-runtime.ts` が
 持っていたホスト境界（ブロック文字列 → `RedstoneComponentSnapshot` の分類と、drain した
 イベントの適用）がここに来た。ホストは自分の `MultiplayerServerCore` 相当の実装を
 `RedstoneHostRealm`（`lookup` + `port`）として渡すだけでよい。
@@ -288,8 +289,128 @@ runtime の powered transition は node ID 順で、観測した給電エッジ�
 
 `PositionKey`（= `string`）。ブランドを**付けていない**のは意図的で、
 ブランドを付けると本リポジトリが座標概念の所有者を騙ることになるためである（`domain/position-key.ts:11-15`）。
-kernel 公開時に削除。`frame-contract.ts` と同じ理由で `index.ts` から re-export していない
+kernel 所有の座標語彙であり、`index.ts` から re-export していない
 ——座標語彙も所有していないものだからである。
+
+### 5-1. 機械的な root export 台帳
+
+以下は `src/index.ts` の明示 export と barrel export を、生成済み declaration の名前に展開した全件台帳である。
+各行は root export を1件だけ記載する。契約区分は本書の境界定義に従い、domain の規則型は内部（可視）とする。
+
+| export | source | 区分 |
+| --- | --- | --- |
+| `RedstoneWorldRuntime` | `application/world-runtime.ts` | 契約 |
+| `RedstoneWorldRuntimeLayer` | `application/world-runtime.ts` | 契約 |
+| `LampTransition` | `application/world-runtime.ts` | 契約 |
+| `HopperTransferEvent` | `application/world-runtime.ts` | 契約 |
+| `PoweredComponentKind` | `application/world-runtime.ts` | 契約 |
+| `PoweredComponentTransition` | `application/world-runtime.ts` | 契約 |
+| `PoweredPistonTransition` | `application/world-runtime.ts` | 契約 |
+| `RedstoneComponentSnapshot` | `application/world-runtime.ts` | 契約 |
+| `RedstonePosition` | `application/world-runtime.ts` | 契約 |
+| `RedstoneTriggerEvent` | `application/world-runtime.ts` | 契約 |
+| `RedstoneWorldRuntimeService` | `application/world-runtime.ts` | 契約 |
+| `RedstoneWorldSnapshot` | `application/world-runtime.ts` | 契約 |
+| `TriggeredComponentKind` | `application/world-runtime.ts` | 契約 |
+| `applyRedstoneHostEvents` | `application/redstone-host-port.ts` | 契約 |
+| `componentForBlock` | `application/redstone-host-port.ts` | 内部（可視） |
+| `kernelPistonCapabilities` | `application/redstone-host-port.ts` | 内部（可視） |
+| `redstoneSnapshotFromRealm` | `application/redstone-host-port.ts` | 契約 |
+| `RedstoneHostBlock` | `application/redstone-host-port.ts` | 契約 |
+| `RedstoneHostLookup` | `application/redstone-host-port.ts` | 契約 |
+| `RedstoneHostRealm` | `application/redstone-host-port.ts` | 契約 |
+| `RedstoneHostWritePort` | `application/redstone-host-port.ts` | 契約 |
+| `ComparatorMode` | `domain/comparator.ts` | 内部（可視） |
+| `comparatorOutput` | `domain/comparator.ts` | 内部（可視） |
+| `ContainerSlot` | `domain/comparator.ts` | 内部（可視） |
+| `CONTAINER_SIGNAL_FLOOR` | `domain/comparator.ts` | 内部（可視） |
+| `CONTAINER_SIGNAL_SPAN` | `domain/comparator.ts` | 内部（可視） |
+| `containerSignalStrength` | `domain/comparator.ts` | 内部（可視） |
+| `PowerEdgeMemory` | `domain/dispenser.ts` | 内部（可視） |
+| `DispenserSweep` | `domain/dispenser.ts` | 内部（可視） |
+| `dispenserEdges` | `domain/dispenser.ts` | 内部（可視） |
+| `HOPPER_TRANSFER_PERIOD_TICKS` | `domain/hopper.ts` | 内部（可視） |
+| `HOPPER_TRANSFER_ITEMS` | `domain/hopper.ts` | 内部（可視） |
+| `isHopperLocked` | `domain/hopper.ts` | 内部（可視） |
+| `hopperTransferDue` | `domain/hopper.ts` | 内部（可視） |
+| `OBSERVER_PULSE_TICKS` | `domain/observer.ts` | 内部（可視） |
+| `Sightings` | `domain/observer.ts` | 内部（可視） |
+| `ObserverSweep` | `domain/observer.ts` | 内部（可視） |
+| `observeChanges` | `domain/observer.ts` | 内部（可視） |
+| `BlockRef` | `domain/piston.ts` | 内部（可視） |
+| `BlockCapabilityLookup` | `domain/piston.ts` | 内部（可視） |
+| `PISTON_PUSH_LIMIT` | `domain/piston.ts` | 内部（可視） |
+| `PushPlan` | `domain/piston.ts` | 内部（可視） |
+| `PushRefusal` | `domain/piston.ts` | 内部（可視） |
+| `PushOutcome` | `domain/piston.ts` | 内部（可視） |
+| `planPush` | `domain/piston.ts` | 内部（可視） |
+| `isPistonMovable` | `domain/piston.ts` | 内部（可視） |
+| `PistonFacing` | `domain/piston.ts` | 内部（可視） |
+| `PistonKind` | `domain/piston.ts` | 内部（可視） |
+| `PistonState` | `domain/piston.ts` | 内部（可視） |
+| `PistonPosition` | `domain/piston.ts` | 内部（可視） |
+| `PistonCell` | `domain/piston.ts` | 内部（可視） |
+| `PistonCellRead` | `domain/piston.ts` | 内部（可視） |
+| `PistonWorldView` | `domain/piston.ts` | 内部（可視） |
+| `PistonMove` | `domain/piston.ts` | 内部（可視） |
+| `PistonMovementPlan` | `domain/piston.ts` | 内部（可視） |
+| `PistonPlanRefusal` | `domain/piston.ts` | 内部（可視） |
+| `PistonMovementOutcome` | `domain/piston.ts` | 内部（可視） |
+| `PistonTransitionRequest` | `domain/piston.ts` | 内部（可視） |
+| `pistonPositionAt` | `domain/piston.ts` | 内部（可視） |
+| `planPistonTransition` | `domain/piston.ts` | 内部（可視） |
+| `PistonApplyPort` | `domain/piston.ts` | 内部（可視） |
+| `validatePistonPlan` | `domain/piston.ts` | 内部（可視） |
+| `applyPistonPlan` | `domain/piston.ts` | 内部（可視） |
+| `MAX_POWER_LEVEL` | `domain/power-graph.ts` | 内部（可視） |
+| `PowerLevel` | `domain/power-graph.ts` | 内部（可視） |
+| `ComponentKind` | `domain/power-graph.ts` | 内部（可視） |
+| `Component` | `domain/power-graph.ts` | 内部（可視） |
+| `CircuitBoard` | `domain/power-graph.ts` | 内部（可視） |
+| `PowerMap` | `domain/power-graph.ts` | 内部（可視） |
+| `emptyPowerMap` | `domain/power-graph.ts` | 内部（可視） |
+| `powerAt` | `domain/power-graph.ts` | 内部（可視） |
+| `componentEntriesForKinds` | `domain/power-graph.ts` | 内部（可視） |
+| `sourcesOf` | `domain/power-graph.ts` | 内部（可視） |
+| `propagateTick` | `domain/power-graph.ts` | 内部（可視） |
+| `settleTickLimitFor` | `domain/power-graph.ts` | 内部（可視） |
+| `SettleResult` | `domain/power-graph.ts` | 内部（可視） |
+| `settle` | `domain/power-graph.ts` | 内部（可視） |
+| `drivenPowerAt` | `domain/power-graph.ts` | 内部（可視） |
+| `isLit` | `domain/power-graph.ts` | 内部（可視） |
+| `isPowered` | `domain/power-graph.ts` | 内部（可視） |
+| `DEFAULT_BUTTON_PULSE_TICKS` | `domain/power-timing.ts` | 内部（可視） |
+| `TORCH_BURNOUT_TOGGLE_LIMIT` | `domain/power-timing.ts` | 内部（可視） |
+| `TORCH_BURNOUT_WINDOW_TICKS` | `domain/power-timing.ts` | 内部（可視） |
+| `TORCH_BURNOUT_COOLDOWN_TICKS` | `domain/power-timing.ts` | 内部（可視） |
+| `RepeaterTimer` | `domain/power-timing.ts` | 内部（可視） |
+| `ButtonTimer` | `domain/power-timing.ts` | 内部（可視） |
+| `TorchTimer` | `domain/power-timing.ts` | 内部（可視） |
+| `TimedCircuitState` | `domain/power-timing.ts` | 内部（可視） |
+| `emptyTimedCircuitState` | `domain/power-timing.ts` | 内部（可視） |
+| `advanceTimedCircuit` | `domain/power-timing.ts` | 内部（可視） |
+| `PlateWeighing` | `domain/pressure-plate.ts` | 内部（可視） |
+| `LIGHT_PLATE_CAPACITY` | `domain/pressure-plate.ts` | 内部（可視） |
+| `HEAVY_PLATE_CAPACITY` | `domain/pressure-plate.ts` | 内部（可視） |
+| `plateSignal` | `domain/pressure-plate.ts` | 内部（可視） |
+| `TargetHit` | `domain/target-block.ts` | 内部（可視） |
+| `targetSignal` | `domain/target-block.ts` | 内部（可視） |
+| `REDSTONE_TICK_SECS` | `stages/registration.ts` | 内部（可視） |
+| `MAX_TICKS_PER_FRAME` | `stages/registration.ts` | 内部（可視） |
+| `emptyCircuitBoard` | `stages/registration.ts` | 内部（可視） |
+| `RedstoneFrameState` | `stages/registration.ts` | 内部（可視） |
+| `makeRedstoneFrameState` | `stages/registration.ts` | 内部（可視） |
+| `ticksForFrame` | `stages/registration.ts` | 内部（可視） |
+| `redstoneStages` | `stages/registration.ts` | 内部（可視） |
+| `makeRedstoneStages` | `stages/registration.ts` | 内部（可視） |
+| `makeRuntimeRedstoneStages` | `stages/registration.ts` | 契約 |
+| `redstoneModule` | `stages/registration.ts` | 契約 |
+| `REDSTONE_STAGE_IDS` | `stages/stage-ids.ts` | 契約 |
+| `UPSTREAM_STAGE_IDS` | `stages/stage-ids.ts` | 内部（可視） |
+| `EXPERIENCE_MODULE_STAGE_PREFIXES` | `stages/stage-ids.ts` | 内部（可視） |
+| `OWN_STAGE_PREFIX` | `stages/stage-ids.ts` | 内部（可視） |
+
+この表の source は `src/index.ts` の export 元、名前は `dist/**/*.d.ts` の宣言から更新する。
 
 ## 6. `GameModule` を実装した（`redstoneModule`）
 
