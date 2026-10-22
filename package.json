@@ -17,7 +17,7 @@
     "node": ">=24.0.0",
     "pnpm": ">=11.24.0"
   },
-  "packageManager": "pnpm@11.24.0",
+  "packageManager": "pnpm@12.14.0",
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",
     "access": "public"
@@ -63,13 +63,13 @@
     "effect": "3.22.1"
   },
   "devDependencies": {
-    "@changesets/changelog-github": "1.0.0",
-    "@changesets/cli": "3.0.1",
+    "@changesets/changelog-github": "1.0.1",
+    "@changesets/cli": "3.0.3",
     "@effect/vitest": "0.30.0",
-    "@types/node": "26.4.0",
+    "@types/node": "26.6.5",
     "@vitest/coverage-v8": "4.1.11",
-    "knip": "6.33.0",
-    "tsx": "4.23.12",
+    "knip": "6.42.1",
+    "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vitest": "4.1.11"
   }

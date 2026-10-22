@@ -79,16 +79,16 @@ oxlint が該当ルールを実装したら .oxlintrc.json 側へ移す。
 ### セットアップ
 
 ```console
-$ direnv allow          # flake.nix の devShell で nodejs_24 + corepack + oxlint + ast-grep が入る
+$ direnv allow          # flake.nix の devShell で Node.js 26、Corepack、oxlint、ast-grep が使える
 $ pnpm install
 ```
 
-Nix を使わない場合は Node.js 24 以上と pnpm 11.24.0 以上（`corepack` 推奨）を用意する。oxlint と ast-grep は
+Nix を使わない場合は Node.js 24 以上を用意し、次のコマンドで pnpm 12.14.0 をインストールする。
+oxlint と ast-grep は
 Nix の devShell が提供する（npm devDependency ではない）ため、Nix を使わない場合は別途用意すること。
 
 ```console
-$ corepack enable
-$ corepack prepare pnpm@11.24.0 --activate
+$ npm install --global pnpm@12.14.0
 ```
 
 > **注意**: ツールチェーンは `devenv.nix` から `flake.nix` + `flake.lock` に移行済みである。

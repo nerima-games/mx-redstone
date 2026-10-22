@@ -27,10 +27,12 @@
           pkgs = pkgsFor system;
         in
         {
-          # Node 24 matches the `engines` field and the CI runner. pnpm comes
-          # from corepack rather than nixpkgs so that the version is decided by
-          # the `packageManager` field in package.json — one source of truth
-          # instead of two that can drift.
+          # Node 26 matches CI; the package still supports the Node >=24 engine.
+          # pnpm comes from Corepack rather than nixpkgs so that the version is
+          # decided by the `packageManager` field in package.json — one source
+          # of truth instead of two that can drift.
+          # Node 24 remains in the shell because the pinned nixpkgs revision
+          # bundles Corepack with it; Node 26 is first for project commands.
           #
           # oxlint and ast-grep are the opposite case: neither is a package.json
           # devDependency. oxlint used to be, and every repo in the org
@@ -46,6 +48,7 @@
           # deliberate bump of this pin.
           default = pkgs.mkShell {
             packages = [
+              pkgs.nodejs_26
               pkgs.nodejs_24
               pkgs.corepack_24
               pkgs.typescript-language-server
@@ -56,7 +59,7 @@
             shellHook = ''
               corepackDir="$(mktemp -d "''${TMPDIR:-/tmp}/mx-redstone-corepack.XXXXXX")"
               corepack enable --install-directory "$corepackDir"
-              export PATH="$corepackDir:$PATH"
+              export PATH="${pkgs.nodejs_26}/bin:$corepackDir:$PATH"
             '';
           };
         }

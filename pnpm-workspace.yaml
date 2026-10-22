@@ -6,6 +6,12 @@ overrides:
   # only, never in the shipped dist/), pinned here per §10 of the Wave 0
   # toolchain-freeze procedure rather than waiting on vitest to bump it.
   nanoid: '>=3.3.18'
+  # Patch audit findings while keeping the pinned Vitest and Effect versions.
+  '@vitest/mocker': 4.1.12
+  launch-editor: 2.14.2
+  shell-quote: 1.11.0
+  source-map-js: 1.2.2
+  vite: 7.3.7
 minimumReleaseAgeExclude:
   - '@nerima-games/mc-kernel@0.2.8 || 0.2.17 || 0.5.1 || 0.7.0'
   - '@nerima-games/mc-sim@0.1.24 || 0.1.39 || 0.4.1 || 0.4.2 || 0.5.0'
