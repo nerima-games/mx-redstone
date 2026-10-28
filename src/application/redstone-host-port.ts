@@ -952,13 +952,19 @@ const planSelectedHopperEvent = <BuildError>(
   context: SelectedHopperPlanContext<BuildError>,
 ) => Effect.gen(function* planSelectedHopperEventGenerator() {
   const { elapsedTicks, outcome, powered } = context.selected
+  if (powered) {
+    if (elapsedTicks > ZERO_ELAPSED_TICKS) {
+      return yield* planHopperCooldownEvent(context)
+    }
+    return { fragments: [], virtual: context.virtual }
+  }
   if (outcome['_tag'] === 'Candidates') {
     return yield* planCandidateHopperEvent({
       candidates: outcome.candidates,
       planContext: context,
     })
   }
-  if (outcome['_tag'] === 'NoCandidates' && !powered && elapsedTicks > ZERO_ELAPSED_TICKS) {
+  if (outcome['_tag'] === 'NoCandidates' && elapsedTicks > ZERO_ELAPSED_TICKS) {
     return yield* planHopperCooldownEvent(context)
   }
   return { fragments: [], virtual: context.virtual }

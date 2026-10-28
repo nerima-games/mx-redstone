@@ -316,13 +316,17 @@ const makeHopperTransferScenario = (
         planAdvanceCooldown: (...args) => hopper.planAdvanceCooldown(...args).pipe(
           Effect.map((fragment) => ({
             ...fragment,
-            postCommitEvents: [HOPPER_PLAN_COMMITTED_EVENT],
+            postCommitEvents: fragment.changes.length > 0 || fragment.blockEdits !== undefined
+              ? [HOPPER_PLAN_COMMITTED_EVENT]
+              : fragment.postCommitEvents,
           })),
         ),
         planTransferTick: (...args) => hopper.planTransferTick(...args).pipe(
           Effect.map((fragment) => ({
             ...fragment,
-            postCommitEvents: [HOPPER_PLAN_COMMITTED_EVENT],
+            postCommitEvents: fragment.changes.length > 0 || fragment.blockEdits !== undefined
+              ? [HOPPER_PLAN_COMMITTED_EVENT]
+              : fragment.postCommitEvents,
           })),
         ),
       }

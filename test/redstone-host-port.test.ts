@@ -1176,7 +1176,7 @@ describe('applyRedstoneHostEvents', () => {
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
-  it.effect('a powered stale hopper event is locked and never reaches cooldown or transfer services', () =>
+  it.effect('a powered hopper event without transfer candidates reaches cooldown planning', () =>
     Effect.gen(function* () {
       const runtime = yield* RedstoneWorldRuntime
       const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
@@ -1189,12 +1189,47 @@ describe('applyRedstoneHostEvents', () => {
 
       yield* applyRedstoneHostEvents(runtime, [realm], port)
 
-      expect(calls).toStrictEqual([])
+      expect(hopperCooldownPlanCallsOf(calls).map(({ request }) => request.ticks)).toStrictEqual([8])
+      expect(hopperPlanCallsOf(calls)).toStrictEqual([])
       expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
-  it.effect('keeps per-tick hopper power samples when a batch contains both sides of a power edge', () =>
+  it.effect('a powered zero-tick hopper event does not schedule cooldown planning', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10), 0)
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+      const poweredLookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readHopperTransferContext: () => ({ powered: true, sourceAbove: null, destinationFacing: null }),
+      }
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), poweredLookup)
+
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+
+      expect(hopperCooldownPlanCallsOf(calls)).toStrictEqual([])
+      expect(hopperPlanCallsOf(calls)).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('an unpowered zero-tick hopper event without candidates does not schedule cooldown planning', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10), 0)
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), missingLookup)
+
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+
+      expect(hopperCooldownPlanCallsOf(calls)).toStrictEqual([])
+      expect(hopperPlanCallsOf(calls)).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('plans cooldown for both sampled power states in a hopper power-edge batch', () =>
     Effect.gen(function* () {
       const runtime = yield* RedstoneWorldRuntime
       const position = blockPosition(10, 10, 10)
@@ -1211,7 +1246,7 @@ describe('applyRedstoneHostEvents', () => {
 
       yield* applyRedstoneHostEvents(runtime, [realm], port)
 
-      expect(hopperCooldownPlanCallsOf(calls).map(({ request }) => request.ticks)).toStrictEqual([2])
+      expect(hopperCooldownPlanCallsOf(calls).map(({ request }) => request.ticks)).toStrictEqual([2, 2])
       expect(hopperPlanCallsOf(calls)).toStrictEqual([])
       expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
