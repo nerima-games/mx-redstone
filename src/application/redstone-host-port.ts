@@ -37,9 +37,6 @@ import {
   capabilityOfBlockId,
   isBlockType,
 } from '@nerima-games/mc-kernel'
-import { Effect, Exit, Option, Result, Schema } from 'effect'
-import type { WorldCommitCoordinatorApi, WorldCommitCoordinatorError, WorldCommitRequest } from '@nerima-games/mc-sim'
-import type { ContainerSlot } from '../domain/comparator.js'
 import {
   type BlockCapabilityLookup,
   type PistonCellRead,
@@ -49,6 +46,7 @@ import {
   pistonPositionAt,
   planPistonTransition,
 } from '../domain/piston.js'
+import { Effect, Exit, Option, Result, Schema } from 'effect'
 import {
   type PoweredPistonTransition,
   type RedstoneComponentSnapshot,
@@ -56,9 +54,12 @@ import {
   type RedstoneWorldRuntimeService,
   type RedstoneWorldSnapshot,
 } from './world-runtime.js'
+import type { WorldCommitCoordinatorApi, WorldCommitCoordinatorError, WorldCommitRequest } from '@nerima-games/mc-sim'
+import type { ContainerSlot } from '../domain/comparator.js'
 
 const blockAxis = BlockAxis
 const schemaLiterals = Schema.Literals
+const NO_COMPONENT = Option.getOrUndefined(Option.none<RedstoneComponentSnapshot>())
 
 type RedstoneDimensionId = BlockAddress['dimension']
 
@@ -260,11 +261,11 @@ const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, Compone
   lever: leverComponent,
   piston: pistonComponent,
   powered_rail: poweredRailComponent,
-  sticky_piston: pistonComponent,
   redstone_lamp: fixedKindComponent('lamp'),
   redstone_lamp_lit: fixedKindComponent('lamp'),
   redstone_torch: fixedKindComponent('torch'),
   redstone_wire: fixedKindComponent('wire'),
+  sticky_piston: pistonComponent,
 }
 
 /**
@@ -278,11 +279,11 @@ export const componentForBlock = (
   position: BlockPosition,
 ): Result.Result<RedstoneComponentSnapshot | undefined, RedstoneHostPositionFailure> => {
   if (block === null) {
-    return Result.succeed(void 0)
+    return Result.succeed(NO_COMPONENT)
   }
   const builder = COMPONENT_BUILDERS[block]
   if (!builder) {
-    return Result.succeed(void 0)
+    return Result.succeed(NO_COMPONENT)
   }
   return builder(lookup, position, block)
 }
@@ -295,8 +296,8 @@ export const componentForBlock = (
 export const redstoneSnapshotFromRealm = (
   realm: RedstoneHostRealm,
   blocks: ReadonlyArray<RedstoneHostBlock>,
-): Result.Result<RedstoneWorldSnapshot, RedstoneHostPositionFailure> => {
-  return Result.gen(function* redstoneSnapshotFromRealmGenerator() {
+): Result.Result<RedstoneWorldSnapshot, RedstoneHostPositionFailure> =>
+  Result.gen(function* redstoneSnapshotFromRealmGenerator() {
     const components = yield* Result.all(blocks.map(({ address, block }) =>
       componentForBlock(realm.lookup, block, address.position),
     ))
@@ -305,7 +306,6 @@ export const redstoneSnapshotFromRealm = (
       dimension: realm.dimension,
     }
   })
-}
 
 const planPistonTransitionEvent = (
   realm: RedstoneHostRealm,
@@ -386,11 +386,9 @@ const realmForRedstoneEvents = (
 const planEventPistons = (
   realm: RedstoneHostRealm,
   events: RedstoneEventBatch,
-) => {
-  return Effect.forEach(events.piston, (event) =>
+) => Effect.forEach(events.piston, (event) =>
     Effect.map(planPistonTransitionEvent(realm, event), (plan) => ({ event, plan })),
   )
-}
 
 const buildAndCommitRedstoneEvents = <BuildError>(
   port: RedstoneHostWritePort<BuildError>,

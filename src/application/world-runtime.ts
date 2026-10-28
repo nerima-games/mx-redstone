@@ -122,10 +122,14 @@ export type RedstoneEventBatch = {
 const arraySchema = Schema.Array
 const blockAxis = BlockAxis
 const literalsSchema = Schema.Literals
+const literalSchema = Schema.Literal
 const structSchema = Schema.Struct
-const ZERO_AXIS = blockAxis(0)
-const POSITIVE_ONE_AXIS = blockAxis(1)
-const NEGATIVE_ONE_AXIS = blockAxis(-1)
+const ORIGIN_COORDINATE = 0
+const NEXT_COORDINATE = 1
+const PREVIOUS_COORDINATE = -1
+const ZERO_AXIS = blockAxis(ORIGIN_COORDINATE)
+const POSITIVE_ONE_AXIS = blockAxis(NEXT_COORDINATE)
+const NEGATIVE_ONE_AXIS = blockAxis(PREVIOUS_COORDINATE)
 
 /** Strict decoding shape for every drained runtime event category. */
 export const RedstoneEventBatchSchema: Schema.Codec<RedstoneEventBatch, unknown> = structSchema({
@@ -299,11 +303,15 @@ type CircuitBoardAccumulator = {
   readonly components: Map<PositionKey, Component>
 }
 
+type NeighbourLookup = {
+  readonly allNodeIds: ReadonlySet<PositionKey>
+  readonly dimension: DimensionId
+}
+
 const neighbourAtOffset = (
-  dimension: DimensionId,
+  lookup: NeighbourLookup,
   position: RedstonePosition,
   offset: RedstonePosition,
-  allNodeIds: ReadonlySet<PositionKey>,
 ): Option.Option<PositionKey> => {
   const x = position.x + offset.x
   const y = position.y + offset.y
@@ -311,12 +319,12 @@ const neighbourAtOffset = (
   if (![x, y, z].every(Number.isSafeInteger)) {
     return Option.none()
   }
-  const nodeId = redstoneNodeId(dimension, {
+  const nodeId = redstoneNodeId(lookup.dimension, {
     x: blockAxis(x),
     y: blockAxis(y),
     z: blockAxis(z),
   })
-  if (!allNodeIds.has(nodeId)) {
+  if (!lookup.allNodeIds.has(nodeId)) {
     return Option.none()
   }
   return Option.some(nodeId)
@@ -328,7 +336,7 @@ const neighboursOf = (
   allNodeIds: ReadonlySet<PositionKey>,
 ): ReadonlyArray<PositionKey> =>
   FACE_OFFSETS.flatMap((offset) =>
-    Option.match(neighbourAtOffset(dimension, component.position, offset, allNodeIds), {
+    Option.match(neighbourAtOffset({ allNodeIds, dimension }, component.position, offset), {
       onNone: () => [],
       onSome: (nodeId) => [nodeId],
     }),
@@ -825,7 +833,7 @@ export type RedstoneWorldRuntimeStateError = {
 
 export const RedstoneWorldRuntimeStateErrorSchema: Schema.Codec<RedstoneWorldRuntimeStateError, unknown> =
   structSchema({
-    _tag: Schema.Literal('UnregisteredRedstoneWorldRuntime'),
+    _tag: literalSchema('UnregisteredRedstoneWorldRuntime'),
     message: Schema.String,
   })
 
