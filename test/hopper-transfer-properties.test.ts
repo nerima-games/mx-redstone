@@ -21,6 +21,7 @@ import {
   containerStorageOwnerRegistration,
   HopperServiceErrorSchema,
   HopperServiceSnapshotSchema,
+  ItemStackFailureSchema,
   HopperTransferOutcomeSchema,
   hopperOwnerRegistration,
   INITIAL_HOPPER_SERVICE_SNAPSHOT,
@@ -179,6 +180,73 @@ const makeHopperTransferScenario = (initialItemCount: number) =>
   })
 
 describe('HopperService transfer properties', () => {
+  it.effect('covers fixed item-count boundaries and adjacent invalid counts', () =>
+    Effect.sync(() => {
+      for (const initialItemCount of [1, 64]) {
+        const successfulScenario = Effect.runSync(makeHopperTransferScenario(initialItemCount))
+        const before = Effect.runSync(successfulScenario.snapshotStorage())
+        const outcome = Effect.runSync(
+          successfulScenario.hopper.transfer(
+            successfulScenario.makeRequest(successfulScenario.blockWrite),
+          ),
+        )
+        const decodedOutcome = Schema.decodeUnknownSync(
+          HopperTransferOutcomeSchema,
+          strictDecode,
+        )(outcome)
+        const after = Effect.runSync(successfulScenario.snapshotStorage())
+
+        expect(decodedOutcome._tag).toBe('Committed')
+        expect(countStorageItems(before)).toBe(initialItemCount)
+        expect(countStorageItems(after)).toBe(initialItemCount)
+
+        const staleScenario = Effect.runSync(makeHopperTransferScenario(initialItemCount))
+        const beforeStorage = Effect.runSync(staleScenario.snapshotStorage())
+        const beforeHopper = Effect.runSync(staleScenario.snapshotHopper())
+        const beforeObserved = Effect.runSync(staleScenario.observe())
+        const beforeWorldRevision = Effect.runSync(staleScenario.worldRevision)
+        const beforeDimensionRevision = Effect.runSync(staleScenario.dimensionsRevision)
+        const staleRevision = Schema.decodeUnknownSync(WorldRevisionSchema, strictDecode)(
+          Number(beforeWorldRevision) + 1,
+        )
+        const staleBlockWrite = Effect.runSync(staleScenario.makeBlockWrite(staleRevision))
+        const failed = Effect.runSync(
+          Effect.result(
+            staleScenario.hopper.transfer(staleScenario.makeRequest(staleBlockWrite)),
+          ),
+        )
+
+        expect(Result.isFailure(failed)).toBe(true)
+        if (Result.isFailure(failed)) {
+          const decodedFailure = Schema.decodeUnknownSync(
+            HopperServiceErrorSchema,
+            strictDecode,
+          )(failed.failure)
+          expect(decodedFailure._tag).toBe('WorldRevisionConflict')
+        }
+        expect(Effect.runSync(staleScenario.snapshotStorage())).toStrictEqual(beforeStorage)
+        expect(Effect.runSync(staleScenario.snapshotHopper())).toStrictEqual(beforeHopper)
+        expect(Effect.runSync(staleScenario.observe())).toStrictEqual(beforeObserved)
+        expect(Effect.runSync(staleScenario.worldRevision)).toBe(beforeWorldRevision)
+        expect(Effect.runSync(staleScenario.dimensionsRevision)).toBe(beforeDimensionRevision)
+      }
+
+      for (const invalidItemCount of [0, 65]) {
+        const attempted = Effect.runSync(
+          Effect.result(makeHopperTransferScenario(invalidItemCount)),
+        )
+        expect(Result.isFailure(attempted)).toBe(true)
+        if (Result.isFailure(attempted)) {
+          const decodedFailure = Schema.decodeUnknownResult(
+            ItemStackFailureSchema,
+            strictDecode,
+          )(attempted.failure)
+          expect(Result.isSuccess(decodedFailure)).toBe(true)
+        }
+      }
+    }),
+  )
+
   it.effect('successful transfers conserve item count across owner and block commits', () =>
     Effect.sync(() => {
       fc.assert(
