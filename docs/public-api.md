@@ -1,14 +1,14 @@
 # 公開 API
 
-## 1. 公開 API は stage 登録、runtime port、W5 が使う piston planning である
+## 1. 公開 API は stage 登録、runtime、host port、W5 の piston planning である
 
-plan.md §3.12 は主要な公開 API を stage 登録と定める。world runtime と host port は、stage の効果を世界へ適用する境界として追加した。
+公開 API は Effect stage registration、world runtime、host adapter、W5 が使う piston planning で構成する。各 export の契約区分は §5 の台帳に記録する。
 
 mc-compose の W5 host は root から `pistonPositionAt`、`planPistonTransition`、`validatePistonPlan`、`applyPistonPlan` を import する。これらの関数と計画に必要な型も package の contract である。
 
 `src/index.ts` は `domain/power-graph.ts` と `domain/piston.ts` を root から再 export する。power graph と piston module の残りの名前は、テストやプレビューのために見える内部 exports であり、外部 contract ではない。`CircuitBoard`、`PowerMap`、`planPush` は引き続き内部である。可視と公開の区別を §5 に記録する。
 
-`test/public-api.test.ts` は root export の存在を名前で固定する。他のテストは主に各 module を直接 import するため、barrel から export が落ちても通常の unit test では見つからない。公開 contract と内部 export の一覧を §5 に記録する。
+`test/public-api.test.ts` は選択した runtime export を名前で確認し、利用する型 export を compile-time import で検査する。root export 全件を検査するものではない。公開 contract と内部 export の一覧は §5 に記録する。
 
 ## 2. なぜ電力グラフは内部でなければならないのか
 
@@ -109,21 +109,20 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 
 ### 4-2. stage が 2 つある理由
 
-`power` と `effects` の分割線は**純粋性の境界**である。
+`power` と `effects` は電力計算と host event の生成を分ける。
 
-- `redstone:power` は電力マップを 1 redstone tick 進める。純粋な計算で、このモジュール自身の `Ref` 以外に触らない。
+- `redstone:power` は純粋な関数で電力マップを計算し、結果をこのモジュールの `Ref` に保存する。world state は変更しない。
 - `redstone:effects` は結果を runtime event queue に積む。ピストンの伸縮、ランプの点灯、ディスペンサ発射、ホッパー移送、
   オブザーバのパルスを host が適用する。
 
-この境界があるから電力グラフ全体がワールドなしでテストできる。
-2つのstageは「電力計算、その後に効果適用」という順序を固定する。
+電力グラフの計算は world なしでテストできる。2 つの stage は「電力計算、その後に event 生成」の順序を固定する。
 
-host は stage 実行後に`applyRedstoneHostEvents`を呼んで5つのqueueをdrainし、同じ world revision と dimension revision から plan を作る。対象はlamp transition、piston transition、trigger、hopper transfer、powered-component transitionである。
-hopper以外のeventはpiston planと合わせてplan fragmentにする。hopper eventは経過redstone tickとpoweredを持ち、hostは経過redstone tickをgame tickに換算してから`HopperService.planTransferTick`へ渡す。
-候補endpointとslotは`selectHopperTransferCandidates`が選び、cooldownの進行と移送の可否はHopperServiceが判定する。候補がないhopperのcooldownは`planAdvanceCooldown`で進める。Java Editionの通常のcontainer移送後cooldownは8 game ticksである。
-lamp、piston、hopperのfragmentは`mergeWorldCommitPlans`でまとめ、coordinatorの`commit`を1回だけ呼ぶ。成功した移送のfragmentにはitem owner、hopper cooldown、hopper block editが含まれる。
-plan、merge、commitのいずれかが失敗または中断した場合は、古いfragmentを再利用せずdrainしたevent batch全体をruntimeへ戻す。成功したbatchのqueueはcommit完了後に消費される。
-runtimeは経過redstone tickとpoweredを渡し、移送周期やcooldownの独自カウンタを持たない。
+host は stage 実行後に `applyRedstoneHostEvents` を呼び、5 つの queue をまとめて drain する。対象は lamp transition、piston transition、trigger、hopper transfer、powered-component transition である。
+adapter は同じ world revision と dimension revision から plan を作り、lamp・piston・hopper の fragment を統合して coordinator の `commit` を 1 回だけ呼ぶ。成功した移送の fragment には item owner、hopper cooldown、hopper block edit が含まれる。
+
+hopper event は経過 redstone tick と powered を持つ。host は経過 tick を game tick に換算して `HopperService` に渡す。候補 endpoint と slot は `selectHopperTransferCandidates` が選び、cooldown と移送可否は HopperService が判定する。候補がない hopper の cooldown は `planAdvanceCooldown` で進める。Java Edition の通常の container 移送後 cooldown は 8 game ticks である。
+
+plan、merge、commit が失敗または中断した場合、古い fragment を再利用せず、drain した batch 全体を runtime queue に戻す。成功した batch の event は commit 完了後に公開する。runtime は経過 redstone tick と powered を渡し、cooldown の独自カウンタを持たない。
 ボタンは `pressButton(dimension, position)` で次tickのパルスを予約する。`pulseTicks` の既定値は
 10で、パルス中の再入力は残り時間を設定値へ戻す。リピーターの `delayTicks` は1–4に丸められ、
 入力のONとOFFの双方へ同じtick遅延を適用する。
@@ -132,7 +131,7 @@ runtimeは経過redstone tickとpoweredを渡し、移送周期やcooldownの独
 
 **契約** = 他リポジトリが依存してよい。**内部（可視）** = root から見えるが、他リポジトリが依存する約束ではない。
 
-> **`test/public-api.test.ts` は root export の存在を固定する一覧である。**
+> **`test/public-api.test.ts` は選択した root export を検査する。全 export の台帳は本節に記載する。**
 > そのうち stage internals と domain internals は export が見えていても契約ではない。
 > W5 が使う piston planning names は下表で契約として明示する。どの名前が契約かは本表が定める。
 >
@@ -192,7 +191,7 @@ host port は host block を `RedstoneComponentSnapshot` に分類し、runtime 
 | エクスポート | 区分 | 備考 |
 | --- | --- | --- |
 | `redstoneSnapshotFromRealm` | **契約** | ホストの生ブロック列から 1 dimension 分の `RedstoneWorldSnapshot` を組む |
-| `applyRedstoneHostEvents` | **契約** | 5つのqueueをdrainし、lamp、piston、hopperのplan fragmentを1つにmergeしてcoordinatorのcommitを1回呼ぶ。mergeかcommitが失敗した場合、drainしたbatch全体をruntimeへ戻す |
+| `applyRedstoneHostEvents` | **契約** | 5つのqueueをdrainし、lamp、piston、hopperのplan fragmentを1つにmergeしてcoordinatorのcommitを1回呼ぶ。commit成功後にだけ`postCommitEvents`を`eventBus.publish`へ渡す。event busが無い場合はcommit前に失敗してbatch全体をruntimeへ戻し、publish失敗後はcommit済みbatchを再queueしない |
 | `RedstoneHostBlock` / `RedstoneHostLookup` / `RedstoneHostWritePort` / `RedstoneHostRealm` | **契約** | host block は `BlockAddress` と typed block を持つ。lookup は hopper block と transfer context も読む。write port はevent requestとhopper block writeを組み立て、coordinatorと`HopperService`を使う |
 | `componentForBlock` | 内部（可視） | ブロック文字列 1 つの分類。テストとホストの直接検証のために可視 |
 | `kernelPistonCapabilities` | 内部（可視） | mc-kernel の `pistonImmovable` 能力テーブルを読む `BlockCapabilityLookup` |
