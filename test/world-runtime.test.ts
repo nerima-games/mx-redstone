@@ -1,20 +1,41 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Ref } from 'effect'
+import { Effect, Ref, Schema } from 'effect'
 import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
-  redstoneNodeId,
+  redstoneNodeId as toRedstoneNodeId,
   redstoneWorldStateFor,
   type RedstoneComponentSnapshot,
   type RedstoneEventBatch,
   type RedstoneWorldRuntimeService,
+  type RedstoneWorldRuntimeStateError,
   type RedstoneWorldSnapshot,
 } from '../src/application/world-runtime'
-import { DeltaTimeSecs, type FrameServices, type StageRegistration } from '@nerima-games/mc-kernel'
+import {
+  BlockPositionSchema,
+  DeltaTimeSecs,
+  DimensionIdSchema,
+  type BlockPosition,
+  type FrameServices,
+  type StageRegistration,
+} from '@nerima-games/mc-kernel'
 import { makeRuntimeRedstoneStages } from '../src/stages/registration'
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 // eslint-disable-next-line sort-imports
 import { FrameServicesLayer } from './frame-services'
+
+type DimensionId = Schema.Schema.Type<typeof DimensionIdSchema>
+
+const dimensionId = (value: string): DimensionId =>
+  Schema.decodeUnknownSync(DimensionIdSchema)(value)
+
+const blockPosition = (x: number, y = 0, z = 0): BlockPosition =>
+  Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
+
+const redstoneNodeId = (
+  dimension: string,
+  position: { readonly x: number; readonly y: number; readonly z: number },
+) => toRedstoneNodeId(dimensionId(dimension), blockPosition(position.x, position.y, position.z))
 
 const component = (
   x: number,
@@ -24,7 +45,7 @@ const component = (
   z = 0,
   timing: Pick<RedstoneComponentSnapshot, 'delayTicks' | 'pulseTicks'> = {},
 ): RedstoneComponentSnapshot => ({
-  position: { x, y, z },
+  position: blockPosition(x, y, z),
   kind,
   ...(active === undefined ? {} : { active }),
   ...timing,
@@ -33,7 +54,7 @@ const component = (
 const snapshot = (
   dimension: string,
   components: ReadonlyArray<RedstoneComponentSnapshot>,
-): RedstoneWorldSnapshot => ({ dimension, components })
+): RedstoneWorldSnapshot => ({ dimension: dimensionId(dimension), components })
 
 const stageById = (
   stages: ReadonlyArray<StageRegistration>,
@@ -46,7 +67,7 @@ const stageById = (
 
 const runFrame = (
   stages: ReadonlyArray<StageRegistration>,
-): Effect.Effect<void, never, FrameServices> =>
+): Effect.Effect<void, RedstoneWorldRuntimeStateError, FrameServices> =>
   Effect.gen(function* () {
     yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.1))
     yield* stageById(stages, REDSTONE_STAGE_IDS.effects).run(DeltaTimeSecs(0.1))
@@ -56,8 +77,8 @@ const runtimeProgram = <A>(
   use: (
     runtime: RedstoneWorldRuntimeService,
     stages: ReadonlyArray<StageRegistration>,
-  ) => Effect.Effect<A, never, FrameServices>,
-): Effect.Effect<A> =>
+  ) => Effect.Effect<A, RedstoneWorldRuntimeStateError, FrameServices>,
+): Effect.Effect<A, RedstoneWorldRuntimeStateError> =>
   Effect.gen(function* () {
     const runtime = yield* RedstoneWorldRuntime
     const stages = yield* makeRuntimeRedstoneStages
@@ -104,8 +125,8 @@ describe('RedstoneWorldRuntime', () => {
       Effect.gen(function* () {
         yield* runtime.syncSnapshot(snapshot('overworld', [{
           ...component(2, 'repeater', undefined, 0, 0, { delayTicks: 1 }),
-          inputFrom: { x: 1, y: 0, z: 0 },
-          sideInputs: [{ x: 2, y: 0, z: 1 }],
+          inputFrom: blockPosition(1, 0, 0),
+          sideInputs: [blockPosition(2, 0, 1)],
         }]))
 
         const board = yield* Ref.get((yield* redstoneWorldStateFor(runtime)).board)
@@ -113,6 +134,21 @@ describe('RedstoneWorldRuntime', () => {
         expect(repeater).toMatchObject({
           sideInputs: [redstoneNodeId('overworld', { x: 2, y: 0, z: 1 })],
         })
+      }),
+    ),
+  )
+
+  it.effect('skips unrepresentable neighbour coordinates at safe integer limits', () =>
+    runtimeProgram((runtime) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(Number.MAX_SAFE_INTEGER - 1, 'wire'),
+          component(Number.MAX_SAFE_INTEGER, 'wire'),
+        ]))
+
+        const board = yield* Ref.get((yield* redstoneWorldStateFor(runtime)).board)
+        expect(board.components.has(redstoneNodeId('overworld', { x: Number.MAX_SAFE_INTEGER - 1, y: 0, z: 0 }))).toBe(true)
+        expect(board.components.has(redstoneNodeId('overworld', { x: Number.MAX_SAFE_INTEGER, y: 0, z: 0 }))).toBe(true)
       }),
     ),
   )
@@ -264,14 +300,14 @@ describe('RedstoneWorldRuntime', () => {
             component(1, 'wire'),
             {
               ...component(2, 'repeater', undefined, 0, 0, { delayTicks: 2 }),
-              inputFrom: { x: 1, y: 0, z: 0 },
-              outputTo: { x: 3, y: 0, z: 0 },
+              inputFrom: blockPosition(1, 0, 0),
+              outputTo: blockPosition(3, 0, 0),
             },
             component(3, 'lamp'),
           ]),
         )
 
-        yield* runtime.pressButton('overworld', { x: 0, y: 0, z: 0 })
+        yield* runtime.pressButton(dimensionId('overworld'), blockPosition(0, 0, 0))
         yield* runFrame(stages)
         expect(yield* runtime.drainLampTransitions).toStrictEqual([])
 
@@ -473,46 +509,70 @@ describe('RedstoneWorldRuntime', () => {
     ),
   )
 
+  it.effect('keeps powered hoppers locked after their transfer period', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', true),
+          component(1, 'hopper'),
+        ]))
+
+        for (let tick = 0; tick < 4; tick += 1) {
+          yield* runFrame(stages)
+          expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+        }
+      }),
+    ),
+  )
+
   it.effect('restores older host events ahead of events collected later', () =>
     runtimeProgram((runtime) =>
       Effect.gen(function* () {
         const older: RedstoneEventBatch = {
-          hopper: [{ dimension: 'overworld', position: { x: 0, y: 0, z: 0 } }],
-          lamp: [{ dimension: 'overworld', position: { x: 0, y: 0, z: 0 }, lit: false }],
+          hopper: [{ dimension: dimensionId('overworld'), position: blockPosition(0, 0, 0) }],
+          lamp: [{ dimension: dimensionId('overworld'), position: blockPosition(0, 0, 0), lit: false }],
           piston: [{
-            dimension: 'overworld',
-            piston: { x: 0, y: 0, z: 0 },
+            dimension: dimensionId('overworld'),
+            piston: blockPosition(0, 0, 0),
             facing: 'north',
             kind: 'normal',
             state: 'retracted',
             powered: false,
           }],
           powered: [{
-            dimension: 'overworld',
-            position: { x: 0, y: 0, z: 0 },
+            dimension: dimensionId('overworld'),
+            position: blockPosition(0, 0, 0),
             kind: 'door',
             powered: false,
           }],
-          trigger: [{ dimension: 'overworld', position: { x: 0, y: 0, z: 0 }, kind: 'note-block' }],
+          trigger: [{
+            dimension: dimensionId('overworld'),
+            position: blockPosition(0, 0, 0),
+            kind: 'note-block',
+          }],
         }
         const newer: RedstoneEventBatch = {
-          hopper: [{ dimension: 'overworld', position: { x: 1, y: 0, z: 0 } }],
-          lamp: [{ dimension: 'overworld', position: { x: 1, y: 0, z: 0 }, lit: true }],
+          hopper: [{ dimension: dimensionId('overworld'), position: blockPosition(1, 0, 0) }],
+          lamp: [{ dimension: dimensionId('overworld'), position: blockPosition(1, 0, 0), lit: true }],
           piston: [{
-            dimension: 'overworld',
-            piston: { x: 1, y: 0, z: 0 },
+            dimension: dimensionId('overworld'),
+            piston: blockPosition(1, 0, 0),
             facing: 'east',
             kind: 'sticky',
             state: 'extended',
             powered: true,
           }],
           powered: [{
-            dimension: 'overworld',
-            position: { x: 1, y: 0, z: 0 },
+            dimension: dimensionId('overworld'),
+            position: blockPosition(1, 0, 0),
             kind: 'powered-rail',
             powered: true,
           }],
-          trigger: [{ dimension: 'overworld', position: { x: 1, y: 0, z: 0 }, kind: 'dispenser' }],
+          trigger: [{
+            dimension: dimensionId('overworld'),
+            position: blockPosition(1, 0, 0),
+            kind: 'dispenser',
+          }],
         }
         yield* runtime.restoreEvents(newer)
         yield* runtime.restoreEvents(older)
