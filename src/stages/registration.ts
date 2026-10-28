@@ -31,6 +31,7 @@ import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
 import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
+  type RedstoneWorldRuntimeStateError,
   type RedstoneWorldState,
   collectHopperTransferEvents,
   collectLampTransitions,
@@ -249,12 +250,13 @@ export const makeRedstoneStages: Effect.Effect<ReadonlyArray<StageRegistration>>
 
 /** Registers stages over the same service instance that the host syncs and drains. */
 export const makeRuntimeRedstoneStages: Effect.Effect<
-  ReadonlyArray<StageRegistration>
+  ReadonlyArray<StageRegistration>,
+  RedstoneWorldRuntimeStateError
 > = Effect.flatMap(
   Effect.serviceOption(RedstoneWorldRuntime),
   Option.match({
     onNone: () => makeRedstoneStages,
-    onSome: (runtime) => Effect.succeed(redstoneStages(redstoneWorldStateFor(runtime))),
+    onSome: (runtime) => Effect.map(redstoneWorldStateFor(runtime), redstoneStages),
   }),
 )
 

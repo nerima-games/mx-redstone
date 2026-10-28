@@ -106,11 +106,21 @@ export type RedstoneWorldState = {
   readonly tickCount: Ref.Ref<number>
 }
 
+export type RedstoneEventBatch = {
+  readonly hopper: ReadonlyArray<HopperTransferEvent>
+  readonly lamp: ReadonlyArray<LampTransition>
+  readonly piston: ReadonlyArray<PoweredPistonTransition>
+  readonly powered: ReadonlyArray<PoweredComponentTransition>
+  readonly trigger: ReadonlyArray<RedstoneTriggerEvent>
+}
+
 export type RedstoneWorldRuntimeService = {
   /** Replaces only the named dimension; snapshots of other dimensions remain installed. */
   readonly syncSnapshot: (snapshot: RedstoneWorldSnapshot) => Effect.Effect<void>
   /** Starts or restarts this button's configured pulse on the next redstone tick. */
   readonly pressButton: (dimension: string, position: RedstonePosition) => Effect.Effect<void>
+  /** Restores a previously drained event batch after its host commit fails. */
+  readonly restoreEvents: (events: RedstoneEventBatch) => Effect.Effect<void>
   /** Atomically returns and clears transitions produced by `redstone:effects`. */
   readonly drainLampTransitions: Effect.Effect<ReadonlyArray<LampTransition>>
   /** Atomically returns and clears power-driven requests for host planning/application. */
@@ -750,12 +760,22 @@ export const collectPoweredComponentTransitions = (state: RedstoneWorldState): E
 
 const runtimeStates = new WeakMap<RedstoneWorldRuntimeService, RedstoneWorldState>()
 
-export const redstoneWorldStateFor = (runtime: RedstoneWorldRuntimeService): RedstoneWorldState => {
+export type RedstoneWorldRuntimeStateError = {
+  readonly _tag: 'UnregisteredRedstoneWorldRuntime'
+  readonly message: string
+}
+
+export const redstoneWorldStateFor = (
+  runtime: RedstoneWorldRuntimeService,
+): Effect.Effect<RedstoneWorldState, RedstoneWorldRuntimeStateError> => {
   const state = runtimeStates.get(runtime)
   if (typeof state === 'undefined') {
-    throw new Error('RedstoneWorldRuntime was not created by makeRedstoneWorldRuntime')
+    return Effect.fail({
+      _tag: 'UnregisteredRedstoneWorldRuntime',
+      message: 'RedstoneWorldRuntime was not created by makeRedstoneWorldRuntime',
+    })
   }
-  return state
+  return Effect.succeed(state)
 }
 
 export const makeRedstoneWorldRuntime: Effect.Effect<RedstoneWorldRuntimeService> = Effect.gen(
@@ -773,6 +793,16 @@ export const makeRedstoneWorldRuntime: Effect.Effect<RedstoneWorldRuntimeService
           next.add(redstoneNodeId(dimension, position))
           return next
         }),
+      restoreEvents: (events) =>
+        Effect.uninterruptible(
+          Effect.all([
+            Ref.update(state.pendingHopperTransferEvents, (pending) => [...events.hopper, ...pending]),
+            Ref.update(state.pendingLampTransitions, (pending) => [...events.lamp, ...pending]),
+            Ref.update(state.pendingPistonTransitions, (pending) => [...events.piston, ...pending]),
+            Ref.update(state.pendingPoweredComponentTransitions, (pending) => [...events.powered, ...pending]),
+            Ref.update(state.pendingTriggerEvents, (pending) => [...events.trigger, ...pending]),
+          ], { concurrency: 1, discard: true }),
+        ),
       syncSnapshot: (snapshot) => syncRedstoneSnapshot(state, snapshot),
     }
     runtimeStates.set(runtime, state)
