@@ -35,6 +35,7 @@
  * a regression reaching a person; these lines are what stop it reaching a person
  * who is only looking at the picture.
  */
+import { DeltaTimeSecs, FixedDurationSecs } from '@nerima-games/mc-kernel'
 import { planPush, PISTON_PUSH_LIMIT } from '../../src/domain/piston'
 import {
   emptyPowerMap,
@@ -351,7 +352,9 @@ const probePush = (length: number): PushProbe => {
     outcome:
       outcome.kind === 'push'
         ? `push ${String(outcome.plan.length)}`
-        : `refused ${outcome.refusal.reason} at ${String(outcome.refusal.at)}`,
+        : outcome.kind === 'failed'
+          ? `failed ${outcome.failure._tag}: ${outcome.failure.message} at ${String(outcome.at)}`
+          : `refused ${outcome.refusal.reason} at ${String(outcome.refusal.at)}`,
   }
 }
 
@@ -362,7 +365,9 @@ const probeImmovableAt = (index: number): string => {
   const outcome = planPush(column, previewCapabilities)
   return outcome.kind === 'push'
     ? `push ${String(outcome.plan.length)}`
-    : `refused ${outcome.refusal.reason} at ${String(outcome.refusal.at)}`
+    : outcome.kind === 'failed'
+      ? `failed ${outcome.failure._tag}: ${outcome.failure.message} at ${String(outcome.at)}`
+      : `refused ${outcome.refusal.reason} at ${String(outcome.refusal.at)}`
 }
 
 // ---------------------------------------------------------------------------
@@ -401,8 +406,8 @@ const measureClockPeriod = (): number => {
  * drift that grows with the run length; a single pending tick would not.
  */
 const measureFrameRate = (frames: number, fps: number): { readonly ticks: number; readonly drift: number } => {
-  const dt = 1 / fps
-  let accumulated = 0
+  const dt = DeltaTimeSecs(1 / fps)
+  let accumulated = FixedDurationSecs(0)
   let total = 0
   for (let frame = 0; frame < frames; frame += 1) {
     const { ticks, remainderSecs } = ticksForFrame(accumulated, dt)

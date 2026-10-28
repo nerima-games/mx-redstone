@@ -26,15 +26,16 @@
  * mc-kernel publishes `BlockId = number & Brand.Brand<'BlockId'>`
  * (`domain/block-registry.ts:220`) — a dense index, because that is what a chunk
  * stores and what `ChunkStoreApi.getBlock` returns
- * (`mc-worldgen/application/chunk-store.ts:142`). This alias is a string, which
- * costs nothing today because NOTHING in this repository inspects the value: a
- * piston asks a capability lookup, an observer asks whether two of them are
- * equal, and both work over an opaque token.
+ * (`mc-worldgen/application/chunk-store.ts:142`). This alias is a string. Domain
+ * planners treat it as an opaque token: pistons ask a capability lookup and
+ * observers compare references for equality. The host adapter is the boundary
+ * that recognizes registered block types and resolves them to a numeric id.
  *
- * The seam is recorded rather than closed because closing it means depending on
- * kernel, and this repository declares no `@nerima-games/*` dependency yet
- * (docs/responsibility.md §3, 現状). When it does, this file is deleted and the
- * two call sites take `BlockId`. Equality is the only operation either performs,
- * and it survives the change of representation.
+ * mx-redstone now depends on mc-kernel. This seam remains intentional: domain
+ * rules use named block references, while the host adapter checks whether a
+ * string is a registered block type and resolves it to `BlockId` for the kernel
+ * capability lookup. The planners treat `BlockRef` as opaque; changing that
+ * domain input to the registry's numeric id would be a separate API change.
+ * Equality is the only operation the domain rules perform on it.
  */
 export type BlockRef = string

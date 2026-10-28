@@ -98,10 +98,10 @@ mx-redstone は最後から 4 番目のグループにいる。前段の公開�
 
 | 本来 | 現在 |
 | --- | --- |
-| `import type { StageRegistration } from '@nerima-games/mc-kernel'` | mc-kernel の正本を直接利用 |
-| kernel の `Position` キー符号化 | `domain/position-key.ts` にプレースホルダ |
-| kernel の能力アクセサ | `domain/piston.ts` の `BlockCapabilityLookup` |
-| mc-sim / mc-worldgen のサービス呼び出し | `redstone:effects` が runtime port の transition を収集・適用 |
+| `import type { StageRegistration } from '@nerima-games/mc-kernel'` | mc-kernel 0.14.0 の正本を直接利用 |
+| 3D world position / key | circuit graph は 2D four-neighbour grid のため `domain/position-key.ts` の文字列 key を維持 |
+| kernel capability lookup | domain の `BlockCapabilityLookup` を維持し、host adapter が block 名を `BlockId` に解決して kernel accessor を呼ぶ |
+| mc-sim / mc-worldgen | 0.7.1 / 0.7.0 を pin。`HopperService` と C7 batch contract は公開済みだが、redstone callback はまだ接続していない |
 
 npm 公開・バージョン bump 運用は**界面が実際に上位階層(mc-compose)に消費され、動作確認が完了するまで開始しない**。
 1.0.0 への昇格を含め、日数計測ベースの自動フリーズゲート(旧「API ロック 4 週間無変更」)は採用せず、
@@ -110,13 +110,15 @@ maintainer(take)による裁量判断のみで行う(RELEASE_STANDARD.md §4.2)�
 
 ## 5. このリポジトリにおける「破壊的変更」とは何か
 
-**公開 API が stage 登録だけなので、観測可能な界面は 3 つしかない。**
+**公開 API は stage 登録に加えて runtime / host port と、一部の piston planning を含む。**
+これらの root contract の export 名・型・振る舞いも、消費側が依存する界面である。
 
 | 観測可能なもの | 変更が破壊的である理由 |
 | --- | --- |
 | `StageId` の文字列（`redstone:power` / `redstone:effects`） | mc-compose の全順序表と、他モジュールの `after` が名指しできる |
 | 宣言する `after` の集合 | 全順序の解決結果が変わる |
 | stage の粒度（2 本を 1 本にする / 3 本に割る） | 順序表に穴が開く、または新しい制約が要る |
+| runtime / host port と piston planning の root contract（[public-api.md](./public-api.md) §5） | 消費側が呼ぶ export、型、event の形や意味が変わる |
 
 **逆に、次のものは破壊的変更ではない。**
 
@@ -164,42 +166,19 @@ PATCH で済む世界の差は、本リポジトリの実装期間を通じて�
 | `makeRedstoneStages` のシグネチャ変更（`GameModule` 化を含む） | **MAJOR** |
 | ドキュメント・コメントのみ | PATCH |
 
-## 6. kernel 公開時に消えるもの — このリポジトリで本当に効くピン
+## 6. kernel 連携と維持する domain seam
 
-以下は `@nerima-games/mc-kernel` が公開された瞬間に削除・差し替えされる。
+mx-redstone は `@nerima-games/mc-kernel@0.14.0` を pin する。stage contract は kernel から直接 import し、
+mx-redstone が所有しない語彙として root barrel からは再 export しない。
 
-| 対象 | 差し替え先 |
+次の 2 型は役割が異なるため、mx-redstone に残す。
+
+| 型 | ローカルに維持する理由 |
 | --- | --- |
-| kernel stage contract imports | `@nerima-games/mc-kernel` の正本を直接利用 |
-| `domain/position-key.ts`（ファイルごと削除） | kernel の `Position` とそのキー符号化 |
-| `domain/piston.ts` の `BlockCapabilityLookup` / `BlockRef` | kernel の能力アクセサと `BlockType` |
+| `domain/position-key.ts` | 回路グラフは二次元の4近傍である。kernel の block position と key は三次元 world 用であり、互換ではない |
+| `domain/block-ref.ts` | domain planner は block 名を不透明な参照として扱う。host adapter が kernel capability accessor を呼ぶ境界で登録名を `BlockId` に解決する |
 
-前 2 つは型の置き換えであり、機械的である。stage contract は mc-kernel の正本を直接 import する。
-
-**前 2 つが PATCH で済むのは、どちらも `index.ts` から re-export していないからである。**
-`export *` していた時期があり、その形のままだと `StageId` / `DeltaTimeSecs` / `StageRegistration` が
-「所有していないパッケージの公開 API」になり、上表の**削除がそのまま MAJOR**に化けていた。
-今は `index.ts` の末尾コメントが 2 ファイルの存在と削除予定だけを記し、名前は 1 つも出していない
-（`test/public-api.test.ts` の
-`REGRESSION: does not republish mc-kernel’s vocabulary as its own` が固定している）。
-
-**3 つ目が、このリポジトリにとって実際に重要なバージョンピンである。**
-
-`BlockCapabilityLookup` は `pistonImmovable` を関数として受け取るだけの狭い型だが、
-その裏側には `mc-kernel/docs/capability-flag-audit.md` §3 が確定した能力モデルがある。
-差し替えた瞬間、mx-redstone は kernel の能力表の**セマンティクスに縛られる**:
-
-- `pistonImmovable` が boolean のままか、enum に広がるか
-- 既定値が「押せる」なのか「押せない」なのか
-- スライム／ハチミツによる隣接ブロック連結能力（DN-RS-10、監査未確定）がどの形で追加されるか
-
-`mc-kernel/docs/versioning.md` §6 は「**既定値の変更は MAJOR**」と定めている。
-既定値が変わると「何も書いていない全ブロックの挙動が変わる」からで、
-mx-redstone にとってそれは「ピストンが押せるブロックの集合が黙って変わる」ことを意味する。
-本リポジトリが監視すべき kernel の変更は、フラグの追加ではなく**既定値の変更**である。
-
-kernel 側の設計は加算的（書かなかった能力は文書化された既定に解決される）なので、
-能力の追加そのものは MINOR で済む。mx-redstone がその恩恵を受けられるのは、
-`domain/piston.ts` にブロック名を 1 つも持っていないから——
-つまり [design-notes.md](./design-notes.md) DN-RS-1 の構造的防御が、
-そのままバージョニング上の防御にもなっている。
+`BlockCapabilityLookup` は純粋な domain port として残し、
+`Result<boolean, BlockRegistryResolutionFailure>` を返す。host 側の `kernelPistonCapabilities` adapter は
+公開された `pistonImmovable` flag を読む。この flag の既定値が変わるとピストンの移動可否も変わるため、
+kernel の正確な版と回帰テストを維持する（DN-RS-1）。

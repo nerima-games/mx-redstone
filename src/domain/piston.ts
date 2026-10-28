@@ -26,10 +26,11 @@
  * list. Miss one and the new block is pushable by a piston into the void.
  *
  * So this file contains NO block names at all. It asks. The authoritative flag
- * source is `mc-kernel/docs/capability-flag-audit.md`, which has already been
- * written and records `pistonImmovable` as a boolean with 5 measured occurrence
- * sites in the reference. When kernel is published, `BlockCapabilityLookup`
- * below is deleted and replaced by kernel's capability accessor.
+ * source is `mc-kernel/docs/capability-flag-audit.md`, which records
+ * `pistonImmovable` as a boolean with 5 measured occurrence sites in the
+ * reference. Kernel now publishes the capability accessor; the host adapter
+ * supplies it through `BlockCapabilityLookup` so planning stays pure and can
+ * preserve registry-resolution failures.
  *
  * `test/piston.test.ts` asserts the absence structurally: a block name this
  * repository has never heard of behaves exactly as the injected lookup says.
@@ -54,7 +55,8 @@
  */
 export type { BlockRef } from './block-ref.js'
 
-import { Effect } from 'effect'
+import { type BlockPosition, BlockPositionSchema, type BlockRegistryResolutionFailure } from '@nerima-games/mc-kernel'
+import { Brand, Effect, Result, Schema } from 'effect'
 import type { BlockRef } from './block-ref.js'
 
 /**
@@ -67,7 +69,7 @@ import type { BlockRef } from './block-ref.js'
  */
 export type BlockCapabilityLookup = {
   /** Kernel's `pistonImmovable` flag (capability-flag-audit.md §3). */
-  readonly pistonImmovable: (block: BlockRef) => boolean
+  readonly pistonImmovable: (block: BlockRef) => Result.Result<boolean, BlockRegistryResolutionFailure>
 }
 
 /**
@@ -76,7 +78,27 @@ export type BlockCapabilityLookup = {
  * A rule, not a capability, so it lives with the rule — this repository owns
  * "how a piston behaves", kernel owns "what a block is".
  */
-export const PISTON_PUSH_LIMIT = 12
+export type PistonPushLength = number & Brand.Brand<'PistonPushLength'>
+export type PistonColumnIndex = number & Brand.Brand<'PistonColumnIndex'>
+export type PistonBlockOffset = number & Brand.Brand<'PistonBlockOffset'>
+
+const MIN_NON_NEGATIVE_INTEGER = 0
+const VANILLA_PISTON_PUSH_LIMIT = 12
+const ORIGIN_COORDINATE = 0
+const POSITIVE_ONE_COORDINATE = 1
+const NEGATIVE_ONE_COORDINATE = -1
+const POSITIVE_TWO_DISTANCE = 2
+
+const nonNegativeIntegerSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_NON_NEGATIVE_INTEGER))
+
+export const PistonPushLengthSchema: Schema.Codec<PistonPushLength, number> = nonNegativeIntegerSchema.pipe(Schema.brand('PistonPushLength'))
+export const PistonColumnIndexSchema: Schema.Codec<PistonColumnIndex, number> = nonNegativeIntegerSchema.pipe(Schema.brand('PistonColumnIndex'))
+export const PistonBlockOffsetSchema: Schema.Codec<PistonBlockOffset, number> = Schema.Int.pipe(Schema.brand('PistonBlockOffset'))
+
+export type PistonPosition = BlockPosition
+export const PistonPositionSchema: Schema.Codec<PistonPosition, unknown> = BlockPositionSchema
+
+export const PISTON_PUSH_LIMIT: PistonPushLength = Schema.decodeUnknownSync(PistonPushLengthSchema)(VANILLA_PISTON_PUSH_LIMIT)
 
 export type PushPlan = {
   /**
@@ -85,16 +107,17 @@ export type PushPlan = {
    */
   readonly moved: ReadonlyArray<BlockRef>
   /** How far along the column the push reaches. */
-  readonly length: number
+  readonly length: PistonPushLength
 }
 
 export type PushRefusal = {
   readonly reason: 'immovable' | 'too-long'
   /** Index into the column at which the push was refused. */
-  readonly at: number
+  readonly at: PistonColumnIndex
 }
 
 export type PushOutcome =
+  | { readonly kind: 'failed'; readonly at: PistonColumnIndex; readonly failure: BlockRegistryResolutionFailure }
   | { readonly kind: 'push'; readonly plan: PushPlan }
   | { readonly kind: 'refused'; readonly refusal: PushRefusal }
 
@@ -117,22 +140,6 @@ export type PushOutcome =
  * what the reference's boolean predicate effectively did — loses the ability to
  * explain either.
  */
-export const planPush = (
-  column: ReadonlyArray<BlockRef>,
-  capabilities: BlockCapabilityLookup,
-): PushOutcome => {
-  for (const [index, block] of column.entries()) {
-    if (capabilities.pistonImmovable(block)) {
-      return { kind: 'refused', refusal: { at: index, reason: 'immovable' } }
-    }
-    if (index >= PISTON_PUSH_LIMIT) {
-      return { kind: 'refused', refusal: { at: index, reason: 'too-long' } }
-    }
-  }
-
-  return { kind: 'push', plan: { length: column.length, moved: [...column] } }
-}
-
 /**
  * `!pistonImmovable`, named.
  *
@@ -144,17 +151,38 @@ export const planPush = (
 export const isPistonMovable = (
   capabilities: BlockCapabilityLookup,
   block: BlockRef,
-): boolean => !capabilities.pistonImmovable(block)
+): Result.Result<boolean, BlockRegistryResolutionFailure> =>
+  Result.map(capabilities.pistonImmovable(block), (immovable) => !immovable)
+
+export const planPush = (
+  column: ReadonlyArray<BlockRef>,
+  capabilities: BlockCapabilityLookup,
+): PushOutcome => {
+  for (const [index, block] of column.entries()) {
+    const movable = isPistonMovable(capabilities, block)
+    if (Result.isFailure(movable)) {
+      return { at: Schema.decodeUnknownSync(PistonColumnIndexSchema)(index), failure: movable.failure, kind: 'failed' }
+    }
+    if (!movable.success) {
+      return { kind: 'refused', refusal: { at: Schema.decodeUnknownSync(PistonColumnIndexSchema)(index), reason: 'immovable' } }
+    }
+    if (index >= PISTON_PUSH_LIMIT) {
+      return { kind: 'refused', refusal: { at: Schema.decodeUnknownSync(PistonColumnIndexSchema)(index), reason: 'too-long' } }
+    }
+  }
+
+  return { kind: 'push', plan: { length: Schema.decodeUnknownSync(PistonPushLengthSchema)(column.length), moved: [...column] } }
+}
 
 export type PistonFacing = 'down' | 'east' | 'north' | 'south' | 'up' | 'west'
 export type PistonKind = 'normal' | 'sticky'
 export type PistonState = 'extended' | 'retracted'
 
-export type PistonPosition = {
-  readonly x: number
-  readonly y: number
-  readonly z: number
-}
+const literalsSchema = Schema.Literals
+
+export const PistonFacingSchema: Schema.Codec<PistonFacing, PistonFacing> = literalsSchema(['down', 'east', 'north', 'south', 'up', 'west'])
+export const PistonKindSchema: Schema.Codec<PistonKind, PistonKind> = literalsSchema(['normal', 'sticky'])
+export const PistonStateSchema: Schema.Codec<PistonState, PistonState> = literalsSchema(['extended', 'retracted'])
 
 export type PistonCell =
   | { readonly kind: 'block'; readonly block: BlockRef }
@@ -166,17 +194,17 @@ export type PistonCellRead =
   | { readonly kind: 'out-of-world' }
 
 export type PistonWorldView = {
-  readonly read: (position: PistonPosition) => PistonCellRead
+  readonly read: (position: BlockPosition) => PistonCellRead
 }
 
 export type PistonMove = {
   readonly block: BlockRef
-  readonly from: PistonPosition
-  readonly to: PistonPosition
+  readonly from: BlockPosition
+  readonly to: BlockPosition
 }
 
 export type PistonMovementPlan = {
-  readonly piston: PistonPosition
+  readonly piston: BlockPosition
   readonly facing: PistonFacing
   readonly kind: PistonKind
   readonly fromState: PistonState
@@ -187,60 +215,64 @@ export type PistonMovementPlan = {
 
 export type PistonPlanRefusal = {
   readonly reason: 'collision' | 'duplicate' | 'immovable' | 'invalid-transition' | 'missing' | 'out-of-world' | 'too-long'
-  readonly position: PistonPosition
+  readonly position: BlockPosition
 }
 
 export type PistonMovementOutcome =
+  | { readonly kind: 'failed'; readonly failure: BlockRegistryResolutionFailure; readonly position: BlockPosition }
   | { readonly kind: 'move'; readonly plan: PistonMovementPlan }
   | { readonly kind: 'noop'; readonly state: PistonState }
   | { readonly kind: 'refused'; readonly refusal: PistonPlanRefusal }
 
 export type PistonTransitionRequest = {
-  readonly piston: PistonPosition
+  readonly piston: BlockPosition
   readonly facing: PistonFacing
   readonly kind: PistonKind
   readonly state: PistonState
   readonly powered: boolean
 }
 
-const OFFSETS: Readonly<Record<PistonFacing, PistonPosition>> = {
-  down: { x: 0, y: -1, z: 0 },
-  east: { x: 1, y: 0, z: 0 },
-  north: { x: 0, y: 0, z: -1 },
-  south: { x: 0, y: 0, z: 1 },
-  up: { x: 0, y: 1, z: 0 },
-  west: { x: -1, y: 0, z: 0 },
+const positionFromCoordinates = (x: number, y: number, z: number): BlockPosition =>
+  Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
+
+const OFFSETS: Readonly<Record<PistonFacing, BlockPosition>> = {
+  down: positionFromCoordinates(ORIGIN_COORDINATE, NEGATIVE_ONE_COORDINATE, ORIGIN_COORDINATE),
+  east: positionFromCoordinates(POSITIVE_ONE_COORDINATE, ORIGIN_COORDINATE, ORIGIN_COORDINATE),
+  north: positionFromCoordinates(ORIGIN_COORDINATE, ORIGIN_COORDINATE, NEGATIVE_ONE_COORDINATE),
+  south: positionFromCoordinates(ORIGIN_COORDINATE, ORIGIN_COORDINATE, POSITIVE_ONE_COORDINATE),
+  up: positionFromCoordinates(ORIGIN_COORDINATE, POSITIVE_ONE_COORDINATE, ORIGIN_COORDINATE),
+  west: positionFromCoordinates(NEGATIVE_ONE_COORDINATE, ORIGIN_COORDINATE, ORIGIN_COORDINATE),
 }
 
 export const pistonPositionAt = (
-  origin: PistonPosition,
+  origin: BlockPosition,
   facing: PistonFacing,
-  distance: number,
-): PistonPosition => {
+  distance: PistonBlockOffset,
+): BlockPosition => {
   const offset = OFFSETS[facing]
-  return {
-    x: origin.x + offset.x * distance,
-    y: origin.y + offset.y * distance,
-    z: origin.z + offset.z * distance,
-  }
+  return positionFromCoordinates(
+    origin.x + offset.x * distance,
+    origin.y + offset.y * distance,
+    origin.z + offset.z * distance,
+  )
 }
 
-const positionKey = ({ x: posX, y: posY, z: posZ }: PistonPosition): string => `${posX},${posY},${posZ}`
+const positionKey = ({ x: posX, y: posY, z: posZ }: BlockPosition): string => `${posX},${posY},${posZ}`
 
 /**
  * Distance from a piston's base to its head — the adjacent cell — and also the
  * step size the extension scan advances by, one cell at a time.
  */
-const ADJACENT_CELL_DISTANCE = 1
+const ADJACENT_CELL_DISTANCE = Schema.decodeUnknownSync(PistonBlockOffsetSchema)(POSITIVE_ONE_COORDINATE)
 
 /** Distance from a sticky piston's base to the block it pulls in on retraction. */
-const STICKY_PULL_SOURCE_DISTANCE = 2
+const STICKY_PULL_SOURCE_DISTANCE = Schema.decodeUnknownSync(PistonBlockOffsetSchema)(POSITIVE_TWO_DISTANCE)
 
 /** Direction multiplier applied to a per-cell offset when a piston extends. */
-const EXTEND_DIRECTION = 1
+const EXTEND_DIRECTION = Schema.decodeUnknownSync(PistonBlockOffsetSchema)(POSITIVE_ONE_COORDINATE)
 
 /** Direction multiplier applied to a per-cell offset when a piston retracts. */
-const RETRACT_DIRECTION = -1
+const RETRACT_DIRECTION = Schema.decodeUnknownSync(PistonBlockOffsetSchema)(NEGATIVE_ONE_COORDINATE)
 
 /** Index of the first entry in a `moves` array. */
 const FIRST_MOVE_INDEX = 0
@@ -261,6 +293,9 @@ type PistonPlanningContext = {
   readonly world: PistonWorldView
 }
 
+type ExtendedColumnBlock = { readonly block: BlockRef; readonly position: BlockPosition }
+type ExtensionBlockCandidate = ExtendedColumnBlock & { readonly blocks: ReadonlyArray<ExtendedColumnBlock> }
+
 const buildRetractionBasePlan = (request: PistonTransitionRequest): PistonMovementPlan => ({
   facing: request.facing,
   fromState: request.state,
@@ -269,6 +304,28 @@ const buildRetractionBasePlan = (request: PistonTransitionRequest): PistonMoveme
   piston: request.piston,
   toState: 'retracted',
 })
+
+const planStickyBlockMove = (
+  context: PistonPlanningContext,
+  base: PistonMovementPlan,
+  target: ExtendedColumnBlock,
+): PistonMovementOutcome => {
+  const { block, position: source } = target
+  const immovable = context.capabilities.pistonImmovable(block)
+  if (Result.isFailure(immovable)) {
+    return { failure: immovable.failure, kind: 'failed', position: source }
+  }
+  if (immovable.success) {
+    return { kind: 'move', plan: base }
+  }
+  return {
+    kind: 'move',
+    plan: {
+      ...base,
+      moves: [{ block, from: source, to: pistonPositionAt(context.request.piston, context.request.facing, ADJACENT_CELL_DISTANCE) }],
+    },
+  }
+}
 
 const planStickyRetraction = (
   context: PistonPlanningContext,
@@ -279,16 +336,10 @@ const planStickyRetraction = (
   if (cell.kind === 'missing' || cell.kind === 'out-of-world') {
     return { kind: 'refused', refusal: { position: source, reason: cell.kind } }
   }
-  if (cell.kind === 'empty' || context.capabilities.pistonImmovable(cell.block)) {
+  if (cell.kind === 'empty') {
     return { kind: 'move', plan: base }
   }
-  return {
-    kind: 'move',
-    plan: {
-      ...base,
-      moves: [{ block: cell.block, from: source, to: pistonPositionAt(context.request.piston, context.request.facing, ADJACENT_CELL_DISTANCE) }],
-    },
-  }
+  return planStickyBlockMove(context, base, { block: cell.block, position: source })
 }
 
 const planRetraction = (context: PistonPlanningContext): PistonMovementOutcome => {
@@ -298,8 +349,6 @@ const planRetraction = (context: PistonPlanningContext): PistonMovementOutcome =
   }
   return planStickyRetraction(context, base)
 }
-
-type ExtendedColumnBlock = { readonly block: BlockRef; readonly position: PistonPosition }
 
 /** One step of the extension scan: either the scan is done (refused or found the vacancy to push into) or one more block joins the column. */
 type ExtensionStep =
@@ -325,9 +374,27 @@ const buildExtensionMovePlan = (
   },
 })
 
+const classifyExtensionBlock = (
+  context: PistonPlanningContext,
+  candidate: ExtensionBlockCandidate,
+): ExtensionStep => {
+  const { block, position, blocks } = candidate
+  const immovable = context.capabilities.pistonImmovable(block)
+  if (Result.isFailure(immovable)) {
+    return { kind: 'settled', outcome: { failure: immovable.failure, kind: 'failed', position } }
+  }
+  if (immovable.success) {
+    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: 'immovable' } } }
+  }
+  if (blocks.length === PISTON_PUSH_LIMIT) {
+    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: 'too-long' } } }
+  }
+  return { block: { block, position }, kind: 'joins-column' }
+}
+
 const scanExtensionCell = (
   context: PistonPlanningContext,
-  position: PistonPosition,
+  position: BlockPosition,
   blocks: ReadonlyArray<ExtendedColumnBlock>,
 ): ExtensionStep => {
   const cell = context.world.read(position)
@@ -337,13 +404,7 @@ const scanExtensionCell = (
   if (cell.kind === 'empty') {
     return { kind: 'settled', outcome: buildExtensionMovePlan(context, blocks) }
   }
-  if (context.capabilities.pistonImmovable(cell.block)) {
-    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: 'immovable' } } }
-  }
-  if (blocks.length === PISTON_PUSH_LIMIT) {
-    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: 'too-long' } } }
-  }
-  return { block: { block: cell.block, position }, kind: 'joins-column' }
+  return classifyExtensionBlock(context, { block: cell.block, blocks, position })
 }
 
 /**
@@ -369,7 +430,7 @@ const planExtension = (context: PistonPlanningContext): PistonMovementOutcome =>
       return step.outcome
     }
     blocks.push(step.block)
-    distance += ADJACENT_CELL_DISTANCE
+    distance = Schema.decodeUnknownSync(PistonBlockOffsetSchema)(distance + ADJACENT_CELL_DISTANCE)
   }
 }
 
@@ -404,14 +465,14 @@ export type PistonApplyPort<Err = never> = {
   readonly commit: (plan: PistonMovementPlan) => Effect.Effect<void, Err>
 }
 
-const resolveConflictPosition = (sourceAlreadyTaken: boolean, move: PistonMove): PistonPosition => {
+const resolveConflictPosition = (sourceAlreadyTaken: boolean, move: PistonMove): BlockPosition => {
   if (sourceAlreadyTaken) {
     return move.from
   }
   return move.to
 }
 
-const resolveMoveDirection = (toState: PistonState): number => {
+const resolveMoveDirection = (toState: PistonState): PistonBlockOffset => {
   if (toState === 'extended') {
     return EXTEND_DIRECTION
   }
@@ -454,12 +515,12 @@ const findMoveConflict = (plan: PistonMovementPlan): PistonPlanRefusal | undefin
 const validateExtendedPlan = (plan: PistonMovementPlan): PistonPlanRefusal | undefined => {
   if (plan.moves.length > PISTON_PUSH_LIMIT) {
     return {
-      position: pistonPositionAt(plan.piston, plan.facing, PISTON_PUSH_LIMIT + ADJACENT_CELL_DISTANCE),
+      position: pistonPositionAt(plan.piston, plan.facing, Schema.decodeUnknownSync(PistonBlockOffsetSchema)(PISTON_PUSH_LIMIT + ADJACENT_CELL_DISTANCE)),
       reason: 'too-long',
     }
   }
   for (const [index, move] of plan.moves.entries()) {
-    const expectedDistance = plan.moves.length - index
+    const expectedDistance = Schema.decodeUnknownSync(PistonBlockOffsetSchema)(plan.moves.length - index)
     if (positionKey(move.from) !== positionKey(pistonPositionAt(plan.piston, plan.facing, expectedDistance))) {
       return { position: move.from, reason: 'collision' }
     }
@@ -468,17 +529,17 @@ const validateExtendedPlan = (plan: PistonMovementPlan): PistonPlanRefusal | und
 }
 
 const selectPositionAtIndex = (wantedIndex: number) => (
-  position: PistonPosition,
+  position: BlockPosition,
   move: PistonMove,
   moveIndex: number,
-): PistonPosition => {
+): BlockPosition => {
   if (moveIndex === wantedIndex) {
     return move.from
   }
   return position
 }
 
-const positionAtOrPiston = (plan: PistonMovementPlan, index: number): PistonPosition =>
+const positionAtOrPiston = (plan: PistonMovementPlan, index: number): BlockPosition =>
   plan.moves.reduce(selectPositionAtIndex(index), plan.piston)
 
 const validateRetractionPlan = (plan: PistonMovementPlan): PistonPlanRefusal | undefined => {

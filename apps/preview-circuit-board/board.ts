@@ -28,9 +28,9 @@
  *
  * `domain/power-graph.ts` has six component kinds and a piston is not one of
  * them: it is not a thing that carries power, it is a thing that MOVES THE
- * WORLD when power arrives, and moving the world is `redstone:effects` — whose
- * `run` is `Effect.void` today because mc-sim is not published
- * (`stages/registration.ts:154-163`).
+ * WORLD when power arrives. `stages/registration.ts` records transitions, while
+ * a host applies world changes. Publishing mc-sim does not wire this preview to
+ * that host path.
  *
  * `applyPistons` below is therefore a preview-local stand-in for that stage. It
  * calls the library's `planPush` for the DECISION (what moves, and why a push is
@@ -46,6 +46,8 @@
  *     precisely so that a caller — a test, or this app — can supply two blocks
  *     without anybody having to write down twenty-two.
  */
+import { Result } from 'effect'
+import type { BlockRegistryResolutionFailure } from '@nerima-games/mc-kernel'
 import { planPush, type BlockCapabilityLookup, type BlockRef } from '../../src/domain/piston'
 import { powerAt, type CircuitBoard, type Component, type PowerMap } from '../../src/domain/power-graph'
 import type { PositionKey } from '../../src/domain/position-key'
@@ -84,10 +86,9 @@ export type Coord = { readonly x: number; readonly y: number }
 /**
  * `"x,y"`.
  *
- * A string because `PositionKey` is a string (`domain/position-key.ts`), and
- * unbranded for the same reason that file gives: the preview must not invent a
- * second coordinate vocabulary either. When kernel is published this encoding is
- * replaced by kernel's, and the only file that has to change is this one.
+ * A string because `PositionKey` is the preview's own 2D coordinate key
+ * (`domain/position-key.ts`). Kernel publishes 3D block positions and keys, but
+ * those are not interchangeable with this four-neighbour grid.
  */
 export const keyOf = (coord: Coord): PositionKey => `${String(coord.x)},${String(coord.y)}`
 
@@ -363,18 +364,25 @@ export const PREVIEW_BLOCKS = {
 } as const
 
 export const previewCapabilities: BlockCapabilityLookup = {
-  pistonImmovable: (block) => block === PREVIEW_BLOCKS.immovable,
+  pistonImmovable: (block) => Result.succeed(block === PREVIEW_BLOCKS.immovable),
 }
 
 const blockRefOf = (part: Part): BlockRef =>
   part.kind === 'obsidian' ? PREVIEW_BLOCKS.immovable : PREVIEW_BLOCKS.movable
 
-export type PistonEvent = {
-  readonly at: PositionKey
-  readonly kind: 'extended' | 'retracted' | 'refused'
-  /** One line, for the HUD. Says WHY a refusal happened, never just "no". */
-  readonly detail: string
-}
+export type PistonEvent =
+  | {
+      readonly at: PositionKey
+      readonly kind: 'extended' | 'retracted' | 'refused'
+      /** One line, for the HUD. Says WHY a refusal happened, never just "no". */
+      readonly detail: string
+    }
+  | {
+      readonly at: PositionKey
+      readonly kind: 'failed'
+      readonly detail: string
+      readonly failure: BlockRegistryResolutionFailure
+    }
 
 const isPowered = (power: PowerMap, key: PositionKey): boolean =>
   neighbourKeys(key).some((neighbour) => powerAt(power, neighbour) > 0)
@@ -475,6 +483,16 @@ export const applyPistons = (
     }
 
     const outcome = planPush(column.blocks.map(blockRefOf), previewCapabilities)
+
+    if (outcome.kind === 'failed') {
+      events.push({
+        at: key,
+        kind: 'failed',
+        failure: outcome.failure,
+        detail: `capability lookup failed at block ${String(outcome.at + 1)}: ${outcome.failure._tag}: ${outcome.failure.message}`,
+      })
+      continue
+    }
 
     if (outcome.kind === 'refused') {
       const { reason, at } = outcome.refusal

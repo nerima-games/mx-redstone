@@ -36,6 +36,11 @@ jobs:
           cachix-cache: ${{ vars.CACHIX_CACHE }}
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
+      - name: Check organization ast-grep conformance
+        uses: nerima-games/.github/conformance/ast-grep@f594176eb568341ab31babbfef16a260979f75f2
+        with:
+          public-api-baseline: .ast-grep/public-api-baseline.json
+
       - name: Configure GitHub Packages authentication
         run: pnpm config set --location=global //npm.pkg.github.com/:_authToken "$NODE_AUTH_TOKEN"
         env:

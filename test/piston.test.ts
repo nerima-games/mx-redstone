@@ -7,25 +7,38 @@
  * `packages/app/application/frame/stages/redstone-piston-world-effects.ts:12-33`.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result, Schema } from 'effect'
+import type { BlockRegistryResolutionFailure } from '@nerima-games/mc-kernel'
 import {
   applyPistonPlan,
   isPistonMovable,
   PISTON_PUSH_LIMIT,
   planPush,
   planPistonTransition,
+  PistonPositionSchema,
   validatePistonPlan,
   type BlockCapabilityLookup,
   type BlockRef,
 } from '../src/domain/piston'
 
+const position = (x: number, y = 0, z = 0) =>
+  Schema.decodeUnknownSync(PistonPositionSchema)({ x, y, z })
+
 /** A lookup standing in for kernel's capability table. */
 const immovableSet = (blocks: ReadonlyArray<BlockRef>): BlockCapabilityLookup => {
   const set = new Set(blocks)
-  return { pistonImmovable: (block) => set.has(block) }
+  return { pistonImmovable: (block) => Result.succeed(set.has(block)) }
 }
 
-const NOTHING_IS_IMMOVABLE: BlockCapabilityLookup = { pistonImmovable: () => false }
+const NOTHING_IS_IMMOVABLE: BlockCapabilityLookup = { pistonImmovable: () => Result.succeed(false) }
+const capabilityResolutionFailure: BlockRegistryResolutionFailure = {
+  _tag: 'BlockCapabilityFailure',
+  reason: 'unknown-key',
+  message: 'The capability registry could not resolve pistonImmovable',
+}
+const failingCapabilities: BlockCapabilityLookup = {
+  pistonImmovable: () => Result.fail(capabilityResolutionFailure),
+}
 
 describe('REGRESSION: the immovable set is a kernel capability flag, not a local constant', () => {
   it.effect('a block name this repository has never heard of is immovable if — and only if — the lookup says so', () =>
@@ -54,10 +67,10 @@ describe('REGRESSION: the immovable set is a kernel capability flag, not a local
       const capabilities = immovableSet(referenceList)
 
       for (const block of referenceList) {
-        expect(isPistonMovable(capabilities, block)).toBe(false)
+        expect(isPistonMovable(capabilities, block)).toStrictEqual(Result.succeed(false))
       }
       // And a stone block, which is not on that list, moves.
-      expect(isPistonMovable(capabilities, 'STONE')).toBe(true)
+      expect(isPistonMovable(capabilities, 'STONE')).toStrictEqual(Result.succeed(true))
     }),
   )
 
@@ -65,7 +78,7 @@ describe('REGRESSION: the immovable set is a kernel capability flag, not a local
     Effect.sync(() => {
       // Nonsense as a game rule, and exactly the point: mx-redstone has no
       // opinion about bedrock. Adding one here would be the reference's mistake.
-      expect(isPistonMovable(NOTHING_IS_IMMOVABLE, 'BEDROCK')).toBe(true)
+      expect(isPistonMovable(NOTHING_IS_IMMOVABLE, 'BEDROCK')).toStrictEqual(Result.succeed(true))
     }),
   )
 })
@@ -94,6 +107,16 @@ describe('push planning', () => {
       expect(outcome).toStrictEqual({
         kind: 'refused',
         refusal: { reason: 'immovable', at: 2 },
+      })
+    }),
+  )
+
+  it.effect('returns kernel capability lookup failures instead of treating them as refusals', () =>
+    Effect.sync(() => {
+      expect(planPush(['STONE'], failingCapabilities)).toStrictEqual({
+        kind: 'failed',
+        at: 0,
+        failure: capabilityResolutionFailure,
       })
     }),
   )
@@ -157,7 +180,7 @@ describe('positioned piston movement', () => {
   it.effect('extends a 12-block east-facing chain farthest-first', () =>
     Effect.sync(() => {
       const outcome = planPistonTransition(
-        { piston: { x: 0, y: 0, z: 0 }, facing: 'east', kind: 'normal', state: 'retracted', powered: true },
+        { piston: position(0, 0, 0), facing: 'east', kind: 'normal', state: 'retracted', powered: true },
         cells(Array.from({ length: PISTON_PUSH_LIMIT }, (_, index) => [index + 1, `BLOCK_${String(index)}`])),
         NOTHING_IS_IMMOVABLE,
       )
@@ -172,7 +195,7 @@ describe('positioned piston movement', () => {
 
   it.effect('refuses the 13th block and unavailable world boundaries', () =>
     Effect.sync(() => {
-      const request = { piston: { x: 0, y: 0, z: 0 }, facing: 'east' as const, kind: 'normal' as const, state: 'retracted' as const, powered: true }
+      const request = { piston: position(0, 0, 0), facing: 'east' as const, kind: 'normal' as const, state: 'retracted' as const, powered: true }
       const tooLong = planPistonTransition(
         request,
         cells(Array.from({ length: PISTON_PUSH_LIMIT + 1 }, (_, index) => [index + 1, 'STONE'])),
@@ -181,7 +204,7 @@ describe('positioned piston movement', () => {
       expect(tooLong.kind === 'refused' ? tooLong.refusal.reason : undefined).toBe('too-long')
       const boundary = planPistonTransition(
         request,
-        { read: (position) => position.x === 2 ? { kind: 'out-of-world' } : { kind: 'block', block: 'STONE' } },
+        { read: (coordinate) => coordinate.x === 2 ? { kind: 'out-of-world' } : { kind: 'block', block: 'STONE' } },
         NOTHING_IS_IMMOVABLE,
       )
       expect(boundary.kind === 'refused' ? boundary.refusal.reason : undefined).toBe('out-of-world')
@@ -191,16 +214,43 @@ describe('positioned piston movement', () => {
   it.effect('a sticky piston pulls one movable block into the vacated head cell', () =>
     Effect.sync(() => {
       const outcome = planPistonTransition(
-        { piston: { x: 0, y: 0, z: 0 }, facing: 'up', kind: 'sticky', state: 'extended', powered: false },
+        { piston: position(0, 0, 0), facing: 'up', kind: 'sticky', state: 'extended', powered: false },
         { read: ({ y }) => y === 2 ? { kind: 'block', block: 'STONE' } : { kind: 'empty' } },
         NOTHING_IS_IMMOVABLE,
       )
       expect(outcome).toStrictEqual({
         kind: 'move',
         plan: {
-          piston: { x: 0, y: 0, z: 0 }, facing: 'up', kind: 'sticky', fromState: 'extended', toState: 'retracted',
-          moves: [{ block: 'STONE', from: { x: 0, y: 2, z: 0 }, to: { x: 0, y: 1, z: 0 } }],
+          piston: position(0, 0, 0), facing: 'up', kind: 'sticky', fromState: 'extended', toState: 'retracted',
+          moves: [{ block: 'STONE', from: position(0, 2, 0), to: position(0, 1, 0) }],
         },
+      })
+    }),
+  )
+
+  it.effect('preserves kernel capability lookup failures during sticky retraction and extension', () =>
+    Effect.sync(() => {
+      const piston = position(0, 0, 0)
+      const stickyRetraction = planPistonTransition(
+        { piston, facing: 'east', kind: 'sticky', state: 'extended', powered: false },
+        { read: ({ x }) => x === 2 ? { kind: 'block', block: 'STONE' } : { kind: 'empty' } },
+        failingCapabilities,
+      )
+      const extension = planPistonTransition(
+        { piston, facing: 'east', kind: 'normal', state: 'retracted', powered: true },
+        cells([[1, 'STONE']]),
+        failingCapabilities,
+      )
+
+      expect(stickyRetraction).toStrictEqual({
+        kind: 'failed',
+        failure: capabilityResolutionFailure,
+        position: { x: 2, y: 0, z: 0 },
+      })
+      expect(extension).toStrictEqual({
+        kind: 'failed',
+        failure: capabilityResolutionFailure,
+        position: { x: 1, y: 0, z: 0 },
       })
     }),
   )
@@ -208,42 +258,42 @@ describe('positioned piston movement', () => {
   it.effect('rejects a malformed duplicate plan without invoking the atomic commit', () =>
     Effect.gen(function* () {
       let commits = 0
-      const move = { block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }
-      const result = yield* Effect.either(applyPistonPlan({
-        piston: { x: 0, y: 0, z: 0 }, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended', moves: [move, move],
+      const move = { block: 'STONE', from: position(1, 0, 0), to: position(2, 0, 0) }
+      const result = yield* Effect.result(applyPistonPlan({
+        piston: position(0, 0, 0), facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended', moves: [move, move],
       }, { commit: () => Effect.sync(() => { commits += 1 }) }))
-      expect(result._tag).toBe('Left')
+      expect(result._tag).toBe('Failure')
       expect(commits).toBe(0)
 
       expect(validatePistonPlan({
-        piston: { x: 0, y: 0, z: 0 }, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended',
-        moves: [{ block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 3, y: 0, z: 0 } }],
+        piston: position(0, 0, 0), facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended',
+        moves: [{ block: 'STONE', from: position(1, 0, 0), to: position(3, 0, 0) }],
       })).toStrictEqual({ reason: 'collision', position: { x: 3, y: 0, z: 0 } })
     }),
   )
 
   it.effect('rejects plans that bypass the push limit or deterministic movement shape', () =>
     Effect.gen(function* () {
-      const piston = { x: 0, y: 0, z: 0 }
+      const piston = position(0, 0, 0)
       const moves = Array.from({ length: PISTON_PUSH_LIMIT + 1 }, (_, index) => {
-        const from = { x: PISTON_PUSH_LIMIT + 1 - index, y: 0, z: 0 }
-        return { block: `BLOCK_${String(index)}`, from, to: { ...from, x: from.x + 1 } }
+        const from = position(PISTON_PUSH_LIMIT + 1 - index)
+        return { block: `BLOCK_${String(index)}`, from, to: position(from.x + 1, from.y, from.z) }
       })
       let commits = 0
-      const result = yield* Effect.either(applyPistonPlan({
+      const result = yield* Effect.result(applyPistonPlan({
         piston, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended', moves,
       }, { commit: () => Effect.sync(() => { commits += 1 }) }))
       expect(result).toMatchObject({
-        _tag: 'Left',
-        left: { reason: 'too-long', position: { x: PISTON_PUSH_LIMIT + 1, y: 0, z: 0 } },
+        _tag: 'Failure',
+        failure: { reason: 'too-long', position: { x: PISTON_PUSH_LIMIT + 1, y: 0, z: 0 } },
       })
       expect(commits).toBe(0)
 
       expect(validatePistonPlan({
         piston, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended',
         moves: [
-          { block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } },
-          { block: 'DIRT', from: { x: 2, y: 0, z: 0 }, to: { x: 3, y: 0, z: 0 } },
+          { block: 'STONE', from: position(1, 0, 0), to: position(2, 0, 0) },
+          { block: 'DIRT', from: position(2, 0, 0), to: position(3, 0, 0) },
         ],
       })).toStrictEqual({ reason: 'collision', position: { x: 1, y: 0, z: 0 } })
     }),
@@ -252,28 +302,28 @@ describe('positioned piston movement', () => {
   it.effect('accepts only the single two-to-one-cell pull shape for sticky retraction', () =>
     Effect.sync(() => {
       const base = {
-        piston: { x: 0, y: 0, z: 0 }, facing: 'east' as const, kind: 'sticky' as const,
+        piston: position(0, 0, 0), facing: 'east' as const, kind: 'sticky' as const,
         fromState: 'extended' as const, toState: 'retracted' as const,
       }
       expect(validatePistonPlan({
         ...base,
-        moves: [{ block: 'STONE', from: { x: 2, y: 0, z: 0 }, to: { x: 1, y: 0, z: 0 } }],
+        moves: [{ block: 'STONE', from: position(2, 0, 0), to: position(1, 0, 0) }],
       })).toBeUndefined()
       expect(validatePistonPlan({
         ...base,
-        moves: [{ block: 'STONE', from: { x: 3, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }],
+        moves: [{ block: 'STONE', from: position(3, 0, 0), to: position(2, 0, 0) }],
       })).toStrictEqual({ reason: 'collision', position: { x: 3, y: 0, z: 0 } })
       expect(validatePistonPlan({
         ...base,
         kind: 'normal',
-        moves: [{ block: 'STONE', from: { x: 2, y: 0, z: 0 }, to: { x: 1, y: 0, z: 0 } }],
+        moves: [{ block: 'STONE', from: position(2, 0, 0), to: position(1, 0, 0) }],
       })).toStrictEqual({ reason: 'invalid-transition', position: { x: 2, y: 0, z: 0 } })
     }),
   )
 
   it.effect('covers retraction, refusal, validation, and successful atomic apply boundaries', () =>
     Effect.gen(function* () {
-      const piston = { x: 0, y: 0, z: 0 }
+      const piston = position(0, 0, 0)
       const extended = { piston, facing: 'east' as const, kind: 'normal' as const, state: 'extended' as const, powered: true }
       expect(planPistonTransition(extended, cells([]), NOTHING_IS_IMMOVABLE)).toStrictEqual({ kind: 'noop', state: 'extended' })
       expect(planPistonTransition({ ...extended, powered: false }, cells([]), NOTHING_IS_IMMOVABLE)).toMatchObject({
@@ -298,7 +348,7 @@ describe('positioned piston movement', () => {
 
       const validPlan = {
         piston, facing: 'east' as const, kind: 'normal' as const, fromState: 'retracted' as const, toState: 'extended' as const,
-        moves: [{ block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }],
+        moves: [{ block: 'STONE', from: position(1, 0, 0), to: position(2, 0, 0) }],
       }
       expect(validatePistonPlan(validPlan)).toBeUndefined()
       const [firstMove] = validPlan.moves
@@ -307,7 +357,7 @@ describe('positioned piston movement', () => {
       }
       expect(validatePistonPlan({
         ...validPlan,
-        moves: [firstMove, { block: 'DIRT', from: { x: 3, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }],
+        moves: [firstMove, { block: 'DIRT', from: position(3, 0, 0), to: position(2, 0, 0) }],
       })).toMatchObject({ reason: 'duplicate' })
 
       let committed = false
@@ -327,11 +377,11 @@ describe('positioned piston movement', () => {
       // that must be caught here, not assumed away because the in-process
       // planner happens to be well-behaved.
       const twoBlockPull = {
-        piston: { x: 0, y: 0, z: 0 }, facing: 'east' as const, kind: 'sticky' as const,
+        piston: position(0, 0, 0), facing: 'east' as const, kind: 'sticky' as const,
         fromState: 'extended' as const, toState: 'retracted' as const,
         moves: [
-          { block: 'STONE', from: { x: 3, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } },
-          { block: 'DIRT', from: { x: 2, y: 0, z: 0 }, to: { x: 1, y: 0, z: 0 } },
+          { block: 'STONE', from: position(3, 0, 0), to: position(2, 0, 0) },
+          { block: 'DIRT', from: position(2, 0, 0), to: position(1, 0, 0) },
         ],
       }
 
@@ -351,7 +401,7 @@ describe('positioned piston movement', () => {
       // a real move must be refused rather than validated as if it were a
       // legitimate (if pointless) move.
       const noopClaimedAsMove = {
-        piston: { x: 5, y: 6, z: 7 }, facing: 'up' as const, kind: 'normal' as const,
+        piston: position(5, 6, 7), facing: 'up' as const, kind: 'normal' as const,
         fromState: 'extended' as const, toState: 'extended' as const,
         moves: [],
       }

@@ -13,12 +13,13 @@
  * in one expression) and `:289-291` (the compare rule stated in words).
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Schema } from 'effect'
 import {
   CONTAINER_SIGNAL_FLOOR,
   CONTAINER_SIGNAL_SPAN,
   comparatorOutput,
   containerSignalStrength,
+  ContainerSlotSchema,
   type ContainerSlot,
 } from '../src/domain/comparator'
 import { MAX_POWER_LEVEL } from '../src/domain/signal-level'
@@ -26,7 +27,7 @@ import { MAX_POWER_LEVEL } from '../src/domain/signal-level'
 const LEVELS = Array.from({ length: MAX_POWER_LEVEL + 1 }, (_, level) => level)
 
 describe('comparator arithmetic', () => {
-  it.effect('compare mode passes the rear through exactly when no side beats it', () =>
+  it.effect('compare mode passes the rear through when it is at least as strong as every side', () =>
     Effect.sync(() => {
       // The whole 16 x 16 space, both directions of the comparison, asserted
       // against the rule rather than against a table — a table would be the same
@@ -102,8 +103,10 @@ describe('comparator arithmetic', () => {
 })
 
 describe('container fullness — the reading a comparator takes from a chest', () => {
+  const slot = (count: number, maxStack = 64): ContainerSlot =>
+    Schema.decodeUnknownSync(ContainerSlotSchema)({ count, maxStack })
   const slots = (counts: ReadonlyArray<number>, maxStack = 64): ReadonlyArray<ContainerSlot> =>
-    counts.map((count) => ({ count, maxStack }))
+    counts.map((count) => slot(count, maxStack))
 
   it.effect('the floor and the span add up to the top of the signal range', () =>
     Effect.sync(() => {
@@ -130,6 +133,9 @@ describe('container fullness — the reading a comparator takes from a chest', (
     Effect.sync(() => {
       expect(containerSignalStrength(slots([0, 0, 0]))).toBe(0)
       expect(containerSignalStrength([])).toBe(0)
+      const unusableSlot = slot(0)
+      Object.defineProperty(unusableSlot, 'maxStack', { value: 0 })
+      expect(containerSignalStrength([unusableSlot])).toBe(0)
     }),
   )
 
@@ -148,10 +154,7 @@ describe('container fullness — the reading a comparator takes from a chest', (
       // The reason `ContainerSlot.maxStack` is per-slot rather than mc-kernel's
       // single MAX_STACK_COUNT = 64. A chest of buckets is full; a rule that
       // divided by 64 would call it 1/64 full and report 1.
-      const buckets: ReadonlyArray<ContainerSlot> = Array.from({ length: 27 }, () => ({
-        count: 1,
-        maxStack: 1,
-      }))
+      const buckets: ReadonlyArray<ContainerSlot> = Array.from({ length: 27 }, () => slot(1, 1))
       expect(containerSignalStrength(buckets)).toBe(MAX_POWER_LEVEL)
     }),
   )
@@ -182,25 +185,26 @@ describe('container fullness — the reading a comparator takes from a chest', (
     }),
   )
 
-  it.effect('REGRESSION: a corrupt slot contributes nothing rather than poisoning every comparator on the board', () =>
+  it.effect('REGRESSION: malformed external slots are rejected before they can poison comparator arithmetic', () =>
     Effect.sync(() => {
-      // The precedent is mc-sim's `heldCount` (domain/inventory.ts), which
-      // exists because arithmetic on NaN is contagious. Here one bad slot would
-      // make the reading NaN, `NaN > 0` is false, and the symptom would be a
-      // sorter that stopped working — not an error anybody could find.
-      const poisoned: ReadonlyArray<ContainerSlot> = [
+      // A raw malformed slot can no longer inhabit ContainerSlot. Validate it at
+      // the boundary so NaN or an invalid capacity never reaches arithmetic.
+      const malformedSlots: ReadonlyArray<unknown> = [
         { count: Number.NaN, maxStack: 64 },
         { count: 64, maxStack: 0 },
         { count: 5, maxStack: Number.POSITIVE_INFINITY },
-        { count: 64, maxStack: 64 },
       ]
-      const reading = containerSignalStrength(poisoned)
+      for (const malformed of malformedSlots) {
+        expect(() => Schema.decodeUnknownSync(ContainerSlotSchema)(malformed)).toThrow()
+      }
+
+      const reading = containerSignalStrength(slots([64]))
       expect(Number.isInteger(reading)).toBe(true)
       expect(reading).toBeGreaterThan(0)
       expect(reading).toBeLessThanOrEqual(MAX_POWER_LEVEL)
 
       // A slot holding more than it can is clamped, not counted twice over.
-      expect(containerSignalStrength([{ count: 6400, maxStack: 64 }])).toBe(MAX_POWER_LEVEL)
+      expect(containerSignalStrength([slot(99, 64)])).toBe(MAX_POWER_LEVEL)
     }),
   )
 })

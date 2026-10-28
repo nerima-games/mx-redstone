@@ -1,0 +1,44 @@
+[
+  {
+    "count": 1,
+    "file": "src/domain/power-graph.ts",
+    "ruleId": "no-raw-exported-function-parameter",
+    "text": "number"
+  },
+  {
+    "count": 1,
+    "file": "src/domain/pressure-plate.ts",
+    "ruleId": "no-raw-exported-function-parameter",
+    "text": "number"
+  },
+  {
+    "count": 1,
+    "file": "src/domain/power-graph.ts",
+    "ruleId": "no-raw-exported-function-return",
+    "text": "number"
+  },
+  {
+    "count": 3,
+    "file": "src/domain/power-graph.ts",
+    "ruleId": "no-raw-exported-type-field",
+    "text": "number"
+  },
+  {
+    "count": 4,
+    "file": "src/domain/power-timing.ts",
+    "ruleId": "no-raw-exported-type-field",
+    "text": "number"
+  },
+  {
+    "count": 1,
+    "file": "src/domain/pressure-plate.ts",
+    "ruleId": "no-raw-exported-type-field",
+    "text": "number"
+  },
+  {
+    "count": 2,
+    "file": "src/domain/target-block.ts",
+    "ruleId": "no-raw-exported-type-field",
+    "text": "number"
+  }
+]

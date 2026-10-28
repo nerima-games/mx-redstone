@@ -1,0 +1,17 @@
+export const REDSTONE_PLACEMENT_ITEMS: ReadonlySet<string> = new Set([
+  'redstone_dust',
+  'redstone_torch',
+  'lever',
+  'stone_button',
+  'repeater',
+  'redstone_lamp',
+  'observer',
+  'comparator',
+  'dispenser',
+  'dropper',
+  'hopper',
+  'piston',
+  'powered_rail',
+  'door',
+  'pressure_plate',
+])

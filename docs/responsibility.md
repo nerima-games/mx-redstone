@@ -129,8 +129,8 @@ application/
   world-runtime.ts            # runtime の意味的 port
   redstone-host-port.ts       # host との読み書き境界
 domain/
-  position-key.ts             # Position のキー表現。kernel 公開時に削除
-  block-ref.ts                # ブロックの不透明な参照。kernel 公開時に削除
+  position-key.ts             # 2D 回路グラフ用の文字列 key。kernel の 3D world key とは別
+  block-ref.ts                # domain の不透明な block-name token。host 境界で kernel BlockId に解決
   signal-level.ts             # 信号の値域（0-15）。規則 3 つが共有するので独立している
   power-graph.ts              # 電力グラフ。規則を「置く」場所であって規則そのものではない
   piston.ts                   # ピストン伸縮の typed plan と atomic apply

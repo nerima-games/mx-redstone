@@ -29,11 +29,11 @@ const config: ReturnType<typeof defineConfig> = defineConfig({
         '**/*.spec.ts',
         // PURE_TYPE: a single type alias, zero executable statements. v8 reports
         // such a file as 0% rather than 100%, which would make the headline
-        // number meaningless. It is a placeholder for mc-kernel's coordinate
-        // vocabulary and is deleted when kernel is published.
+        // number meaningless. This is a two-dimensional circuit-graph key;
+        // kernel's three-dimensional world position key is not interchangeable.
         'src/domain/position-key.ts',
-        // PURE_TYPE, same reasoning: a placeholder for mc-kernel's block
-        // identity, deleted when kernel is published.
+        // PURE_TYPE, same reasoning: domain rules keep opaque block-name
+        // references and resolve them to kernel BlockId only at the host boundary.
         'src/domain/block-ref.ts',
       ],
       reporter: ['text', 'json', 'html', 'lcov'],

@@ -11,11 +11,16 @@ import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
 } from '../src/application/world-runtime'
-import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from '@nerima-games/mc-kernel'
+import {
+  DeltaTimeSecs,
+  FixedDurationSecs,
+  StageId,
+  type GameModule,
+  type StageRegistration,
+} from '@nerima-games/mc-kernel'
 import { MAX_POWER_LEVEL, powerAt, type CircuitBoard, type Component } from '../src/domain/power-graph'
 import {
   makeRedstoneFrameState,
-  makeRuntimeRedstoneStages,
   makeRedstoneStages,
   MAX_TICKS_PER_FRAME,
   redstoneModule,
@@ -137,9 +142,9 @@ describe('fixed-rate redstone ticks', () => {
       // every single frame: redstone never runs at all. Carrying the remainder
       // is the entire mechanism.
       const FRAMES = 600
-      const DT = 1 / 60
+      const DT = DeltaTimeSecs(1 / 60)
 
-      let accumulated = 0
+      let accumulated = FixedDurationSecs(0)
       let executed = 0
       for (let frame = 0; frame < FRAMES; frame += 1) {
         const { ticks, remainderSecs } = ticksForFrame(accumulated, DT)
@@ -161,7 +166,7 @@ describe('fixed-rate redstone ticks', () => {
       // The naive version, for contrast: reset every frame, run nothing ever.
       let naive = 0
       for (let frame = 0; frame < FRAMES; frame += 1) {
-        naive += ticksForFrame(0, DT).ticks
+        naive += ticksForFrame(FixedDurationSecs(0), DT).ticks
       }
       expect(naive).toBe(0)
     }),
@@ -169,7 +174,7 @@ describe('fixed-rate redstone ticks', () => {
 
   it.effect('a frame shorter than one tick runs nothing and banks the time', () =>
     Effect.sync(() => {
-      const { ticks, remainderSecs } = ticksForFrame(0, 0.016)
+      const { ticks, remainderSecs } = ticksForFrame(FixedDurationSecs(0), DeltaTimeSecs(0.016))
       expect(ticks).toBe(0)
       expect(remainderSecs).toBeCloseTo(0.016, 10)
     }),
@@ -177,7 +182,7 @@ describe('fixed-rate redstone ticks', () => {
 
   it.effect('REGRESSION: a long frame is capped and the excess is DISCARDED, not banked (no spiral of death)', () =>
     Effect.sync(() => {
-      const { ticks, remainderSecs } = ticksForFrame(0, 10)
+      const { ticks, remainderSecs } = ticksForFrame(FixedDurationSecs(0), DeltaTimeSecs(10))
       expect(ticks).toBe(MAX_TICKS_PER_FRAME)
       // Banking the other ~96 ticks' worth of time guarantees the next frame is
       // also over budget, and the one after that.
@@ -187,13 +192,18 @@ describe('fixed-rate redstone ticks', () => {
 
   it.effect('dt = 0 runs nothing and loses nothing', () =>
     Effect.sync(() => {
-      expect(ticksForFrame(0.05, 0)).toStrictEqual({ ticks: 0, remainderSecs: 0.05 })
+      expect(
+        ticksForFrame(FixedDurationSecs(0.05), DeltaTimeSecs(0)),
+      ).toStrictEqual({ ticks: 0, remainderSecs: 0.05 })
     }),
   )
 
   it.effect('a negative dt is treated as zero rather than rewinding the accumulator', () =>
     Effect.sync(() => {
-      expect(ticksForFrame(0.05, -1)).toStrictEqual({ ticks: 0, remainderSecs: 0.05 })
+      expect(
+        // @ts-expect-error The brand prevents this malformed JavaScript call.
+        ticksForFrame(FixedDurationSecs(0.05), -1),
+      ).toStrictEqual({ ticks: 0, remainderSecs: 0.05 })
     }),
   )
 
@@ -202,7 +212,11 @@ describe('fixed-rate redstone ticks', () => {
       // `tickSecs` is an override so a preview can slow redstone down to watch a
       // circuit propagate. Sliding it to zero must stall the simulation, not
       // produce `Infinity` ticks.
-      expect(ticksForFrame(0.5, 1, { tickSecs: 0 })).toStrictEqual({
+      expect(
+        ticksForFrame(FixedDurationSecs(0.5), DeltaTimeSecs(1), {
+          tickSecs: FixedDurationSecs(0),
+        }),
+      ).toStrictEqual({
         ticks: 0,
         remainderSecs: 0.5,
       })
@@ -376,16 +390,18 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
-  it.effect('its frameStages IS the registration Effect this file already exported', () =>
+  it.effect('builds the declared frame stages through the GameModule and remains re-entrant', () =>
     Effect.gen(function* () {
-      expect(redstoneModule.frameStages).toBe(makeRuntimeRedstoneStages)
       expect(redstoneModule.layers).toBe(RedstoneWorldRuntimeLayer)
 
       // ...and it is re-entrant: two builds share no state, which is why it was
       // an Effect in the first place (plan.md §3.8 on app-scope singletons).
       const first = yield* redstoneModule.frameStages.pipe(Effect.provide(redstoneModule.layers))
       const second = yield* redstoneModule.frameStages.pipe(Effect.provide(redstoneModule.layers))
+      const expectedStageIds = [REDSTONE_STAGE_IDS.power, REDSTONE_STAGE_IDS.effects]
       expect(first).not.toBe(second)
+      expect(first.map((stage) => stage.id)).toStrictEqual(expectedStageIds)
+      expect(second.map((stage) => stage.id)).toStrictEqual(expectedStageIds)
     }),
   )
 

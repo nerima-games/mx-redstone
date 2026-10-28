@@ -25,12 +25,19 @@
  * below is bounded anyway, because relying on somebody else's clamp is how you
  * discover it was removed.
  */
-import type { DeltaTimeSecs, GameModule, StageRegistration } from '@nerima-games/mc-kernel'
-import { Effect, Option, Ref } from 'effect'
+import {
+  type DeltaTimeSecs,
+  FixedDurationSecs,
+  type GameModule,
+  NonNegativeTickCount,
+  type StageRegistration,
+} from '@nerima-games/mc-kernel'
+import { Effect, Option, Ref, Schema } from 'effect'
 import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
 import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
+  type RedstoneWorldRuntimeStateError,
   type RedstoneWorldState,
   collectHopperTransferEvents,
   collectLampTransitions,
@@ -44,8 +51,17 @@ import { type TimedCircuitState, advanceTimedCircuit } from '../domain/power-tim
 import type { CircuitBoard } from '../domain/power-graph.js'
 import type { PositionKey } from '../domain/position-key.js'
 
+const ZERO_TICK_COUNT = 0
+const REDSTONE_TICK_SECONDS = 0.1
+const MAXIMUM_TICKS_PER_FRAME = 4
+const fixedDurationSecsSchema = Schema.Number.pipe(Schema.fromBrand('FixedDurationSecs', FixedDurationSecs))
+const nonNegativeTickCountSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(ZERO_TICK_COUNT))
+  .pipe(Schema.fromBrand('NonNegativeTickCount', NonNegativeTickCount))
+const fixedDurationSecsFromNumber = Schema.decodeUnknownSync(fixedDurationSecsSchema)
+const nonNegativeTickCountFromNumber = Schema.decodeUnknownSync(nonNegativeTickCountSchema)
+
 /** Vanilla redstone runs at 10 Hz: one tick every two game ticks. */
-export const REDSTONE_TICK_SECS = 0.1
+export const REDSTONE_TICK_SECS: FixedDurationSecs = fixedDurationSecsFromNumber(REDSTONE_TICK_SECONDS)
 
 /**
  * Upper bound on redstone ticks executed in a single frame.
@@ -55,7 +71,7 @@ export const REDSTONE_TICK_SECS = 0.1
  * excess makes redstone run slow for one frame, which a player will not see;
  * the alternative is a freeze, which they will.
  */
-export const MAX_TICKS_PER_FRAME = 4
+export const MAX_TICKS_PER_FRAME: NonNegativeTickCount = nonNegativeTickCountFromNumber(MAXIMUM_TICKS_PER_FRAME)
 
 /**
  * The empty board.
@@ -80,7 +96,7 @@ export type RedstoneFrameState = RedstoneWorldState
 export const makeRedstoneFrameState: Effect.Effect<RedstoneFrameState> = makeRedstoneWorldState
 
 /** How many ticks a frame contributes when `tickSecs` is misconfigured, or when nothing is due yet. */
-const NO_TICKS = 0
+const NO_TICKS = nonNegativeTickCountFromNumber(ZERO_TICK_COUNT)
 
 /** A tick duration at or below this is misconfigured; treat the frame as advancing no ticks at all. */
 const NON_POSITIVE_TICK_SECS = 0
@@ -101,10 +117,10 @@ const DISCARDED_REMAINDER_SECS = 0
  * would make redstone run at 6 Hz instead of 10.
  */
 export const ticksForFrame = (
-  accumulatedSecs: number,
-  dt: number,
-  options: { readonly tickSecs?: number; readonly maxTicks?: number } = {},
-): { readonly ticks: number; readonly remainderSecs: number } => {
+  accumulatedSecs: FixedDurationSecs,
+  dt: DeltaTimeSecs,
+  options: { readonly tickSecs?: FixedDurationSecs; readonly maxTicks?: NonNegativeTickCount } = {},
+): { readonly ticks: NonNegativeTickCount; readonly remainderSecs: FixedDurationSecs } => {
   const tickSecs = options.tickSecs ?? REDSTONE_TICK_SECS
   const maxTicks = options.maxTicks ?? MAX_TICKS_PER_FRAME
   if (tickSecs <= NON_POSITIVE_TICK_SECS) {
@@ -113,16 +129,16 @@ export const ticksForFrame = (
 
   const available = accumulatedSecs + Math.max(MIN_DELTA_SECS, dt)
   const wanted = Math.floor(available / tickSecs)
-  const ticks = Math.min(wanted, maxTicks)
+  const ticks = nonNegativeTickCountFromNumber(Math.min(wanted, maxTicks))
 
   // When the cap bites, the un-run time is DISCARDED rather than banked.
   // Banking it guarantees the next frame is also over budget, which is the
   // Spiral of death.
-  const remainderAfterCap = (): number => {
+  const remainderAfterCap = (): FixedDurationSecs => {
     if (wanted > maxTicks) {
-      return DISCARDED_REMAINDER_SECS
+      return fixedDurationSecsFromNumber(DISCARDED_REMAINDER_SECS)
     }
-    return available - ticks * tickSecs
+    return fixedDurationSecsFromNumber(available - ticks * tickSecs)
   }
   const remainderSecs = remainderAfterCap()
 
@@ -134,22 +150,18 @@ const FIRST_TICK_INDEX = 0
 
 /** How much the tick counter advances per loop iteration. */
 const TICK_STEP = 1
+const ONE_TICK = nonNegativeTickCountFromNumber(TICK_STEP)
 
 /**
- * Runs `board` forward `ticks` redstone ticks from `seed.timed`, feeding the
- * frame's pressed buttons into only the first one — the rest see none, since
- * a button press is a one-tick edge and not a held condition.
- *
- * Pure and separate from the effectful stage below so that stage's statement
- * count stays under the threshold; the loop itself is unchanged. `timed` and
- * `pressedButtons` travel together in `seed` so the parameter count stays
- * under its own threshold.
+ * Runs `board` forward `ticks` redstone ticks from `seed.timed`, retaining
+ * each intermediate state so hopper events use the power from their own tick.
+ * The frame's pressed buttons enter only the first tick.
  */
 const advancePower = (
   board: CircuitBoard,
-  ticks: number,
+  ticks: NonNegativeTickCount,
   seed: { readonly timed: TimedCircuitState; readonly pressedButtons: ReadonlySet<PositionKey> },
-): TimedCircuitState => {
+): ReadonlyArray<TimedCircuitState> => {
   const buttonsForTick = (tick: number): ReadonlySet<PositionKey> => {
     if (tick === FIRST_TICK_INDEX) {
       return seed.pressedButtons
@@ -157,24 +169,24 @@ const advancePower = (
     return new Set()
   }
 
+  const states: Array<TimedCircuitState> = []
   let next = seed.timed
   for (let tick = FIRST_TICK_INDEX; tick < ticks; tick += TICK_STEP) {
     next = advanceTimedCircuit(board, next, buttonsForTick(tick))
+    states.push(next)
   }
-  return next
+  return states
 }
 
-/**
- * Writes one tick's outcome back into `state` and drains the hopper cadence.
- * Split out of the power stage's `run` for the same statement-count reason
- * `advancePower` is; the writes and their order are unchanged.
- */
-const commitPowerTick = (state: RedstoneFrameState, next: TimedCircuitState, ticks: number) =>
-  Effect.gen(function* commitPowerTickEffect() {
-    yield* Ref.set(state.timedCircuit, next)
-    yield* Ref.set(state.power, next.power)
-    yield* collectHopperTransferEvents(state, ticks)
-    yield* Ref.update(state.tickCount, (count) => count + ticks)
+/** Commits every simulated tick and records hopper power for the same tick. */
+const commitPowerTicks = (state: RedstoneFrameState, states: ReadonlyArray<TimedCircuitState>) =>
+  Effect.gen(function* commitPowerTicksEffect() {
+    for (const next of states) {
+      yield* Ref.set(state.timedCircuit, next)
+      yield* Ref.set(state.power, next.power)
+      yield* collectHopperTransferEvents(state, ONE_TICK)
+      yield* Ref.update(state.tickCount, (count) => nonNegativeTickCountFromNumber(count + ONE_TICK))
+    }
   })
 
 /**
@@ -204,8 +216,8 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
         // `domain/power-graph.ts`.
         const pressedButtons = yield* Ref.getAndSet(state.pendingButtonPresses, new Set())
         const timed = yield* Ref.get(state.timedCircuit)
-        const next = advancePower(board, ticks, { pressedButtons, timed })
-        yield* commitPowerTick(state, next, ticks)
+        const nexts = advancePower(board, ticks, { pressedButtons, timed })
+        yield* commitPowerTicks(state, nexts)
       }),
   },
   {
@@ -249,12 +261,13 @@ export const makeRedstoneStages: Effect.Effect<ReadonlyArray<StageRegistration>>
 
 /** Registers stages over the same service instance that the host syncs and drains. */
 export const makeRuntimeRedstoneStages: Effect.Effect<
-  ReadonlyArray<StageRegistration>
+  ReadonlyArray<StageRegistration>,
+  RedstoneWorldRuntimeStateError
 > = Effect.flatMap(
   Effect.serviceOption(RedstoneWorldRuntime),
   Option.match({
     onNone: () => makeRedstoneStages,
-    onSome: (runtime) => Effect.succeed(redstoneStages(redstoneWorldStateFor(runtime))),
+    onSome: (runtime) => Effect.map(redstoneWorldStateFor(runtime), redstoneStages),
   }),
 )
 
@@ -274,6 +287,6 @@ export const redstoneModule: GameModule<
   never,
   never
 > = {
-  frameStages: makeRuntimeRedstoneStages,
+  frameStages: makeRuntimeRedstoneStages.pipe(Effect.orDie),
   layers: RedstoneWorldRuntimeLayer,
 }
