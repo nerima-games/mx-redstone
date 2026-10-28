@@ -68,6 +68,7 @@
     "@effect/vitest": "4.0.5",
     "@types/node": "26.6.5",
     "@vitest/coverage-v8": "5.0.5",
+    "fast-check": "4.10.2",
     "knip": "6.42.1",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
