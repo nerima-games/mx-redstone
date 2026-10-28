@@ -29,6 +29,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./qa/redstone-placement-items": {
+      "types": "./dist/qa/redstone-placement-items.d.ts",
+      "import": "./dist/qa/redstone-placement-items.js",
+      "default": "./dist/qa/redstone-placement-items.js"
     }
   },
   "files": [

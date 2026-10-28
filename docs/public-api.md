@@ -1,32 +1,14 @@
 # 公開 API
 
-## 1. 公開 API は stage 登録と意味的 runtime port である
+## 1. 公開 API は stage 登録、runtime port、W5 が使う piston planning である
 
-plan.md §3.12 は本リポジトリの公開 API を 1 行で書いている。
+plan.md §3.12 は主要な公開 API を stage 登録と定める。world runtime と host port は、stage の効果を世界へ適用する境界として追加した。
 
-> **主要な公開 API**: stage 登録のみ（電力グラフは内部実装）
+mc-compose の W5 host は root から `pistonPositionAt`、`planPistonTransition`、`validatePistonPlan`、`applyPistonPlan` を import する。これらの関数と計画に必要な型も package の contract である。
 
-電力グラフを内部実装とする制約は現在も変わらない。一方、stage が世界を読み書きするためには
-ホストとの境界が必要になった。そこで mc-compose が知ってよいものを、stage 登録に加えて
-`RedstoneWorldRuntime` の意味的 port に限定している。`CircuitBoard`、`PowerMap`、`planPush` は
-引き続き他リポジトリから名前で参照してはならない。
+`src/index.ts` は `domain/power-graph.ts` と `domain/piston.ts` を root から再 export する。power graph と piston module の残りの名前は、テストやプレビューのために見える内部 exports であり、外部 contract ではない。`CircuitBoard`、`PowerMap`、`planPush` は引き続き内部である。可視と公開の区別を §5 に記録する。
 
-`src/index.ts` はそれらを再エクスポートしている。矛盾ではない。
-理由は barrel の public/internal boundary comment に書いてある:
-
-> `domain/power-graph.ts` and `domain/piston.ts` are re-exported below because this
-> repository's tests and its circuit-board preview import them by name, and a package that
-> lies about its own entry point is worse than one that exports too much.
-
-つまり**「見える」と「公開」は別の語**であり、その区別を書き留めるのが本書の役目である。
-§5 の表がその台帳である。
-
-`test/public-api.test.ts` がバレルの中身を名前で固定している。
-他のテストはすべてモジュールを直接 import しているので、
-**`index.ts` から再エクスポートが 1 行落ちても、そのテスト以外は誰も気づかない**——
-気づかないまま壊れるのは mc-compose だけである（同ファイル `:4-7`）。
-同ファイルには「エクスポートに現れてはならないもの」の否定リストも 2 つあり、
-[testing.md](./testing.md) §3-0 で扱う。
+`test/public-api.test.ts` は root export の存在を名前で固定する。他のテストは主に各 module を直接 import するため、barrel から export が落ちても通常の unit test では見つからない。公開 contract と内部 export の一覧を §5 に記録する。
 
 ## 2. なぜ電力グラフは内部でなければならないのか
 
@@ -134,30 +116,25 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 
 `power` と `effects` の分割線は**純粋性の境界**である。
 
-- `redstone:power` — 電力マップを 1 redstone tick 進める。純粋。このモジュール自身の `Ref` 以外に触らない。
-- `redstone:effects` — 結果を世界に適用する。ピストンの伸縮、ランプの点灯、ディスペンサ発射、ホッパー移送、
-  オブザーバのパルス。すべて mc-sim / mc-worldgen への書き込み。
+- `redstone:power` は電力マップを 1 redstone tick 進める。純粋な計算で、このモジュール自身の `Ref` 以外に触らない。
+- `redstone:effects` は結果を runtime event queue に積む。ピストンの伸縮、ランプの点灯、ディスペンサ発射、ホッパー移送、
+  オブザーバのパルスを host が適用する。
 
 この境界があるから電力グラフ全体がワールドなしでテストできる。
 `the two registered stages split at the purity boundary: power, then effects` が順序と `after` を固定している。
 
-現状 `redstone:effects` はランプの on/off 変化を runtime port に蓄積する。
-ホストは stage 実行後に `drainLampTransitions` と `drainPistonTransitions` で変化を取り出し、世界へ適用する。
+host は stage 実行後に `applyRedstoneHostEvents` で5 queueを1 event batchとして drain し、piston plan と合わせて1つの `WorldCommitRequest` を作り、coordinator に1回 commit する。commit が失敗または中断した場合、batch は runtime に戻る。hopper event から `HopperService.transfer` を呼ぶ接続は follow-up に残る。
 ボタンは `pressButton(dimension, position)` で次tickのパルスを予約する。`pulseTicks` の既定値は
 10で、パルス中の再入力は残り時間を設定値へ戻す。リピーターの `delayTicks` は1–4に丸められ、
 入力のONとOFFの双方へ同じtick遅延を適用する。
-ピストン、ディスペンサ、ホッパー等の世界更新は、書き込み先サービスの公開後に追加する。
 
 ## 5. `index.ts` の全エクスポート
 
-**契約** = 他リポジトリが依存してよい。**内部（可視）** = このリポジトリのテストとプレビューのためだけに見えている。
+**契約** = 他リポジトリが依存してよい。**内部（可視）** = root から見えるが、他リポジトリが依存する約束ではない。
 
-> **`test/public-api.test.ts` のリストとは粒度が違う。**
-> あちらの 1 つ目のリストは「stage 登録まわりのエクスポート」を落とさないための固定であって、
-> 各名前が契約であるという主張ではない（`redstoneStages` / `makeRedstoneFrameState` /
-> `UPSTREAM_STAGE_IDS` は下表では内部扱いである）。
-> どれが契約かの権威は本表であり、`src/index.ts` と `test/public-api.test.ts` の
-> 両方がそう書いている。
+> **`test/public-api.test.ts` は root export の存在を固定する一覧である。**
+> そのうち stage internals と domain internals は export が見えていても契約ではない。
+> W5 が使う piston planning names は下表で契約として明示する。どの名前が契約かは本表が定める。
 >
 > 同ファイルには**不在**を固定するテストもある。
 > `REGRESSION: does not republish mc-kernel’s vocabulary as its own` は
@@ -204,32 +181,25 @@ mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしてお�
 | --- | --- | --- |
 | `RedstoneWorldRuntime` | **契約** | Effect service tag |
 | `RedstoneWorldRuntimeLayer` | **契約** | runtime port の Layer |
-| `RedstoneWorldRuntimeService` | **契約** | dimension snapshot の置換、ボタン入力、ランプ変化の drain |
+| `RedstoneWorldRuntimeService` | **契約** | dimension snapshot の置換、ボタン入力、5 event queue の drain と、失敗時の batch 復元 |
 | `RedstoneWorldSnapshot` / `RedstoneComponentSnapshot` / `RedstonePosition` | **契約** | compose/gameplay 型に依存しない意味型 |
-| `LampTransition` | **契約** | ホストが世界へ適用するランプの on/off 変化 |
+| `LampTransition` / `PoweredComponentKind` / `PoweredComponentTransition` / `PoweredPistonTransition` / `TriggeredComponentKind` / `HopperTransferEvent` / `RedstoneTriggerEvent` | **契約** | host が world write や action に変換する runtime event |
 
 snapshot から `CircuitBoard` を構築する関数、内部 state、node ID はバレルへ公開しない。
 
 ### `application/redstone-host-port.ts`
 
-旧 mc-compose `apps/multiplayer-server/redstone-runtime.ts` が
-持っていたホスト境界（ブロック文字列 → `RedstoneComponentSnapshot` の分類と、drain した
-イベントの適用）がここに来た。ホストは自分の `MultiplayerServerCore` 相当の実装を
-`RedstoneHostRealm`（`lookup` + `port`）として渡すだけでよい。
+host port は host block を `RedstoneComponentSnapshot` に分類し、runtime event を世界へ適用する。host は dimension と lookup を持つ `RedstoneHostRealm` の配列を渡し、書き込み側は別の `RedstoneHostWritePort` で request を組み立てて coordinator に commit する。
 
 | エクスポート | 区分 | 備考 |
 | --- | --- | --- |
 | `redstoneSnapshotFromRealm` | **契約** | ホストの生ブロック列から 1 dimension 分の `RedstoneWorldSnapshot` を組む |
-| `applyRedstoneHostEvents` | **契約** | runtime の 5 queue を drain して適用する。piston capability の registry 解決に失敗すると `BlockRegistryResolutionFailure` で失敗する。drain 済み event は戻さない |
-| `RedstoneHostBlock` / `RedstoneHostLookup` / `RedstoneHostWritePort` / `RedstoneHostRealm` | **契約** | ホストが実装する Port の形。ブロック名の語彙は含まない（`applyLampTransition` 等は真偽値を取る） |
+| `applyRedstoneHostEvents` | **契約** | 5 queue を drain し、1 dimension の event batch から1つの `WorldCommitRequest` を組み立て、coordinator に1回 commit する。失敗または中断時は batch を runtime に戻す |
+| `RedstoneHostBlock` / `RedstoneHostLookup` / `RedstoneHostWritePort` / `RedstoneHostRealm` | **契約** | host block は `BlockAddress` と typed block を持つ。realm は dimension と lookup を持ち、write port は request builder と coordinator commit を提供する |
 | `componentForBlock` | 内部（可視） | ブロック文字列 1 つの分類。テストとホストの直接検証のために可視 |
 | `kernelPistonCapabilities` | 内部（可視） | mc-kernel の `pistonImmovable` 能力テーブルを読む `BlockCapabilityLookup` |
 
-`applyRedstoneHostEvents` は mc-compose 版から 2 つの穴をそのまま引き継いでいる
-（ソース自身に対応する host 操作が無かったため、直す側で発明しない）:
-`RedstoneTriggerEvent` の `'note-block'` と `PoweredComponentTransition` の
-`'trapdoor'` は drain されるが host には渡らない。`componentForBlock` の `piston`
-ケースも `pistonFacing: 'north'` / `pistonKind: 'sticky'` 固定のまま。
+`RedstoneHostLookup` から piston facing と kind を読み取る。event batch には note-block trigger と trapdoor transition も含めて commit request に渡す。
 
 ### `stages/stage-ids.ts`
 
@@ -266,11 +236,13 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 ターゲット面の正規化座標を入力し、中心からの Chebyshev 距離を 1–15 の信号強度へ写像する純粋規則である。
 命中なしは 0、中心は 15、辺と角は 1 とし、範囲外座標は面の境界へ clamp する。
 
-### `domain/piston.ts` — すべて内部（可視）
+### `domain/piston.ts`
 
-`BlockRef` / `BlockCapabilityLookup` / `PISTON_PUSH_LIMIT` / `PushPlan` / `PushRefusal` /
-`PushOutcome` / `planPush` / `isPistonMovable` に加え、方向・伸縮状態を含む
-`PistonMovementPlan` / `planPistonTransition` / `validatePistonPlan` / `applyPistonPlan` を公開する。
+mc-compose の W5 browser host は `pistonPositionAt`、`planPistonTransition`、`applyPistonPlan`、`PistonMovementPlan` を使う。server host は `pistonPositionAt`、`planPistonTransition`、`validatePistonPlan`、`PistonCellRead`、`PistonMovementPlan` を使う。これらと関数の入出力に必要な `BlockRef`、`BlockCapabilityLookup`、`PistonFacing`、`PistonKind`、`PistonState`、`PistonPosition`、`PistonCell`、`PistonWorldView`、`PistonMove`、`PistonPlanRefusal`、`PistonMovementOutcome`、`PistonTransitionRequest`、`PistonApplyPort` を契約とする。
+
+`PistonPosition` は現在、数値の `x`、`y`、`z` を持つ。W5 host は kernel の `BlockPosition` に変換して world read/write に使う。
+
+`PISTON_PUSH_LIMIT`、`PushPlan`、`PushRefusal`、`PushOutcome`、`planPush`、`isPistonMovable` は root から見える内部 exports である。`planPush` と `planPistonTransition` は異なる planner contract を持つ。
 
 `isPistonMovable` は `Result<boolean, BlockRegistryResolutionFailure>` を返す。
 `PushOutcome` と `PistonMovementOutcome` は capability lookup failure を `failed` として返し、
@@ -284,7 +256,7 @@ runtime の powered transition は node ID 順で、観測した給電エッジ�
 スライム／ハチミツによる隣接ブロック連結は mc-kernel に対応する語彙・能力が無いため扱わない。
 ブロックに押されるエンティティの移動と衝突解決は mc-sim / mc-physics の責務である。
 
-`BlockCapabilityLookup` は domain planner の純粋性を保つために残すローカル port である。
+`BlockCapabilityLookup` は domain planner の純粋性を保つ port である。
 host adapter は登録済み block 名を kernel の `BlockId` に解決して `capabilityOfBlockId` を呼び、
 その `Result` を planner まで伝える（[design-notes.md](./design-notes.md) DN-RS-1、[versioning.md](./versioning.md) §6）。
 
@@ -298,7 +270,7 @@ kernel 所有の座標語彙であり、`index.ts` から re-export していな
 ### 5-1. 機械的な root export 台帳
 
 以下は `src/index.ts` の明示 export と barrel export を、生成済み declaration の名前に展開した全件台帳である。
-各行は root export を1件だけ記載する。契約区分は本書の境界定義に従い、domain の規則型は内部（可視）とする。
+各行は root export を1件だけ記載する。契約区分は本書の境界定義に従う。W5 が使う piston planning surface は契約とし、ほかの domain rules は内部（可視）とする。
 
 | export | source | 区分 |
 | --- | --- | --- |
@@ -332,7 +304,26 @@ kernel 所有の座標語彙であり、`index.ts` から re-export していな
 | `PowerEdgeMemory` | `domain/dispenser.ts` | 内部（可視） |
 | `DispenserSweep` | `domain/dispenser.ts` | 内部（可視） |
 | `dispenserEdges` | `domain/dispenser.ts` | 内部（可視） |
+| `DispenserSlotIndex` | `domain/dispenser.ts` | 内部（可視） |
+| `DispenserSlotIndexSchema` | `domain/dispenser.ts` | 内部（可視） |
+| `DispenserActionPlan` | `domain/dispenser.ts` | 内部（可視） |
+| `DispenserActionPlanSchema` | `domain/dispenser.ts` | 内部（可視） |
+| `DispenserPlanFailure` | `domain/dispenser.ts` | 内部（可視） |
+| `DispenserPlanFailureSchema` | `domain/dispenser.ts` | 内部（可視） |
+| `planDispenserAction` | `domain/dispenser.ts` | 内部（可視） |
 | `HOPPER_TRANSFER_PERIOD_TICKS` | `domain/hopper.ts` | 内部（可視） |
+| `GAME_TICKS_PER_REDSTONE_TICK` | `domain/hopper.ts` | 内部（可視） |
+| `HOPPER_TRANSFER_COOLDOWN_GAME_TICKS` | `domain/hopper.ts` | 内部（可視） |
+| `HopperAdjacentContainer` | `domain/hopper.ts` | 内部（可視） |
+| `HopperTransferSelectionRequest` | `domain/hopper.ts` | 内部（可視） |
+| `HopperContainerEndpoint` | `domain/hopper.ts` | 内部（可視） |
+| `HopperTransferDirection` | `domain/hopper.ts` | 内部（可視） |
+| `HopperTransferCandidate` | `domain/hopper.ts` | 内部（可視） |
+| `HopperTransferSelectionRequestSchema` | `domain/hopper.ts` | 内部（可視） |
+| `HopperTransferCandidateSchema` | `domain/hopper.ts` | 内部（可視） |
+| `HopperTransferSelectionOutcome` | `domain/hopper.ts` | 内部（可視） |
+| `HopperTransferSelectionOutcomeSchema` | `domain/hopper.ts` | 内部（可視） |
+| `selectHopperTransferCandidates` | `domain/hopper.ts` | 内部（可視） |
 | `HOPPER_TRANSFER_ITEMS` | `domain/hopper.ts` | 内部（可視） |
 | `isHopperLocked` | `domain/hopper.ts` | 内部（可視） |
 | `hopperTransferDue` | `domain/hopper.ts` | 内部（可視） |
@@ -340,31 +331,31 @@ kernel 所有の座標語彙であり、`index.ts` から re-export していな
 | `Sightings` | `domain/observer.ts` | 内部（可視） |
 | `ObserverSweep` | `domain/observer.ts` | 内部（可視） |
 | `observeChanges` | `domain/observer.ts` | 内部（可視） |
-| `BlockRef` | `domain/piston.ts` | 内部（可視） |
-| `BlockCapabilityLookup` | `domain/piston.ts` | 内部（可視） |
+| `BlockRef` | `domain/piston.ts` | 契約 |
+| `BlockCapabilityLookup` | `domain/piston.ts` | 契約 |
 | `PISTON_PUSH_LIMIT` | `domain/piston.ts` | 内部（可視） |
 | `PushPlan` | `domain/piston.ts` | 内部（可視） |
 | `PushRefusal` | `domain/piston.ts` | 内部（可視） |
 | `PushOutcome` | `domain/piston.ts` | 内部（可視） |
 | `planPush` | `domain/piston.ts` | 内部（可視） |
 | `isPistonMovable` | `domain/piston.ts` | 内部（可視） |
-| `PistonFacing` | `domain/piston.ts` | 内部（可視） |
-| `PistonKind` | `domain/piston.ts` | 内部（可視） |
-| `PistonState` | `domain/piston.ts` | 内部（可視） |
-| `PistonPosition` | `domain/piston.ts` | 内部（可視） |
-| `PistonCell` | `domain/piston.ts` | 内部（可視） |
-| `PistonCellRead` | `domain/piston.ts` | 内部（可視） |
-| `PistonWorldView` | `domain/piston.ts` | 内部（可視） |
-| `PistonMove` | `domain/piston.ts` | 内部（可視） |
-| `PistonMovementPlan` | `domain/piston.ts` | 内部（可視） |
-| `PistonPlanRefusal` | `domain/piston.ts` | 内部（可視） |
-| `PistonMovementOutcome` | `domain/piston.ts` | 内部（可視） |
-| `PistonTransitionRequest` | `domain/piston.ts` | 内部（可視） |
-| `pistonPositionAt` | `domain/piston.ts` | 内部（可視） |
-| `planPistonTransition` | `domain/piston.ts` | 内部（可視） |
-| `PistonApplyPort` | `domain/piston.ts` | 内部（可視） |
-| `validatePistonPlan` | `domain/piston.ts` | 内部（可視） |
-| `applyPistonPlan` | `domain/piston.ts` | 内部（可視） |
+| `PistonFacing` | `domain/piston.ts` | 契約 |
+| `PistonKind` | `domain/piston.ts` | 契約 |
+| `PistonState` | `domain/piston.ts` | 契約 |
+| `PistonPosition` | `domain/piston.ts` | 契約 |
+| `PistonCell` | `domain/piston.ts` | 契約 |
+| `PistonCellRead` | `domain/piston.ts` | 契約 |
+| `PistonWorldView` | `domain/piston.ts` | 契約 |
+| `PistonMove` | `domain/piston.ts` | 契約 |
+| `PistonMovementPlan` | `domain/piston.ts` | 契約 |
+| `PistonPlanRefusal` | `domain/piston.ts` | 契約 |
+| `PistonMovementOutcome` | `domain/piston.ts` | 契約 |
+| `PistonTransitionRequest` | `domain/piston.ts` | 契約 |
+| `pistonPositionAt` | `domain/piston.ts` | 契約 |
+| `planPistonTransition` | `domain/piston.ts` | 契約 |
+| `PistonApplyPort` | `domain/piston.ts` | 契約 |
+| `validatePistonPlan` | `domain/piston.ts` | 契約 |
+| `applyPistonPlan` | `domain/piston.ts` | 契約 |
 | `MAX_POWER_LEVEL` | `domain/power-graph.ts` | 内部（可視） |
 | `PowerLevel` | `domain/power-graph.ts` | 内部（可視） |
 | `ComponentKind` | `domain/power-graph.ts` | 内部（可視） |
@@ -452,3 +443,9 @@ export const redstoneModule: GameModule<RedstoneWorldRuntime, never, never, neve
 `RIn` と `RRegister` は `never` のままである。ホストが module Layer と stage 登録を同じ Effect context で
 実行すれば runtime port を共有する。サービスを登録 context に提供しない旧ホストでは独立 state に
 フォールバックして起動互換性を保つが、snapshot 同期を利用するには同じ Layer を提供する必要がある。
+
+## 7. package subpath
+
+### `./qa/redstone-placement-items`
+
+この QA 専用 subpath は、redstone placement fixture が使う read-only set `REDSTONE_PLACEMENT_ITEMS` を export する。root entry point からは再 export しない。

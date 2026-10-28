@@ -7,7 +7,13 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src/index.ts", "src/domain/**/*.ts", "src/application/**/*.ts", "src/stages/**/*.ts"],
+  "include": [
+    "src/index.ts",
+    "src/domain/**/*.ts",
+    "src/application/**/*.ts",
+    "src/qa/**/*.ts",
+    "src/stages/**/*.ts"
+  ],
   "exclude": [
     "node_modules",
     "coverage",

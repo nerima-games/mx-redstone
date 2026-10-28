@@ -1,18 +1,7 @@
-// DEVIATION FROM "copy verbatim from kernel" (runbook §2.4 / D.10): mc-kernel's
-// verify-package.mjs (a) requires every `export * from './domain/...'` star
-// re-export in src/index.ts to have a matching `./domain/<name>` subpath in
-// package.json#exports, and (b) hardcodes runtime/type assertions against
-// kernel's own domain (blockHardnessOf, fixedClock, resolveBedrockDiggerSpeed,
-// …). Neither applies here: this package's `exports` map is deliberately just
-// `"."` (docs/public-api.md §2 — the power graph and piston planner are
-// re-exported for internal test/preview use, not published as subpaths; the
-// repo's hard rule is "never add subpaths to satisfy a copied verify-package
-// check"), and its runtime contract is stage registration plus the
-// `RedstoneWorldRuntime` port, not kernel's domain. This script keeps the
-// generic parts (pack, archive-content check, a clean-consumer runtime import,
-// a clean-consumer TypeScript declaration check) and replaces the
-// kernel-specific probe with one scoped to docs/public-api.md §5's actual
-// contract list.
+// Package verification keeps the generic archive, runtime-import, and
+// declaration-consumer checks while probing this package's root contract and
+// QA fixture subpath. The root contract includes the piston operations used by
+// W5; other root-visible domain exports remain internal.
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -182,9 +171,16 @@ try {
       throw new Error('An exported package module has no runtime exports');
     }
     const rootModule = modules[specifiers.indexOf(packageName)];
-    // docs/public-api.md §5 — the actual contract, not everything the barrel
-    // makes visible (the power graph and piston planner are visible-but-not-
-    // public and are intentionally left unchecked here).
+    const qaSpecifier = packageName + '/qa/redstone-placement-items';
+    const qaModule = modules[specifiers.indexOf(qaSpecifier)];
+    if (
+      typeof qaModule?.REDSTONE_PLACEMENT_ITEMS?.has !== 'function' ||
+      !qaModule.REDSTONE_PLACEMENT_ITEMS.has('dispenser')
+    ) {
+      throw new Error('The QA subpath does not expose REDSTONE_PLACEMENT_ITEMS');
+    }
+    // docs/public-api.md §5 — the stable root contract. Other power graph and
+    // piston symbols remain root-visible but are not part of this check.
     if (rootModule.RedstoneWorldRuntime === undefined) {
       throw new Error('The root export does not expose RedstoneWorldRuntime');
     }
@@ -212,14 +208,44 @@ import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
   REDSTONE_STAGE_IDS,
+  applyPistonPlan,
+  pistonPositionAt,
+  planPistonTransition,
+  validatePistonPlan,
   makeRuntimeRedstoneStages,
   redstoneModule,
   type LampTransition,
+  type HopperTransferEvent,
   type RedstoneWorldRuntimeService,
   type RedstoneWorldSnapshot,
   type RedstoneComponentSnapshot,
   type RedstonePosition,
+  type PoweredComponentKind,
+  type PoweredComponentTransition,
+  type PoweredPistonTransition,
+  type RedstoneHostBlock,
+  type RedstoneHostLookup,
+  type RedstoneHostRealm,
+  type RedstoneHostWritePort,
+  type RedstoneTriggerEvent,
+  type TriggeredComponentKind,
+  type BlockCapabilityLookup,
+  type BlockRef,
+  type PistonApplyPort,
+  type PistonCell,
+  type PistonCellRead,
+  type PistonFacing,
+  type PistonKind,
+  type PistonMove,
+  type PistonMovementOutcome,
+  type PistonMovementPlan,
+  type PistonPlanRefusal,
+  type PistonPosition,
+  type PistonState,
+  type PistonTransitionRequest,
+  type PistonWorldView,
 } from ${JSON.stringify(packageName)}
+import { REDSTONE_PLACEMENT_ITEMS } from ${JSON.stringify(`${packageName}/qa/redstone-placement-items`)}
 
 const declaredPackageExports: readonly unknown[] = [
   RedstoneWorldRuntime,
@@ -227,8 +253,13 @@ const declaredPackageExports: readonly unknown[] = [
   REDSTONE_STAGE_IDS,
   makeRuntimeRedstoneStages,
   redstoneModule,
+  applyPistonPlan,
+  pistonPositionAt,
+  planPistonTransition,
+  validatePistonPlan,
+  REDSTONE_PLACEMENT_ITEMS,
 ]
-if (declaredPackageExports.length !== 5) {
+if (declaredPackageExports.length !== 10) {
   throw new Error('The TypeScript consumer did not load every declared package export')
 }
 
@@ -237,11 +268,45 @@ const runtimeService: RedstoneWorldRuntimeService | undefined = undefined
 const snapshot: RedstoneWorldSnapshot | undefined = undefined
 const componentSnapshot: RedstoneComponentSnapshot | undefined = undefined
 const position: RedstonePosition | undefined = undefined
+type PublishedHostTypes = readonly [
+  BlockCapabilityLookup,
+  BlockRef,
+  HopperTransferEvent,
+  LampTransition,
+  PistonApplyPort<unknown>,
+  PistonCell,
+  PistonCellRead,
+  PistonFacing,
+  PistonKind,
+  PistonMove,
+  PistonMovementOutcome,
+  PistonMovementPlan,
+  PistonPlanRefusal,
+  PistonPosition,
+  PistonState,
+  PistonTransitionRequest,
+  PistonWorldView,
+  PoweredComponentKind,
+  PoweredComponentTransition,
+  PoweredPistonTransition,
+  RedstoneComponentSnapshot,
+  RedstoneHostBlock,
+  RedstoneHostLookup,
+  RedstoneHostRealm,
+  RedstoneHostWritePort,
+  RedstonePosition,
+  RedstoneTriggerEvent,
+  RedstoneWorldRuntimeService,
+  RedstoneWorldSnapshot,
+  TriggeredComponentKind,
+]
+const publishedHostTypes: PublishedHostTypes | undefined = undefined
 void lampTransition
 void runtimeService
 void snapshot
 void componentSnapshot
 void position
+void publishedHostTypes
 `;
   await writeFile(join(consumerDirectory, "consumer.ts"), typeConsumerSource.trimStart());
   // Effect 4's declarations reference the standard disposal protocol. Keep the

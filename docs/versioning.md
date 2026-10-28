@@ -110,13 +110,15 @@ maintainer(take)による裁量判断のみで行う(RELEASE_STANDARD.md §4.2)�
 
 ## 5. このリポジトリにおける「破壊的変更」とは何か
 
-**公開 API が stage 登録だけなので、観測可能な界面は 3 つしかない。**
+**公開 API は stage 登録に加えて runtime / host port と、一部の piston planning を含む。**
+これらの root contract の export 名・型・振る舞いも、消費側が依存する界面である。
 
 | 観測可能なもの | 変更が破壊的である理由 |
 | --- | --- |
 | `StageId` の文字列（`redstone:power` / `redstone:effects`） | mc-compose の全順序表と、他モジュールの `after` が名指しできる |
 | 宣言する `after` の集合 | 全順序の解決結果が変わる |
 | stage の粒度（2 本を 1 本にする / 3 本に割る） | 順序表に穴が開く、または新しい制約が要る |
+| runtime / host port と piston planning の root contract（[public-api.md](./public-api.md) §5） | 消費側が呼ぶ export、型、event の形や意味が変わる |
 
 **逆に、次のものは破壊的変更ではない。**
 

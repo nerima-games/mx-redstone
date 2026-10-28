@@ -6,23 +6,103 @@
  * while breaking the only consumer that matters. Same reasoning as
  * `mc-kernel/test/public-api.test.ts`.
  *
- * The second block below is the interesting one. plan.md §3.12 makes the power
- * graph INTERNAL, and it is nevertheless re-exported, because the circuit-board
- * preview and these tests import it by name and a package that lies about its
- * own entry point is worse than one that exports too much. Pinning it here
- * records that it is deliberately visible, and docs/public-api.md records that
- * it is deliberately not contract.
+ * The second block pins root-visible internals used by tests and the preview.
+ * docs/public-api.md separates those from the runtime and piston names that are
+ * package contracts.
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import * as redstone from '../src/index'
+import { REDSTONE_PLACEMENT_ITEMS } from '../src/qa/redstone-placement-items'
+import type {
+  BlockCapabilityLookup,
+  BlockRef,
+  DispenserActionPlan,
+  DispenserPlanFailure,
+  DispenserSlotIndex,
+  HopperTransferEvent,
+  HopperAdjacentContainer,
+  HopperContainerEndpoint,
+  HopperTransferCandidate,
+  HopperTransferDirection,
+  HopperTransferSelectionOutcome,
+  HopperTransferSelectionRequest,
+  LampTransition,
+  PistonApplyPort,
+  PistonCell,
+  PistonCellRead,
+  PistonFacing,
+  PistonKind,
+  PistonMove,
+  PistonMovementOutcome,
+  PistonMovementPlan,
+  PistonPlanRefusal,
+  PistonPosition,
+  PistonState,
+  PistonTransitionRequest,
+  PistonWorldView,
+  PoweredComponentKind,
+  PoweredComponentTransition,
+  PoweredPistonTransition,
+  RedstoneComponentSnapshot,
+  RedstoneHostBlock,
+  RedstoneHostLookup,
+  RedstoneHostRealm,
+  RedstoneHostWritePort,
+  RedstonePosition,
+  RedstoneTriggerEvent,
+  RedstoneWorldRuntimeService,
+  RedstoneWorldSnapshot,
+  TriggeredComponentKind,
+} from '../src/index'
 import { planPush } from '../src/domain/piston'
 import { propagateTick } from '../src/domain/power-graph'
 import { advanceTimedCircuit } from '../src/domain/power-timing'
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 
+export type RootTypeExports = readonly [
+  BlockCapabilityLookup,
+  BlockRef,
+  DispenserActionPlan,
+  DispenserPlanFailure,
+  DispenserSlotIndex,
+  HopperTransferEvent,
+  HopperAdjacentContainer,
+  HopperContainerEndpoint,
+  HopperTransferCandidate,
+  HopperTransferDirection,
+  HopperTransferSelectionOutcome,
+  HopperTransferSelectionRequest,
+  LampTransition,
+  PistonApplyPort<unknown>,
+  PistonCell,
+  PistonCellRead,
+  PistonFacing,
+  PistonKind,
+  PistonMove,
+  PistonMovementOutcome,
+  PistonMovementPlan,
+  PistonPlanRefusal,
+  PistonPosition,
+  PistonState,
+  PistonTransitionRequest,
+  PistonWorldView,
+  PoweredComponentKind,
+  PoweredComponentTransition,
+  PoweredPistonTransition,
+  RedstoneComponentSnapshot,
+  RedstoneHostBlock,
+  RedstoneHostLookup,
+  RedstoneHostRealm,
+  RedstoneHostWritePort,
+  RedstonePosition,
+  RedstoneTriggerEvent,
+  RedstoneWorldRuntimeService,
+  RedstoneWorldSnapshot,
+  TriggeredComponentKind,
+]
 describe('public API surface', () => {
-  it.effect('re-exports stage registration and the semantic world runtime port', () =>
+  it.effect('re-exports stage, runtime, and W5 host contracts', () =>
     Effect.sync(() => {
       const contract = [
         'redstoneStages',
@@ -42,11 +122,22 @@ describe('public API surface', () => {
         // `applyRedstoneHostEvents`, against its own `RedstoneHostRealm`.
         'redstoneSnapshotFromRealm',
         'applyRedstoneHostEvents',
+        'pistonPositionAt',
+        'planPistonTransition',
+        'validatePistonPlan',
+        'applyPistonPlan',
       ]
 
       for (const name of contract) {
         expect(Object.keys(redstone)).toContain(name)
       }
+    }),
+  )
+
+  it.effect('keeps the QA placement fixture outside the root barrel', () =>
+    Effect.sync(() => {
+      expect(REDSTONE_PLACEMENT_ITEMS.has('dispenser')).toBe(true)
+      expect(Object.keys(redstone)).not.toContain('REDSTONE_PLACEMENT_ITEMS')
     }),
   )
 
@@ -64,7 +155,7 @@ describe('public API surface', () => {
     }),
   )
 
-  it.effect('re-exports the internal power graph and piston planner, which the preview and tests drive', () =>
+  it.effect('re-exports internal domain symbols used by tests and the preview', () =>
     Effect.sync(() => {
       const internal = [
         // power graph — internal by §3.12, visible by necessity
@@ -97,10 +188,20 @@ describe('public API surface', () => {
         'observeChanges',
         'OBSERVER_PULSE_TICKS',
         'dispenserEdges',
+        'DispenserSlotIndexSchema',
+        'DispenserActionPlanSchema',
+        'DispenserPlanFailureSchema',
+        'planDispenserAction',
         'isHopperLocked',
         'hopperTransferDue',
         'HOPPER_TRANSFER_PERIOD_TICKS',
         'HOPPER_TRANSFER_ITEMS',
+        'GAME_TICKS_PER_REDSTONE_TICK',
+        'HOPPER_TRANSFER_COOLDOWN_GAME_TICKS',
+        'HopperTransferSelectionRequestSchema',
+        'HopperTransferCandidateSchema',
+        'HopperTransferSelectionOutcomeSchema',
+        'selectHopperTransferCandidates',
         'plateSignal',
         'LIGHT_PLATE_CAPACITY',
         'HEAVY_PLATE_CAPACITY',
