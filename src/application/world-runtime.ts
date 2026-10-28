@@ -1,3 +1,4 @@
+import { BlockAxis, type BlockAddress, type BlockPosition } from '@nerima-games/mc-kernel'
 import {
   type CircuitBoard,
   type Component,
@@ -18,11 +19,9 @@ import {
 import type { PositionKey } from '../domain/position-key.js'
 import { hopperTransferDue } from '../domain/hopper.js'
 
-export type RedstonePosition = {
-  readonly x: number
-  readonly y: number
-  readonly z: number
-}
+type DimensionId = BlockAddress['dimension']
+
+export type RedstonePosition = BlockPosition
 
 export type RedstoneComponentSnapshot = {
   readonly position: RedstonePosition
@@ -46,37 +45,37 @@ export type RedstoneComponentSnapshot = {
 
 /** A complete replacement snapshot for one dimension. */
 export type RedstoneWorldSnapshot = {
-  readonly dimension: string
+  readonly dimension: DimensionId
   readonly components: ReadonlyArray<RedstoneComponentSnapshot>
 }
 
 export type LampTransition = {
-  readonly dimension: string
+  readonly dimension: DimensionId
   readonly position: RedstonePosition
   readonly lit: boolean
 }
 
 export type PoweredPistonTransition = PistonTransitionRequest & {
-  readonly dimension: string
+  readonly dimension: DimensionId
 }
 
 export type TriggeredComponentKind = 'dispenser' | 'dropper' | 'note-block'
 
 export type RedstoneTriggerEvent = {
-  readonly dimension: string
+  readonly dimension: DimensionId
   readonly position: RedstonePosition
   readonly kind: TriggeredComponentKind
 }
 
 export type HopperTransferEvent = {
-  readonly dimension: string
+  readonly dimension: DimensionId
   readonly position: RedstonePosition
 }
 
 export type PoweredComponentKind = 'powered-rail' | 'door' | 'trapdoor'
 
 export type PoweredComponentTransition = {
-  readonly dimension: string
+  readonly dimension: DimensionId
   readonly position: RedstonePosition
   readonly kind: PoweredComponentKind
   readonly powered: boolean
@@ -87,7 +86,7 @@ type DimensionSnapshot = ReadonlyMap<PositionKey, RedstoneComponentSnapshot>
 type ObservedLamp = LampTransition
 
 export type RedstoneWorldState = {
-  readonly dimensions: Ref.Ref<ReadonlyMap<string, DimensionSnapshot>>
+  readonly dimensions: Ref.Ref<ReadonlyMap<DimensionId, DimensionSnapshot>>
   readonly board: Ref.Ref<CircuitBoard>
   readonly power: Ref.Ref<PowerMap>
   readonly timedCircuit: Ref.Ref<TimedCircuitState>
@@ -118,7 +117,7 @@ export type RedstoneWorldRuntimeService = {
   /** Replaces only the named dimension; snapshots of other dimensions remain installed. */
   readonly syncSnapshot: (snapshot: RedstoneWorldSnapshot) => Effect.Effect<void>
   /** Starts or restarts this button's configured pulse on the next redstone tick. */
-  readonly pressButton: (dimension: string, position: RedstonePosition) => Effect.Effect<void>
+  readonly pressButton: (dimension: DimensionId, position: RedstonePosition) => Effect.Effect<void>
   /** Restores a previously drained event batch after its host commit fails. */
   readonly restoreEvents: (events: RedstoneEventBatch) => Effect.Effect<void>
   /** Atomically returns and clears transitions produced by `redstone:effects`. */
@@ -152,7 +151,7 @@ export class RedstoneWorldRuntime extends RedstoneWorldRuntimeBase {}
 const copyPosition = ({ x, y, z }: RedstonePosition): RedstonePosition => ({ x, y, z })
 
 /** Stable and collision-safe across dimensions. */
-export const redstoneNodeId = (dimension: string, position: RedstonePosition): PositionKey =>
+export const redstoneNodeId = (dimension: DimensionId, position: RedstonePosition): PositionKey =>
   JSON.stringify([dimension, position.x, position.y, position.z])
 
 /** Includes `key` only when `value` is present, so omitted optional fields stay omitted
@@ -196,7 +195,7 @@ const withOptionalContainerSignal = (
 }
 
 const componentAt = (
-  dimension: string,
+  dimension: DimensionId,
   component: RedstoneComponentSnapshot,
 ): Component => {
   const positionToNodeId = (position: RedstonePosition): PositionKey => redstoneNodeId(dimension, position)
@@ -216,24 +215,24 @@ const componentAt = (
 }
 
 const FACE_OFFSETS: ReadonlyArray<RedstonePosition> = [
-  { x: 1, y: 0, z: 0 },
-  { x: -1, y: 0, z: 0 },
-  { x: 0, y: 1, z: 0 },
-  { x: 0, y: -1, z: 0 },
-  { x: 0, y: 0, z: 1 },
-  { x: 0, y: 0, z: -1 },
+  { x: BlockAxis(1), y: BlockAxis(0), z: BlockAxis(0) },
+  { x: BlockAxis(-1), y: BlockAxis(0), z: BlockAxis(0) },
+  { x: BlockAxis(0), y: BlockAxis(1), z: BlockAxis(0) },
+  { x: BlockAxis(0), y: BlockAxis(-1), z: BlockAxis(0) },
+  { x: BlockAxis(0), y: BlockAxis(0), z: BlockAxis(1) },
+  { x: BlockAxis(0), y: BlockAxis(0), z: BlockAxis(-1) },
 ]
 
 /** One component, tagged with the dimension and node id it was read from — the flattened
  * unit every `collect*` pass and `circuitBoardFromSnapshots` iterate over. */
 type SnapshotEntry = {
   readonly component: RedstoneComponentSnapshot
-  readonly dimension: string
+  readonly dimension: DimensionId
   readonly nodeId: PositionKey
 }
 
 const flattenSnapshotEntries = (
-  dimensions: ReadonlyMap<string, DimensionSnapshot>,
+  dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>,
 ): ReadonlyArray<SnapshotEntry> => {
   const entries: Array<SnapshotEntry> = []
   for (const [dimension, snapshot] of dimensions) {
@@ -258,16 +257,22 @@ type CircuitBoardAccumulator = {
 }
 
 const neighboursOf = (
-  dimension: string,
+  dimension: DimensionId,
   component: RedstoneComponentSnapshot,
   allNodeIds: ReadonlySet<PositionKey>,
 ): ReadonlyArray<PositionKey> => {
   const neighbours: Array<PositionKey> = []
   for (const offset of FACE_OFFSETS) {
+    const x = component.position.x + offset.x
+    const y = component.position.y + offset.y
+    const z = component.position.z + offset.z
+    if (![x, y, z].every(Number.isSafeInteger)) {
+      continue
+    }
     const neighbour = redstoneNodeId(dimension, {
-      x: component.position.x + offset.x,
-      y: component.position.y + offset.y,
-      z: component.position.z + offset.z,
+      x: BlockAxis(x),
+      y: BlockAxis(y),
+      z: BlockAxis(z),
     })
     if (allNodeIds.has(neighbour)) {
       neighbours.push(neighbour)
@@ -295,7 +300,7 @@ const indexComponent = (
 }
 
 export const circuitBoardFromSnapshots = (
-  dimensions: ReadonlyMap<string, DimensionSnapshot>,
+  dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>,
 ): CircuitBoard => {
   const entries = flattenSnapshotEntries(dimensions)
   const allNodeIds = new Set(entries.map((entry) => entry.nodeId))
@@ -336,7 +341,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       tickAccumulatorSecs,
       tickCount,
     ] = yield* Effect.all([
-      Ref.make<ReadonlyMap<string, DimensionSnapshot>>(new Map()),
+      Ref.make<ReadonlyMap<DimensionId, DimensionSnapshot>>(new Map()),
       Ref.make<CircuitBoard>({ adjacency: new Map(), components: new Map() }),
       Ref.make<PowerMap>(emptyPowerMap),
       Ref.make<TimedCircuitState>(emptyTimedCircuitState),

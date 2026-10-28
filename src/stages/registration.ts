@@ -276,6 +276,6 @@ export const redstoneModule: GameModule<
   never,
   never
 > = {
-  frameStages: makeRuntimeRedstoneStages,
+  frameStages: makeRuntimeRedstoneStages.pipe(Effect.orDie),
   layers: RedstoneWorldRuntimeLayer,
 }
