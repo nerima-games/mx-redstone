@@ -26,10 +26,11 @@
  * list. Miss one and the new block is pushable by a piston into the void.
  *
  * So this file contains NO block names at all. It asks. The authoritative flag
- * source is `mc-kernel/docs/capability-flag-audit.md`, which has already been
- * written and records `pistonImmovable` as a boolean with 5 measured occurrence
- * sites in the reference. When kernel is published, `BlockCapabilityLookup`
- * below is deleted and replaced by kernel's capability accessor.
+ * source is `mc-kernel/docs/capability-flag-audit.md`, which records
+ * `pistonImmovable` as a boolean with 5 measured occurrence sites in the
+ * reference. Kernel now publishes the capability accessor; the host adapter
+ * supplies it through `BlockCapabilityLookup` so planning stays pure and can
+ * preserve registry-resolution failures.
  *
  * `test/piston.test.ts` asserts the absence structurally: a block name this
  * repository has never heard of behaves exactly as the injected lookup says.
@@ -54,7 +55,8 @@
  */
 export type { BlockRef } from './block-ref.js'
 
-import { Effect } from 'effect'
+import type { BlockRegistryResolutionFailure } from '@nerima-games/mc-kernel'
+import { Effect, Result } from 'effect'
 import type { BlockRef } from './block-ref.js'
 
 /**
@@ -67,7 +69,7 @@ import type { BlockRef } from './block-ref.js'
  */
 export type BlockCapabilityLookup = {
   /** Kernel's `pistonImmovable` flag (capability-flag-audit.md §3). */
-  readonly pistonImmovable: (block: BlockRef) => boolean
+  readonly pistonImmovable: (block: BlockRef) => Result.Result<boolean, BlockRegistryResolutionFailure>
 }
 
 /**
@@ -95,6 +97,7 @@ export type PushRefusal = {
 }
 
 export type PushOutcome =
+  | { readonly kind: 'failed'; readonly at: number; readonly failure: BlockRegistryResolutionFailure }
   | { readonly kind: 'push'; readonly plan: PushPlan }
   | { readonly kind: 'refused'; readonly refusal: PushRefusal }
 
@@ -117,22 +120,6 @@ export type PushOutcome =
  * what the reference's boolean predicate effectively did — loses the ability to
  * explain either.
  */
-export const planPush = (
-  column: ReadonlyArray<BlockRef>,
-  capabilities: BlockCapabilityLookup,
-): PushOutcome => {
-  for (const [index, block] of column.entries()) {
-    if (capabilities.pistonImmovable(block)) {
-      return { kind: 'refused', refusal: { at: index, reason: 'immovable' } }
-    }
-    if (index >= PISTON_PUSH_LIMIT) {
-      return { kind: 'refused', refusal: { at: index, reason: 'too-long' } }
-    }
-  }
-
-  return { kind: 'push', plan: { length: column.length, moved: [...column] } }
-}
-
 /**
  * `!pistonImmovable`, named.
  *
@@ -144,7 +131,28 @@ export const planPush = (
 export const isPistonMovable = (
   capabilities: BlockCapabilityLookup,
   block: BlockRef,
-): boolean => !capabilities.pistonImmovable(block)
+): Result.Result<boolean, BlockRegistryResolutionFailure> =>
+  Result.map(capabilities.pistonImmovable(block), (immovable) => !immovable)
+
+export const planPush = (
+  column: ReadonlyArray<BlockRef>,
+  capabilities: BlockCapabilityLookup,
+): PushOutcome => {
+  for (const [index, block] of column.entries()) {
+    const movable = isPistonMovable(capabilities, block)
+    if (Result.isFailure(movable)) {
+      return { at: index, failure: movable.failure, kind: 'failed' }
+    }
+    if (!movable.success) {
+      return { kind: 'refused', refusal: { at: index, reason: 'immovable' } }
+    }
+    if (index >= PISTON_PUSH_LIMIT) {
+      return { kind: 'refused', refusal: { at: index, reason: 'too-long' } }
+    }
+  }
+
+  return { kind: 'push', plan: { length: column.length, moved: [...column] } }
+}
 
 export type PistonFacing = 'down' | 'east' | 'north' | 'south' | 'up' | 'west'
 export type PistonKind = 'normal' | 'sticky'
@@ -191,6 +199,7 @@ export type PistonPlanRefusal = {
 }
 
 export type PistonMovementOutcome =
+  | { readonly kind: 'failed'; readonly failure: BlockRegistryResolutionFailure; readonly position: PistonPosition }
   | { readonly kind: 'move'; readonly plan: PistonMovementPlan }
   | { readonly kind: 'noop'; readonly state: PistonState }
   | { readonly kind: 'refused'; readonly refusal: PistonPlanRefusal }
@@ -261,6 +270,9 @@ type PistonPlanningContext = {
   readonly world: PistonWorldView
 }
 
+type ExtendedColumnBlock = { readonly block: BlockRef; readonly position: PistonPosition }
+type ExtensionBlockCandidate = ExtendedColumnBlock & { readonly blocks: ReadonlyArray<ExtendedColumnBlock> }
+
 const buildRetractionBasePlan = (request: PistonTransitionRequest): PistonMovementPlan => ({
   facing: request.facing,
   fromState: request.state,
@@ -269,6 +281,28 @@ const buildRetractionBasePlan = (request: PistonTransitionRequest): PistonMoveme
   piston: request.piston,
   toState: 'retracted',
 })
+
+const planStickyBlockMove = (
+  context: PistonPlanningContext,
+  base: PistonMovementPlan,
+  target: ExtendedColumnBlock,
+): PistonMovementOutcome => {
+  const { block, position: source } = target
+  const immovable = context.capabilities.pistonImmovable(block)
+  if (Result.isFailure(immovable)) {
+    return { failure: immovable.failure, kind: 'failed', position: source }
+  }
+  if (immovable.success) {
+    return { kind: 'move', plan: base }
+  }
+  return {
+    kind: 'move',
+    plan: {
+      ...base,
+      moves: [{ block, from: source, to: pistonPositionAt(context.request.piston, context.request.facing, ADJACENT_CELL_DISTANCE) }],
+    },
+  }
+}
 
 const planStickyRetraction = (
   context: PistonPlanningContext,
@@ -279,16 +313,10 @@ const planStickyRetraction = (
   if (cell.kind === 'missing' || cell.kind === 'out-of-world') {
     return { kind: 'refused', refusal: { position: source, reason: cell.kind } }
   }
-  if (cell.kind === 'empty' || context.capabilities.pistonImmovable(cell.block)) {
+  if (cell.kind === 'empty') {
     return { kind: 'move', plan: base }
   }
-  return {
-    kind: 'move',
-    plan: {
-      ...base,
-      moves: [{ block: cell.block, from: source, to: pistonPositionAt(context.request.piston, context.request.facing, ADJACENT_CELL_DISTANCE) }],
-    },
-  }
+  return planStickyBlockMove(context, base, { block: cell.block, position: source })
 }
 
 const planRetraction = (context: PistonPlanningContext): PistonMovementOutcome => {
@@ -298,8 +326,6 @@ const planRetraction = (context: PistonPlanningContext): PistonMovementOutcome =
   }
   return planStickyRetraction(context, base)
 }
-
-type ExtendedColumnBlock = { readonly block: BlockRef; readonly position: PistonPosition }
 
 /** One step of the extension scan: either the scan is done (refused or found the vacancy to push into) or one more block joins the column. */
 type ExtensionStep =
@@ -325,6 +351,24 @@ const buildExtensionMovePlan = (
   },
 })
 
+const classifyExtensionBlock = (
+  context: PistonPlanningContext,
+  candidate: ExtensionBlockCandidate,
+): ExtensionStep => {
+  const { block, position, blocks } = candidate
+  const immovable = context.capabilities.pistonImmovable(block)
+  if (Result.isFailure(immovable)) {
+    return { kind: 'settled', outcome: { failure: immovable.failure, kind: 'failed', position } }
+  }
+  if (immovable.success) {
+    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: 'immovable' } } }
+  }
+  if (blocks.length === PISTON_PUSH_LIMIT) {
+    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: 'too-long' } } }
+  }
+  return { block: { block, position }, kind: 'joins-column' }
+}
+
 const scanExtensionCell = (
   context: PistonPlanningContext,
   position: PistonPosition,
@@ -337,13 +381,7 @@ const scanExtensionCell = (
   if (cell.kind === 'empty') {
     return { kind: 'settled', outcome: buildExtensionMovePlan(context, blocks) }
   }
-  if (context.capabilities.pistonImmovable(cell.block)) {
-    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: 'immovable' } } }
-  }
-  if (blocks.length === PISTON_PUSH_LIMIT) {
-    return { kind: 'settled', outcome: { kind: 'refused', refusal: { position, reason: 'too-long' } } }
-  }
-  return { block: { block: cell.block, position }, kind: 'joins-column' }
+  return classifyExtensionBlock(context, { block: cell.block, blocks, position })
 }
 
 /**

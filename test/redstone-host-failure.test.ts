@@ -1,0 +1,113 @@
+import { describe, expect, it } from '@effect/vitest'
+import { Effect, Option, Result } from 'effect'
+import {
+  AIR_BLOCK_ID,
+  capabilityOfBlockId,
+  blockIdOf,
+  DeltaTimeSecs,
+  type BlockRegistryResolutionFailure,
+  type StageRegistration,
+} from '@nerima-games/mc-kernel'
+import { vi } from 'vitest'
+import {
+  applyRedstoneHostEvents,
+  kernelPistonCapabilities,
+  type RedstoneHostRealm,
+} from '../src/application/redstone-host-port'
+import {
+  RedstoneWorldRuntime,
+  RedstoneWorldRuntimeLayer,
+} from '../src/application/world-runtime'
+import { makeRuntimeRedstoneStages } from '../src/stages/registration'
+import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
+// eslint-disable-next-line sort-imports
+import { FrameServicesLayer } from './frame-services'
+
+vi.mock('@nerima-games/mc-kernel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nerima-games/mc-kernel')>()
+  return {
+    ...actual,
+    blockIdOf: vi.fn(actual.blockIdOf),
+    capabilityOfBlockId: vi.fn(actual.capabilityOfBlockId),
+  }
+})
+
+const capabilityResolutionFailure: BlockRegistryResolutionFailure = {
+  _tag: 'BlockCapabilityFailure',
+  reason: 'unknown-key',
+  message: 'The capability registry could not resolve pistonImmovable',
+}
+
+const stageById = (stages: ReadonlyArray<StageRegistration>, id: string): StageRegistration => {
+  const stage = stages.find((candidate) => candidate.id === id)
+  if (stage === undefined) {
+    throw new Error(`Missing redstone stage ${id}`)
+  }
+  return stage
+}
+
+const runFrame = (stages: ReadonlyArray<StageRegistration>): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.1)).pipe(Effect.provide(FrameServicesLayer))
+    yield* stageById(stages, REDSTONE_STAGE_IDS.effects).run(DeltaTimeSecs(0.1)).pipe(Effect.provide(FrameServicesLayer))
+  })
+
+describe('kernel capability registry failures at the host boundary', () => {
+  it.effect('does not treat a registered block with no registry id as immovable', () =>
+    Effect.sync(() => {
+      vi.mocked(blockIdOf).mockReturnValue(Option.none())
+
+      expect(kernelPistonCapabilities.pistonImmovable('bedrock')).toStrictEqual(Result.succeed(false))
+      expect(capabilityOfBlockId).not.toHaveBeenCalled()
+    }),
+  )
+
+  it.effect('fails the host Effect when a piston capability lookup fails', () =>
+    Effect.gen(function* () {
+      vi.mocked(blockIdOf).mockReturnValue(Option.some(AIR_BLOCK_ID))
+      vi.mocked(capabilityOfBlockId).mockReturnValue(Result.fail(capabilityResolutionFailure))
+
+      const runtime = yield* RedstoneWorldRuntime
+      const stages = yield* makeRuntimeRedstoneStages
+      let committedPlans = 0
+      const realm: RedstoneHostRealm = {
+        dimension: 'overworld',
+        lookup: {
+          isLeverActive: () => false,
+          isPoweredRailPowered: () => false,
+          readContainerSlots: () => undefined,
+          readPistonCell: () => ({ kind: 'block', block: 'bedrock' }),
+        },
+        port: {
+          applyDispenserTrigger: () => undefined,
+          applyDoorTransition: () => undefined,
+          applyDropperTrigger: () => undefined,
+          applyHopperTransfer: () => undefined,
+          applyLampTransition: () => undefined,
+          applyPoweredRailTransition: () => undefined,
+          commitPistonPlan: () => { committedPlans += 1 },
+        },
+      }
+
+      yield* runtime.syncSnapshot({
+        dimension: 'overworld',
+        components: [
+          { active: true, kind: 'lever', position: { x: 0, y: 0, z: 0 } },
+          {
+            kind: 'piston',
+            pistonFacing: 'south',
+            pistonKind: 'normal',
+            pistonState: 'retracted',
+            position: { x: 0, y: 0, z: -1 },
+          },
+        ],
+      })
+      yield* runFrame(stages)
+
+      const result = yield* Effect.result(applyRedstoneHostEvents(runtime, [realm]))
+
+      expect(result).toStrictEqual(Result.fail(capabilityResolutionFailure))
+      expect(committedPlans).toBe(0)
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+})

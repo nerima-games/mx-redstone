@@ -21,10 +21,10 @@
  * three separate things this repository cannot express, and none of them is a
  * matter of effort:
  *
- *   - the item. Drawing one needs a container at a position, and mc-sim's
- *     `InventoryServiceApi` has no per-position inventory at all — see the
- *     boundary note on `ContainerSlot` in `domain/comparator.ts`, which is the
- *     same missing `inventoryAt(BlockPosition)`.
+ *   - the item. Drawing one needs a container at a position. mc-sim 0.6
+ *     publishes position-addressed container snapshots and item transfers, but
+ *     this package has not connected those APIs to a dispenser host operation;
+ *     see the contract note on `ContainerSlot` in `domain/comparator.ts`.
  *   - the DROP. `EntityManagerApi.spawn` exists
  *     (`mc-sim/application/entity-manager.ts:100`) and cannot be called from
  *     here: it takes `SpawnRequest<S>` (`mc-sim/domain/entity.ts:347-352`) whose

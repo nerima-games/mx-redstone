@@ -244,6 +244,8 @@ void componentSnapshot
 void position
 `;
   await writeFile(join(consumerDirectory, "consumer.ts"), typeConsumerSource.trimStart());
+  // Effect 4's declarations reference the standard disposal protocol. Keep the
+  // consumer target at ES2022 while making those platform types available.
   await writeFile(
     join(consumerDirectory, "tsconfig.json"),
     `${JSON.stringify(
@@ -251,6 +253,7 @@ void position
         compilerOptions: {
           strict: true,
           target: "ES2022",
+          lib: ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable", "ESNext.Disposable"],
           module: "NodeNext",
           moduleResolution: "NodeNext",
           noEmit: true,

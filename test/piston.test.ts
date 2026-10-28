@@ -7,7 +7,8 @@
  * `packages/app/application/frame/stages/redstone-piston-world-effects.ts:12-33`.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
+import type { BlockRegistryResolutionFailure } from '@nerima-games/mc-kernel'
 import {
   applyPistonPlan,
   isPistonMovable,
@@ -22,10 +23,18 @@ import {
 /** A lookup standing in for kernel's capability table. */
 const immovableSet = (blocks: ReadonlyArray<BlockRef>): BlockCapabilityLookup => {
   const set = new Set(blocks)
-  return { pistonImmovable: (block) => set.has(block) }
+  return { pistonImmovable: (block) => Result.succeed(set.has(block)) }
 }
 
-const NOTHING_IS_IMMOVABLE: BlockCapabilityLookup = { pistonImmovable: () => false }
+const NOTHING_IS_IMMOVABLE: BlockCapabilityLookup = { pistonImmovable: () => Result.succeed(false) }
+const capabilityResolutionFailure: BlockRegistryResolutionFailure = {
+  _tag: 'BlockCapabilityFailure',
+  reason: 'unknown-key',
+  message: 'The capability registry could not resolve pistonImmovable',
+}
+const failingCapabilities: BlockCapabilityLookup = {
+  pistonImmovable: () => Result.fail(capabilityResolutionFailure),
+}
 
 describe('REGRESSION: the immovable set is a kernel capability flag, not a local constant', () => {
   it.effect('a block name this repository has never heard of is immovable if — and only if — the lookup says so', () =>
@@ -54,10 +63,10 @@ describe('REGRESSION: the immovable set is a kernel capability flag, not a local
       const capabilities = immovableSet(referenceList)
 
       for (const block of referenceList) {
-        expect(isPistonMovable(capabilities, block)).toBe(false)
+        expect(isPistonMovable(capabilities, block)).toStrictEqual(Result.succeed(false))
       }
       // And a stone block, which is not on that list, moves.
-      expect(isPistonMovable(capabilities, 'STONE')).toBe(true)
+      expect(isPistonMovable(capabilities, 'STONE')).toStrictEqual(Result.succeed(true))
     }),
   )
 
@@ -65,7 +74,7 @@ describe('REGRESSION: the immovable set is a kernel capability flag, not a local
     Effect.sync(() => {
       // Nonsense as a game rule, and exactly the point: mx-redstone has no
       // opinion about bedrock. Adding one here would be the reference's mistake.
-      expect(isPistonMovable(NOTHING_IS_IMMOVABLE, 'BEDROCK')).toBe(true)
+      expect(isPistonMovable(NOTHING_IS_IMMOVABLE, 'BEDROCK')).toStrictEqual(Result.succeed(true))
     }),
   )
 })
@@ -94,6 +103,16 @@ describe('push planning', () => {
       expect(outcome).toStrictEqual({
         kind: 'refused',
         refusal: { reason: 'immovable', at: 2 },
+      })
+    }),
+  )
+
+  it.effect('returns kernel capability lookup failures instead of treating them as refusals', () =>
+    Effect.sync(() => {
+      expect(planPush(['STONE'], failingCapabilities)).toStrictEqual({
+        kind: 'failed',
+        at: 0,
+        failure: capabilityResolutionFailure,
       })
     }),
   )
@@ -205,14 +224,41 @@ describe('positioned piston movement', () => {
     }),
   )
 
+  it.effect('preserves kernel capability lookup failures during sticky retraction and extension', () =>
+    Effect.sync(() => {
+      const piston = { x: 0, y: 0, z: 0 }
+      const stickyRetraction = planPistonTransition(
+        { piston, facing: 'east', kind: 'sticky', state: 'extended', powered: false },
+        { read: ({ x }) => x === 2 ? { kind: 'block', block: 'STONE' } : { kind: 'empty' } },
+        failingCapabilities,
+      )
+      const extension = planPistonTransition(
+        { piston, facing: 'east', kind: 'normal', state: 'retracted', powered: true },
+        cells([[1, 'STONE']]),
+        failingCapabilities,
+      )
+
+      expect(stickyRetraction).toStrictEqual({
+        kind: 'failed',
+        failure: capabilityResolutionFailure,
+        position: { x: 2, y: 0, z: 0 },
+      })
+      expect(extension).toStrictEqual({
+        kind: 'failed',
+        failure: capabilityResolutionFailure,
+        position: { x: 1, y: 0, z: 0 },
+      })
+    }),
+  )
+
   it.effect('rejects a malformed duplicate plan without invoking the atomic commit', () =>
     Effect.gen(function* () {
       let commits = 0
       const move = { block: 'STONE', from: { x: 1, y: 0, z: 0 }, to: { x: 2, y: 0, z: 0 } }
-      const result = yield* Effect.either(applyPistonPlan({
+      const result = yield* Effect.result(applyPistonPlan({
         piston: { x: 0, y: 0, z: 0 }, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended', moves: [move, move],
       }, { commit: () => Effect.sync(() => { commits += 1 }) }))
-      expect(result._tag).toBe('Left')
+      expect(result._tag).toBe('Failure')
       expect(commits).toBe(0)
 
       expect(validatePistonPlan({
@@ -230,12 +276,12 @@ describe('positioned piston movement', () => {
         return { block: `BLOCK_${String(index)}`, from, to: { ...from, x: from.x + 1 } }
       })
       let commits = 0
-      const result = yield* Effect.either(applyPistonPlan({
+      const result = yield* Effect.result(applyPistonPlan({
         piston, facing: 'east', kind: 'normal', fromState: 'retracted', toState: 'extended', moves,
       }, { commit: () => Effect.sync(() => { commits += 1 }) }))
       expect(result).toMatchObject({
-        _tag: 'Left',
-        left: { reason: 'too-long', position: { x: PISTON_PUSH_LIMIT + 1, y: 0, z: 0 } },
+        _tag: 'Failure',
+        failure: { reason: 'too-long', position: { x: PISTON_PUSH_LIMIT + 1, y: 0, z: 0 } },
       })
       expect(commits).toBe(0)
 

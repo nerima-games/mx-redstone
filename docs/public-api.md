@@ -172,7 +172,7 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 
 | エクスポート | 区分 | 備考 |
 | --- | --- | --- |
-| `StageId`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | kernel 公開時に kernel のものへ差し替え |
+| `StageId`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | kernel から直接 import し、再 export しない |
 | `DeltaTimeSecs`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | 同上 |
 | `FrameServices` | **非公開**（所有者は kernel） | runtime service context は kernel が所有 |
 | `StageRegistration` | **非公開**（所有者は kernel） | plan.md §4.1 の字面どおり。`makeRedstoneStages` の**戻り値の形**としてだけ観測される |
@@ -180,8 +180,7 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 これらは「mx-redstone の契約」ではなく mc-kernel が所有する契約である。
 
 **だから re-export しない。** バレルに載せると `StageId` / `DeltaTimeSecs` / `StageRegistration` が
-**所有していないパッケージの公開 API** になり、ヘッダが約束している
-「kernel publish 時にファイルごと削除」がすべての消費者にとっての破壊的変更に化ける。
+**所有していないパッケージの公開 API** になる。
 消費者はこの語彙を kernel から取る。型は構造的に同一なので、
 kernel から import した消費者は `makeRedstoneStages` の戻り値に対してそのまま型検査を通る。
 mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしており、mx-gameplay / mx-ui も同じである。
@@ -221,7 +220,7 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 | エクスポート | 区分 | 備考 |
 | --- | --- | --- |
 | `redstoneSnapshotFromRealm` | **契約** | ホストの生ブロック列から 1 dimension 分の `RedstoneWorldSnapshot` を組む |
-| `applyRedstoneHostEvents` | **契約** | runtime の 5 queue を drain し、`RedstoneHostRealm` ごとに適用する |
+| `applyRedstoneHostEvents` | **契約** | runtime の 5 queue を drain して適用する。piston capability の registry 解決に失敗すると `BlockRegistryResolutionFailure` で失敗する。drain 済み event は戻さない |
 | `RedstoneHostBlock` / `RedstoneHostLookup` / `RedstoneHostWritePort` / `RedstoneHostRealm` | **契約** | ホストが実装する Port の形。ブロック名の語彙は含まない（`applyLampTransition` 等は真偽値を取る） |
 | `componentForBlock` | 内部（可視） | ブロック文字列 1 つの分類。テストとホストの直接検証のために可視 |
 | `kernelPistonCapabilities` | 内部（可視） | mc-kernel の `pistonImmovable` 能力テーブルを読む `BlockCapabilityLookup` |
@@ -273,6 +272,9 @@ snapshot から `CircuitBoard` を構築する関数、内部 state、node ID �
 `PushOutcome` / `planPush` / `isPistonMovable` に加え、方向・伸縮状態を含む
 `PistonMovementPlan` / `planPistonTransition` / `validatePistonPlan` / `applyPistonPlan` を公開する。
 
+`isPistonMovable` は `Result<boolean, BlockRegistryResolutionFailure>` を返す。
+`PushOutcome` と `PistonMovementOutcome` は capability lookup failure を `failed` として返し、
+ゲーム規則による `refused` と区別する。位置を扱う planner は失敗位置を含める。
 `planPistonTransition` は通常／スティッキーピストンの伸縮を計画する。伸長は最大 12 ブロックで、
 移動列は遠い側から順に並ぶ。スティッキー収縮は先端から 2 マス先の可動ブロック 1 個だけを
 1 マス先へ引き戻す。欠損セル、範囲外、移動不能ブロック、不正な移動列は拒否し、
@@ -282,8 +284,9 @@ runtime の powered transition は node ID 順で、観測した給電エッジ�
 スライム／ハチミツによる隣接ブロック連結は mc-kernel に対応する語彙・能力が無いため扱わない。
 ブロックに押されるエンティティの移動と衝突解決は mc-sim / mc-physics の責務である。
 
-`BlockCapabilityLookup` は kernel 公開時に kernel の能力アクセサへ差し替わる
-（[design-notes.md](./design-notes.md) DN-RS-1、[versioning.md](./versioning.md) §6）。
+`BlockCapabilityLookup` は domain planner の純粋性を保つために残すローカル port である。
+host adapter は登録済み block 名を kernel の `BlockId` に解決して `capabilityOfBlockId` を呼び、
+その `Result` を planner まで伝える（[design-notes.md](./design-notes.md) DN-RS-1、[versioning.md](./versioning.md) §6）。
 
 ### `domain/position-key.ts` — **バレルには載せない**
 

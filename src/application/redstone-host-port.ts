@@ -52,20 +52,20 @@ import {
   pistonPositionAt,
   planPistonTransition,
 } from '../domain/piston.js'
-import type {
-  HopperTransferEvent,
-  LampTransition,
-  PoweredComponentTransition,
-  PoweredPistonTransition,
-  RedstoneComponentSnapshot,
-  RedstonePosition,
-  RedstoneTriggerEvent,
-  RedstoneWorldRuntimeService,
-  RedstoneWorldSnapshot,
+import { type BlockRegistryResolutionFailure, blockIdOf, capabilityOfBlockId, isBlockType } from '@nerima-games/mc-kernel'
+import { Effect, Option, Result } from 'effect'
+import {
+  type HopperTransferEvent,
+  type LampTransition,
+  type PoweredComponentTransition,
+  type PoweredPistonTransition,
+  type RedstoneComponentSnapshot,
+  type RedstonePosition,
+  type RedstoneTriggerEvent,
+  type RedstoneWorldRuntimeService,
+  type RedstoneWorldSnapshot,
 } from './world-runtime.js'
-import { blockIdOf, capabilityOfBlockId, isBlockType } from '@nerima-games/mc-kernel'
 import type { ContainerSlot } from '../domain/comparator.js'
-import { Effect } from 'effect'
 
 /** How far in front of a piston's base its head cell sits. */
 const PISTON_HEAD_DISTANCE = 1
@@ -88,8 +88,15 @@ const COMPARATOR_SIDE_DISTANCE = 1
  * the mc-compose source did.
  */
 export const kernelPistonCapabilities: BlockCapabilityLookup = {
-  pistonImmovable: (block) =>
-    isBlockType(block) && capabilityOfBlockId(blockIdOf(block), PISTON_IMMOVABLE_CAPABILITY),
+  pistonImmovable: (block) => {
+    if (!isBlockType(block)) {
+      return Result.succeed(false)
+    }
+    return Option.match(blockIdOf(block), {
+      onNone: () => Result.succeed(false),
+      onSome: (blockId) => capabilityOfBlockId(blockId, PISTON_IMMOVABLE_CAPABILITY),
+    })
+  },
 }
 
 /** One block a host is offering for classification, at the position it occupies. */
@@ -325,12 +332,15 @@ const applyPoweredComponentTransitionEvent = (
 const applyPistonTransitionEvent = (
   realms: ReadonlyMap<string, RedstoneHostRealm>,
   event: PoweredPistonTransition,
-): Effect.Effect<void> => {
+): Effect.Effect<void, BlockRegistryResolutionFailure> => {
   const realm = realms.get(event.dimension)
   if (typeof realm === 'undefined') {
     return Effect.void
   }
   const outcome = planPistonTransition(event, { read: realm.lookup.readPistonCell }, kernelPistonCapabilities)
+  if (outcome.kind === 'failed') {
+    return Effect.fail(outcome.failure)
+  }
   if (outcome.kind !== 'move') {
     return Effect.void
   }
@@ -388,7 +398,7 @@ const applySynchronousEvents = (
 export const applyRedstoneHostEvents = (
   runtime: RedstoneWorldRuntimeService,
   realms: ReadonlyArray<RedstoneHostRealm>,
-): Effect.Effect<void> =>
+): Effect.Effect<void, BlockRegistryResolutionFailure> =>
   Effect.gen(function* applyRedstoneHostEventsGenerator() {
     const byDimension = new Map(realms.map((realm) => [realm.dimension, realm] as const))
     const events = yield* drainRedstoneEvents(runtime)

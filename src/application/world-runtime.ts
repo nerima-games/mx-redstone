@@ -124,21 +124,18 @@ export type RedstoneWorldRuntimeService = {
 }
 
 /**
- * `Context.Tag` is an Effect factory, not a constructor, so it is invoked without `new` even
- * though its name is capitalized; aliasing it to a lower-case binding keeps the call site
- * itself unambiguous to `new-cap` without changing what is called or how.
- *
- * The intermediate `RedstoneWorldRuntimeBase` binding — with an explicit
- * `Context.TagClass` annotation — is required by `isolatedDeclarations`: an
- * `extends` clause must be a bare reference, not an invoked expression.
+ * `Context.Service` is a factory, so it is invoked without `new`.
+ * The intermediate binding with an explicit `Context.ServiceClass` annotation
+ * is required by `isolatedDeclarations`: an `extends` clause must be a bare
+ * reference, not an invoked expression.
  */
-const makeContextTag = Context.Tag
+const makeContextService = Context.Service
 
-const RedstoneWorldRuntimeBase: Context.TagClass<
+const RedstoneWorldRuntimeBase: Context.ServiceClass<
   RedstoneWorldRuntime,
   '@nerima-games/mx-redstone/RedstoneWorldRuntime',
   RedstoneWorldRuntimeService
-> = makeContextTag('@nerima-games/mx-redstone/RedstoneWorldRuntime')<RedstoneWorldRuntime, RedstoneWorldRuntimeService>()
+> = makeContextService<RedstoneWorldRuntime, RedstoneWorldRuntimeService>()('@nerima-games/mx-redstone/RedstoneWorldRuntime')
 
 export class RedstoneWorldRuntime extends RedstoneWorldRuntimeBase {}
 

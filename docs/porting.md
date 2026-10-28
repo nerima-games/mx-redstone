@@ -219,7 +219,7 @@ plan.md §8 のリスク表も同じことを別角度から言っている。
 | `redstone-dispenser-world-effects.test.ts`（7 例） | 立ち上がりエッジ、再武装、TNT、矢、空のチェスト | エッジ 3 例は**既にある**（`test/dispenser.test.ts` 7 本）。TNT / 矢 / チェストは**境界**（DN-RS-17: `inventoryAt`、`SpawnRequest<S>`、ダメージ数値） |
 | `redstone-hopper-world-effects.test.ts`（4 例） | ドロップをチェストへ移す、溢れを再 spawn | **境界**（同上）。そもそも参照実装はロックも搬送周期も持たない（`:11-14`）ので、`test/hopper.test.ts` の期待値はバニラ由来であって参照由来ではない |
 | `interaction-stage-redstone.test.ts`（12 例） | キー入力 → サービス呼び出しの配線、`pistonFacingFromDirection` | **境界。** 入力はこのリポジトリの資産ではない（plan.md §4.2） |
-| `packages/entity/test/redstone-position-utils.test.ts`（18 例） | `BIAS` / `Y_STRIDE` / `XZ_STRIDE`、±32767 の往復 | **座標キーの符号化は kernel の資産。** `domain/position-key.ts` は仮置きで、kernel 公開時に削除される（§4） |
+| `packages/entity/test/redstone-position-utils.test.ts`（18 例） | `BIAS` / `Y_STRIDE` / `XZ_STRIDE`、±32767 の往復 | **旧 3D 座標キーの符号化は持ち込まない。** 現在の `domain/position-key.ts` は 2D circuit graph の key であり、kernel の 3D world key と別の型境界である |
 | `packages/entity/test/redstone-simulation.test.ts`（18 例） | 平置き版。`makeDefaultState`（トーチは既定で点灯）ほか | 「トーチは既定で点灯」は**既にある**（`a torch with no attachment is a permanent source`）。残りは入れ子版と重複 |
 | `packages/entity/test/redstone/test-utils.ts` | 共有ヘルパ | テストではない。26 行の fixture 工場 |
 
@@ -229,7 +229,7 @@ plan.md §8 のリスク表も同じことを別角度から言っている。
 | --- | --- |
 | `PISTON_IMMOVABLE_BLOCKS`（`redstone-piston-world-effects.ts:12-33`） | 能力フラグへ。[design-notes.md](./design-notes.md) DN-RS-1 |
 | `redstoneService.tick()` を毎フレーム呼ぶ構造（`interaction-redstone-handler.ts:113`） | 固定レートへ。DN-RS-3 |
-| `redstonePositionKey`（`redstone-piston-world-effects.ts:50-51`） | 座標キーの符号化は kernel の資産。`domain/position-key.ts` は仮置きで、kernel 公開時に削除 |
+| `redstonePositionKey`（`redstone-piston-world-effects.ts:50-51`） | 旧 3D key encoder は持ち込まない。2D circuit graph の `domain/position-key.ts` は残し、kernel の world position/key と混同しない |
 | `RedstoneComponentType` の 12 値 Schema（`redstone-model.ts:15`） | 部品集合はここで再設計する。参照実装は Hopper を導通させない一方 Dispenser を導通させており、その根拠が記録されていない |
 | ブロック名リテラル一般 | mc-kernel の語彙。ここに 2 つ目の語彙を作らない |
 

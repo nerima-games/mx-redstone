@@ -87,28 +87,17 @@ export const hopperTransferDue = (options: {
  * BOUNDARY: the transfer itself
  * ---------------------------------------------------------------------------
  *
- * `hopperTransferDue` says WHEN. Moving an item needs two things this repository
- * does not have, and inventing either would fork a vocabulary
- * (docs/responsibility.md §2 puts both in mc-sim):
- *
- *   - a container at a position. mc-sim's `InventoryServiceApi`
- *     (`application/inventory-service.ts:17-53`) is the PLAYER's inventory and
- *     nothing else: `add`, `remove`, `countOf` and `snapshot` take an item and a
- *     count, never a position. `Inventory` (`mc-sim/domain/inventory.ts:112`) is
- *     a bare `ReadonlyArray<Slot>` with no identity attached. The missing query
- *     is `inventoryAt(BlockPosition)` — the same one `domain/comparator.ts`
- *     needs, which is worth noticing: a comparator reading a chest and a hopper
- *     draining one are blocked on ONE addition, not two.
- *   - the item vocabulary. `ItemType` is mc-kernel's closed union
- *     (`domain/item-type.ts:128`), mirrored by mc-sim in
- *     `domain/kernel-vocabulary.ts`. This repository declares no
- *     `@nerima-games/*` dependency yet (docs/responsibility.md §3, 現状), and
- *     `domain/block-ref.ts` explains why a local stand-in is acceptable for a
- *     token that is only ever compared and not acceptable for one that would be
- *     enumerated.
+ * `hopperTransferDue` says WHEN. sim 0.6 now exports the transfer contracts
+ * that were missing when this boundary was written: `InventoryServiceApi`
+ * provides `moveOneContainerItemAt` for moving one item between dimension-qualified
+ * container positions, while `HopperService.transfer` accepts a hopper address,
+ * source and destination endpoints, and a block-write batch. `HopperService`
+ * also exposes cooldown advancement, and these APIs share mc-kernel's block and
+ * item vocabulary. This package already depends on mc-sim; the current redstone
+ * stage does not yet connect `hopperTransferDue` and `isHopperLocked` to those
+ * services, so this module still defines timing and locking rules only.
  *
  * `HOPPER_TRANSFER_ITEMS` is here rather than at the call site for the reason
  * `PISTON_PUSH_LIMIT` is: it is a RULE about how a hopper behaves, not a fact
- * about what an item is, and the split between the two is what keeps the block
- * and item rosters out of this repository entirely.
+ * about what an item is.
  */

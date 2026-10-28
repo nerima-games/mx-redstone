@@ -16,7 +16,7 @@
  *     drain-to-host).
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import { DeltaTimeSecs, type StageRegistration } from '@nerima-games/mc-kernel'
 import {
   applyRedstoneHostEvents,
@@ -201,14 +201,14 @@ describe('kernelPistonCapabilities', () => {
     Effect.sync(() => {
       // bedrock/dirt are asserted against mc-kernel's PUBLISHED capability
       // table, not invented here (DN-RS-1) — see docs/responsibility.md §2.
-      expect(kernelPistonCapabilities.pistonImmovable('bedrock')).toBe(true)
-      expect(kernelPistonCapabilities.pistonImmovable('dirt')).toBe(false)
+      expect(kernelPistonCapabilities.pistonImmovable('bedrock')).toStrictEqual(Result.succeed(true))
+      expect(kernelPistonCapabilities.pistonImmovable('dirt')).toStrictEqual(Result.succeed(false))
     }),
   )
 
   it.effect('REGRESSION: a string mc-kernel does not recognise as a block type is never immovable', () =>
     Effect.sync(() => {
-      expect(kernelPistonCapabilities.pistonImmovable('not_a_real_block_xyz')).toBe(false)
+      expect(kernelPistonCapabilities.pistonImmovable('not_a_real_block_xyz')).toStrictEqual(Result.succeed(false))
     }),
   )
 })

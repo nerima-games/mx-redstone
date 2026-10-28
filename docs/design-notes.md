@@ -66,14 +66,18 @@ plan.md の 51/229 とは一致しないが、監査自身が §2-4 で
 `domain/piston.ts` には**ブロック名が 1 つも書かれていない**。能力は引数で受け取る。
 
 ```typescript
+import type { BlockRef } from './block-ref.js'
+import type { BlockRegistryResolutionFailure } from '@nerima-games/mc-kernel'
+import { Result } from 'effect'
+
 export type BlockCapabilityLookup = {
   /** kernel's `pistonImmovable` flag (capability-flag-audit.md §3). */
-  readonly pistonImmovable: (block: BlockRef) => boolean
+  readonly pistonImmovable: (block: BlockRef) => Result.Result<boolean, BlockRegistryResolutionFailure>
 }
 ```
 
-`BlockRef = string` を不透明なまま扱い、`planPush` は `capabilities.pistonImmovable(block)` を呼ぶだけである
-（`domain/piston.ts:117-131`）。
+`BlockRef = string` を不透明なまま扱い、`planPush` は `capabilities.pistonImmovable(block)` の Result を検査する。
+lookup failure は `failed`、ゲーム規則による拒否は `refused` として分ける（`domain/piston.ts:120-160`）。
 「押せるかどうか」を決める権限がこのファイルに存在しないので、ローカル定数を書く場所がない。
 
 **回帰テスト**: `test/piston.test.ts`
@@ -84,6 +88,7 @@ export type BlockCapabilityLookup = {
 | `a block name this repository has never heard of is immovable if — and only if — the lookup says so` | `QUANTUM_OBSIDIAN` という本リポジトリのどこにも現れない名前が、注入された lookup の言うとおりに振る舞う。ローカルリストがあれば注入で答えが変わらないので、2 つの assert のどちらかが落ちる |
 | `the blocks the reference hardcoded are decided by the caller here, every one of them` | 参照実装の 20 エントリを逐語で並べ、**全部が呼び出し側の決定**であることを確認する |
 | `a lookup that never refuses makes every block pushable, including bedrock` | 「岩盤が押せる」というゲーム規則として無意味な状態が成立する。それが正しい。mx-redstone は岩盤について意見を持たない |
+| `returns kernel capability lookup failures instead of treating them as refusals` | registry failure が `failed` で返り、immovable refusal にならないことを確認する |
 
 3 番目は一見ばかげているが、これが本質である。**意見を持たないことをテストする**という形になっている。
 
@@ -394,7 +399,7 @@ export type PushRefusal = {
 }
 ```
 
-`domain/piston.ts:88-92`。拒否は boolean ではなく理由つきである。
+`domain/piston.ts:93-97`。拒否は boolean ではなく理由つきである。
 
 ### なぜ
 
@@ -408,7 +413,7 @@ export type PushRefusal = {
 「列のどこで拒否されたか」が分かればプレビューでその位置を光らせられる。
 
 `PISTON_PUSH_LIMIT = 12` はバニラの上限であり、**能力ではなく規則**なので kernel ではなくここに置く
-（`domain/piston.ts:70-76`）。「ブロックとは何か」は kernel、「ピストンがどう振る舞うか」はここ、という分割である。
+（`domain/piston.ts:81`）。「ブロックとは何か」は kernel、「ピストンがどう振る舞うか」はここ、という分割である。
 
 **回帰テスト**: `test/piston.test.ts` `describe('push planning')`
 

@@ -351,7 +351,9 @@ const probePush = (length: number): PushProbe => {
     outcome:
       outcome.kind === 'push'
         ? `push ${String(outcome.plan.length)}`
-        : `refused ${outcome.refusal.reason} at ${String(outcome.refusal.at)}`,
+        : outcome.kind === 'failed'
+          ? `failed ${outcome.failure._tag}: ${outcome.failure.message} at ${String(outcome.at)}`
+          : `refused ${outcome.refusal.reason} at ${String(outcome.refusal.at)}`,
   }
 }
 
@@ -362,7 +364,9 @@ const probeImmovableAt = (index: number): string => {
   const outcome = planPush(column, previewCapabilities)
   return outcome.kind === 'push'
     ? `push ${String(outcome.plan.length)}`
-    : `refused ${outcome.refusal.reason} at ${String(outcome.refusal.at)}`
+    : outcome.kind === 'failed'
+      ? `failed ${outcome.failure._tag}: ${outcome.failure.message} at ${String(outcome.at)}`
+      : `refused ${outcome.refusal.reason} at ${String(outcome.refusal.at)}`
 }
 
 // ---------------------------------------------------------------------------
