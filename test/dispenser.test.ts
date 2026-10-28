@@ -274,7 +274,7 @@ describe('dispenser item action planning', () => {
         planDispenserAction({ ...inventory.success, unexpected: true }, 0),
       ).toStrictEqual(Result.fail({ _tag: 'InvalidContainer' }))
 
-      for (const invalidSlot of [-1, 9, 1.5, '0', null]) {
+      for (const invalidSlot of [-1, 9, 1.5, NaN, Infinity, -Infinity, '0', null]) {
         expect(planDispenserAction(inventory.success, invalidSlot)).toStrictEqual(
           Result.fail({ _tag: 'InvalidSlot' }),
         )
