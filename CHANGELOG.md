@@ -1,5 +1,15 @@
 # @nerima-games/mx-redstone
 
+## 0.5.0
+
+### Minor Changes
+
+- Upgrade the package to Effect 4 and the W4 dependency baseline. Add hopper transfer candidate selection, dispenser action planning, atomic host-event commits with event restoration on failure, and a QA placement-fixture subpath. Document the piston planning operations used by the W5 host.
+
+- Pin mc-sim 0.7.1 and advance powered hopper cooldowns through HopperService.
+
+- Use mc-sim 0.7 plan fragments to commit each redstone host-event batch atomically, delegate hopper cooldown timing to HopperService, and align the exact mc-kernel pin with 0.14.0.
+
 ## 0.4.0
 
 ### Minor Changes
