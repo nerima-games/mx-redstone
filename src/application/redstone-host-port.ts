@@ -129,9 +129,9 @@ export const kernelPistonCapabilities: BlockCapabilityLookup = {
 }
 
 /** One decoded host block address and the block occupying it. */
-const REDSTONE_HOST_BLOCK_TYPES = [...BLOCK_TYPES, 'sticky_piston'] as const
+const REDSTONE_HOST_BLOCK_TYPES = [...BLOCK_TYPES, 'note_block', 'sticky_piston', 'trapdoor'] as const
 
-export type RedstoneHostBlockType = BlockType | 'sticky_piston'
+export type RedstoneHostBlockType = BlockType | 'note_block' | 'sticky_piston' | 'trapdoor'
 export const RedstoneHostBlockTypeSchema: Schema.Codec<RedstoneHostBlockType, RedstoneHostBlockType> =
   schemaLiterals(REDSTONE_HOST_BLOCK_TYPES)
 
@@ -345,6 +345,7 @@ const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, Compone
   dropper: fixedKindComponent('dropper'),
   hopper: fixedKindComponent('hopper'),
   lever: leverComponent,
+  note_block: fixedKindComponent('note-block'),
   piston: pistonComponent,
   powered_rail: poweredRailComponent,
   redstone_lamp: fixedKindComponent('lamp'),
@@ -352,6 +353,7 @@ const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, Compone
   redstone_torch: fixedKindComponent('torch'),
   redstone_wire: fixedKindComponent('wire'),
   sticky_piston: pistonComponent,
+  trapdoor: fixedKindComponent('trapdoor'),
 }
 
 /**

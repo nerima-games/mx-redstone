@@ -37,6 +37,7 @@ import {
   componentForBlock,
   kernelPistonCapabilities,
   redstoneSnapshotFromRealm,
+  RedstoneHostBlockTypeSchema,
   type RedstoneHostBlock,
   type RedstoneHostBlockType,
   type RedstoneHostLookup,
@@ -263,12 +264,14 @@ describe('componentForBlock', () => {
     { block: 'hopper', kind: 'hopper' },
     { block: 'dispenser', kind: 'dispenser' },
     { block: 'dropper', kind: 'dropper' },
+    { block: 'note_block', kind: 'note-block' },
     { block: 'redstone_torch', kind: 'torch' },
     { block: 'redstone_wire', kind: 'wire' },
     { block: 'redstone_lamp', kind: 'lamp' },
     { block: 'redstone_lamp_lit', kind: 'lamp' },
     { block: 'door', kind: 'door' },
     { block: 'door_open', kind: 'door' },
+    { block: 'trapdoor', kind: 'trapdoor' },
   ]
 
   for (const testCase of cases) {
@@ -465,6 +468,7 @@ describe('invariant: component snapshots only include blocks with redstone behav
     'hopper',
     'dispenser',
     'dropper',
+    'note_block',
     'redstone_torch',
     'redstone_wire',
     'powered_rail',
@@ -474,6 +478,7 @@ describe('invariant: component snapshots only include blocks with redstone behav
     'redstone_lamp_lit',
     'door',
     'door_open',
+    'trapdoor',
     'piston',
   ]
   const NON_COMPONENT_BLOCKS: ReadonlyArray<RedstoneHostBlockType | null> = ['stone', 'dirt', 'air', 'chest', null]
@@ -956,25 +961,26 @@ describe('applyRedstoneHostEvents', () => {
   )
 
   it.effect(
-    "a note-block trigger and trapdoor transition reach the single host request",
+    "raw note-block and trapdoor blocks reach the single host request",
     () =>
       Effect.gen(function* () {
         const runtime = yield* RedstoneWorldRuntime
         const stages = yield* makeRuntimeRedstoneStages
-        const { calls, port, realm } = recordingRealm(dimensionId('overworld'), missingLookup)
+        const lookup: RedstoneHostLookup = { ...missingLookup, isLeverActive: () => true }
+        const { calls, port, realm } = recordingRealm(dimensionId('overworld'), lookup)
+        const decodeHostBlockType = Schema.decodeUnknownSync(RedstoneHostBlockTypeSchema)
+        const snapshot = snapshotValue(realm, [
+          block(decodeHostBlockType('lever'), 0, 0, 0),
+          block(decodeHostBlockType('note_block'), 0, 1, 0),
+          block(decodeHostBlockType('trapdoor'), 0, -1, 0),
+        ])
 
-        // These two component kinds have no `componentForBlock` case that
-        // ever produces them (see the file header on redstone-host-port.ts);
-        // building the snapshot by hand is the only way to drive the drain
-        // queues into the state this regression is about.
-        yield* runtime.syncSnapshot({
-          components: [
-            { active: true, kind: 'lever', position: blockPosition(0, 0, 0) },
-            { kind: 'note-block', position: blockPosition(0, 1, 0) },
-            { kind: 'trapdoor', position: blockPosition(0, -1, 0) },
-          ],
-          dimension: dimensionId('overworld'),
-        })
+        expect(snapshot.components).toStrictEqual([
+          { active: true, kind: 'lever', position: blockPosition(0, 0, 0) },
+          { kind: 'note-block', position: blockPosition(0, 1, 0) },
+          { kind: 'trapdoor', position: blockPosition(0, -1, 0) },
+        ])
+        yield* runtime.syncSnapshot(snapshot)
         yield* runFrame(stages)
         yield* applyRedstoneHostEvents(runtime, [realm], port)
 
