@@ -1,4 +1,10 @@
-import { BlockAxis, type BlockAddress, type BlockPosition } from '@nerima-games/mc-kernel'
+import {
+  type BlockAddress,
+  BlockAxis,
+  type BlockPosition,
+  BlockPositionSchema,
+  DimensionIdSchema,
+} from '@nerima-games/mc-kernel'
 import {
   type CircuitBoard,
   type Component,
@@ -10,7 +16,7 @@ import {
   isPowered,
 } from '../domain/power-graph.js'
 import { type ComparatorMode, type ContainerSlot, containerSignalStrength } from '../domain/comparator.js'
-import { Context, Effect, Layer, Ref } from 'effect'
+import { Context, Effect, Layer, Option, Ref, Schema } from 'effect'
 import type { PistonFacing, PistonKind, PistonState, PistonTransitionRequest } from '../domain/piston.js'
 import {
   type TimedCircuitState,
@@ -112,6 +118,43 @@ export type RedstoneEventBatch = {
   readonly powered: ReadonlyArray<PoweredComponentTransition>
   readonly trigger: ReadonlyArray<RedstoneTriggerEvent>
 }
+
+const arraySchema = Schema.Array
+const blockAxis = BlockAxis
+const literalsSchema = Schema.Literals
+const structSchema = Schema.Struct
+const ZERO_AXIS = blockAxis(0)
+const POSITIVE_ONE_AXIS = blockAxis(1)
+const NEGATIVE_ONE_AXIS = blockAxis(-1)
+
+/** Strict decoding shape for every drained runtime event category. */
+export const RedstoneEventBatchSchema: Schema.Codec<RedstoneEventBatch, unknown> = structSchema({
+  hopper: arraySchema(structSchema({ dimension: DimensionIdSchema, position: BlockPositionSchema })),
+  lamp: arraySchema(structSchema({
+    dimension: DimensionIdSchema,
+    lit: Schema.Boolean,
+    position: BlockPositionSchema,
+  })),
+  piston: arraySchema(structSchema({
+    dimension: DimensionIdSchema,
+    facing: literalsSchema(['down', 'east', 'north', 'south', 'up', 'west']),
+    kind: literalsSchema(['normal', 'sticky']),
+    piston: BlockPositionSchema,
+    powered: Schema.Boolean,
+    state: literalsSchema(['extended', 'retracted']),
+  })),
+  powered: arraySchema(structSchema({
+    dimension: DimensionIdSchema,
+    kind: literalsSchema(['powered-rail', 'door', 'trapdoor']),
+    position: BlockPositionSchema,
+    powered: Schema.Boolean,
+  })),
+  trigger: arraySchema(structSchema({
+    dimension: DimensionIdSchema,
+    kind: literalsSchema(['dispenser', 'dropper', 'note-block']),
+    position: BlockPositionSchema,
+  })),
+})
 
 export type RedstoneWorldRuntimeService = {
   /** Replaces only the named dimension; snapshots of other dimensions remain installed. */
@@ -215,12 +258,12 @@ const componentAt = (
 }
 
 const FACE_OFFSETS: ReadonlyArray<RedstonePosition> = [
-  { x: BlockAxis(1), y: BlockAxis(0), z: BlockAxis(0) },
-  { x: BlockAxis(-1), y: BlockAxis(0), z: BlockAxis(0) },
-  { x: BlockAxis(0), y: BlockAxis(1), z: BlockAxis(0) },
-  { x: BlockAxis(0), y: BlockAxis(-1), z: BlockAxis(0) },
-  { x: BlockAxis(0), y: BlockAxis(0), z: BlockAxis(1) },
-  { x: BlockAxis(0), y: BlockAxis(0), z: BlockAxis(-1) },
+  { x: POSITIVE_ONE_AXIS, y: ZERO_AXIS, z: ZERO_AXIS },
+  { x: NEGATIVE_ONE_AXIS, y: ZERO_AXIS, z: ZERO_AXIS },
+  { x: ZERO_AXIS, y: POSITIVE_ONE_AXIS, z: ZERO_AXIS },
+  { x: ZERO_AXIS, y: NEGATIVE_ONE_AXIS, z: ZERO_AXIS },
+  { x: ZERO_AXIS, y: ZERO_AXIS, z: POSITIVE_ONE_AXIS },
+  { x: ZERO_AXIS, y: ZERO_AXIS, z: NEGATIVE_ONE_AXIS },
 ]
 
 /** One component, tagged with the dimension and node id it was read from — the flattened
@@ -256,30 +299,40 @@ type CircuitBoardAccumulator = {
   readonly components: Map<PositionKey, Component>
 }
 
+const neighbourAtOffset = (
+  dimension: DimensionId,
+  position: RedstonePosition,
+  offset: RedstonePosition,
+  allNodeIds: ReadonlySet<PositionKey>,
+): Option.Option<PositionKey> => {
+  const x = position.x + offset.x
+  const y = position.y + offset.y
+  const z = position.z + offset.z
+  if (![x, y, z].every(Number.isSafeInteger)) {
+    return Option.none()
+  }
+  const nodeId = redstoneNodeId(dimension, {
+    x: blockAxis(x),
+    y: blockAxis(y),
+    z: blockAxis(z),
+  })
+  if (!allNodeIds.has(nodeId)) {
+    return Option.none()
+  }
+  return Option.some(nodeId)
+}
+
 const neighboursOf = (
   dimension: DimensionId,
   component: RedstoneComponentSnapshot,
   allNodeIds: ReadonlySet<PositionKey>,
-): ReadonlyArray<PositionKey> => {
-  const neighbours: Array<PositionKey> = []
-  for (const offset of FACE_OFFSETS) {
-    const x = component.position.x + offset.x
-    const y = component.position.y + offset.y
-    const z = component.position.z + offset.z
-    if (![x, y, z].every(Number.isSafeInteger)) {
-      continue
-    }
-    const neighbour = redstoneNodeId(dimension, {
-      x: BlockAxis(x),
-      y: BlockAxis(y),
-      z: BlockAxis(z),
-    })
-    if (allNodeIds.has(neighbour)) {
-      neighbours.push(neighbour)
-    }
-  }
-  return neighbours
-}
+): ReadonlyArray<PositionKey> =>
+  FACE_OFFSETS.flatMap((offset) =>
+    Option.match(neighbourAtOffset(dimension, component.position, offset, allNodeIds), {
+      onNone: () => [],
+      onSome: (nodeId) => [nodeId],
+    }),
+  )
 
 /**
  * A node id already encodes its dimension (`redstoneNodeId` stringifies `[dimension, x, y, z]`),
@@ -769,6 +822,12 @@ export type RedstoneWorldRuntimeStateError = {
   readonly _tag: 'UnregisteredRedstoneWorldRuntime'
   readonly message: string
 }
+
+export const RedstoneWorldRuntimeStateErrorSchema: Schema.Codec<RedstoneWorldRuntimeStateError, unknown> =
+  structSchema({
+    _tag: Schema.Literal('UnregisteredRedstoneWorldRuntime'),
+    message: Schema.String,
+  })
 
 export const redstoneWorldStateFor = (
   runtime: RedstoneWorldRuntimeService,

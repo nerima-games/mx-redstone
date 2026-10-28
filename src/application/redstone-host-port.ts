@@ -27,6 +27,20 @@
  * by DN-RS-11 and `docs/testing.md` §6-1.
  */
 import {
+  BLOCK_TYPES,
+  type BlockAddress,
+  BlockAxis,
+  type BlockPosition,
+  type BlockRegistryResolutionFailure,
+  type BlockType,
+  blockIdOf,
+  capabilityOfBlockId,
+  isBlockType,
+} from '@nerima-games/mc-kernel'
+import { Effect, Exit, Option, Result, Schema } from 'effect'
+import type { WorldCommitCoordinatorApi, WorldCommitCoordinatorError, WorldCommitRequest } from '@nerima-games/mc-sim'
+import type { ContainerSlot } from '../domain/comparator.js'
+import {
   type BlockCapabilityLookup,
   type PistonCellRead,
   type PistonFacing,
@@ -36,31 +50,23 @@ import {
   planPistonTransition,
 } from '../domain/piston.js'
 import {
-  BlockAxis,
-  type BlockAddress,
-  type BlockPosition,
-  type BlockType,
-  type BlockRegistryResolutionFailure,
-  BLOCK_TYPES,
-  blockIdOf,
-  capabilityOfBlockId,
-  isBlockType,
-} from '@nerima-games/mc-kernel'
-import type { WorldCommitCoordinatorApi, WorldCommitCoordinatorError, WorldCommitRequest } from '@nerima-games/mc-sim'
-import { Effect, Exit, Option, Result, Schema } from 'effect'
-import {
   type PoweredPistonTransition,
   type RedstoneComponentSnapshot,
   type RedstoneEventBatch,
   type RedstoneWorldRuntimeService,
   type RedstoneWorldSnapshot,
 } from './world-runtime.js'
-import type { ContainerSlot } from '../domain/comparator.js'
+
+const blockAxis = BlockAxis
+const schemaLiterals = Schema.Literals
 
 type RedstoneDimensionId = BlockAddress['dimension']
 
 /** How far in front of a piston's base its head cell sits. */
 const PISTON_HEAD_DISTANCE = 1
+const FIRST_EVENT_DIMENSION_INDEX = 0
+const MAX_EVENT_DIMENSION_COUNT = 1
+const ZERO_EVENT_COUNT = 0
 
 /** The mc-kernel capability name `kernelPistonCapabilities` reads. */
 const PISTON_IMMOVABLE_CAPABILITY = 'pistonImmovable'
@@ -96,7 +102,7 @@ const REDSTONE_HOST_BLOCK_TYPES = [...BLOCK_TYPES, 'sticky_piston'] as const
 
 export type RedstoneHostBlockType = BlockType | 'sticky_piston'
 export const RedstoneHostBlockTypeSchema: Schema.Codec<RedstoneHostBlockType, RedstoneHostBlockType> =
-  Schema.Literals(REDSTONE_HOST_BLOCK_TYPES)
+  schemaLiterals(REDSTONE_HOST_BLOCK_TYPES)
 
 export type RedstoneHostBlock = {
   readonly address: BlockAddress
@@ -165,11 +171,18 @@ const pistonStateFromHead = (head: PistonCellRead): 'extended' | 'retracted' => 
   return 'retracted'
 }
 
+const pistonKindFromBlock = (block: RedstoneHostBlockType): 'normal' | 'sticky' => {
+  if (block === 'sticky_piston') {
+    return 'sticky'
+  }
+  return 'normal'
+}
+
 const blockPositionAt = (x: number, y: number, z: number): Result.Result<BlockPosition, RedstoneHostPositionFailure> => {
   if (![x, y, z].every(Number.isSafeInteger)) {
     return Result.fail({ _tag: 'RedstoneHostPositionOutOfRange', position: { x, y, z } })
   }
-  return Result.succeed({ x: BlockAxis(x), y: BlockAxis(y), z: BlockAxis(z) })
+  return Result.succeed({ x: blockAxis(x), y: blockAxis(y), z: blockAxis(z) })
 }
 
 const comparatorComponent = (
@@ -206,7 +219,7 @@ const pistonComponent = (
       return {
         kind: 'piston',
         pistonFacing: facing,
-        pistonKind: block === 'sticky_piston' ? 'sticky' : 'normal',
+        pistonKind: pistonKindFromBlock(block),
         pistonState: pistonStateFromHead(head),
         position,
       }
@@ -246,8 +259,8 @@ const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, Compone
   hopper: fixedKindComponent('hopper'),
   lever: leverComponent,
   piston: pistonComponent,
-  sticky_piston: pistonComponent,
   powered_rail: poweredRailComponent,
+  sticky_piston: pistonComponent,
   redstone_lamp: fixedKindComponent('lamp'),
   redstone_lamp_lit: fixedKindComponent('lamp'),
   redstone_torch: fixedKindComponent('torch'),
@@ -265,11 +278,11 @@ export const componentForBlock = (
   position: BlockPosition,
 ): Result.Result<RedstoneComponentSnapshot | undefined, RedstoneHostPositionFailure> => {
   if (block === null) {
-    return Result.succeed(undefined)
+    return Result.succeed(void 0)
   }
   const builder = COMPONENT_BUILDERS[block]
-  if (typeof builder === 'undefined') {
-    return Result.succeed(undefined)
+  if (!builder) {
+    return Result.succeed(void 0)
   }
   return builder(lookup, position, block)
 }
@@ -284,49 +297,44 @@ export const redstoneSnapshotFromRealm = (
   blocks: ReadonlyArray<RedstoneHostBlock>,
 ): Result.Result<RedstoneWorldSnapshot, RedstoneHostPositionFailure> => {
   return Result.gen(function* redstoneSnapshotFromRealmGenerator() {
-    const components: Array<RedstoneComponentSnapshot> = []
-    for (const { address, block } of blocks) {
-      const component = yield* componentForBlock(realm.lookup, block, address.position)
-      if (typeof component !== 'undefined') {
-        components.push(component)
-      }
+    const components = yield* Result.all(blocks.map(({ address, block }) =>
+      componentForBlock(realm.lookup, block, address.position),
+    ))
+    return {
+      components: components.filter((component): component is RedstoneComponentSnapshot => Boolean(component)),
+      dimension: realm.dimension,
     }
-    return { components, dimension: realm.dimension }
   })
 }
 
 const planPistonTransitionEvent = (
-  realms: ReadonlyMap<RedstoneDimensionId, RedstoneHostRealm>,
+  realm: RedstoneHostRealm,
   event: PoweredPistonTransition,
 ): Effect.Effect<
-  PistonMovementPlan | undefined,
-  BlockRegistryResolutionFailure | RedstoneHostEventFailure | RedstoneHostPositionFailure
+  Option.Option<PistonMovementPlan>,
+  BlockRegistryResolutionFailure | RedstoneHostPositionFailure
 > => {
-  const realm = realms.get(event.dimension)
-  if (typeof realm === 'undefined') {
-    return Effect.succeed(undefined)
-  }
-  let outOfRangeFailure: RedstoneHostPositionFailure | undefined
+  let positionFailure: Option.Option<RedstoneHostPositionFailure> = Option.none()
   const outcome = planPistonTransition(event, {
     read: (position) => {
       const safePosition = blockPositionAt(position.x, position.y, position.z)
       if (Result.isFailure(safePosition)) {
-        outOfRangeFailure = safePosition.failure
+        positionFailure = Option.some(safePosition.failure)
         return { kind: 'out-of-world' }
       }
       return realm.lookup.readPistonCell(safePosition.success)
     },
   }, kernelPistonCapabilities)
-  if (typeof outOfRangeFailure !== 'undefined') {
-    return Effect.fail(outOfRangeFailure)
+  if (Option.isSome(positionFailure)) {
+    return Effect.fail(positionFailure.value)
   }
   if (outcome.kind === 'failed') {
     return Effect.fail(outcome.failure)
   }
   if (outcome.kind !== 'move') {
-    return Effect.succeed(undefined)
+    return Effect.succeed(Option.none())
   }
-  return Effect.succeed(outcome.plan)
+  return Effect.succeed(Option.some(outcome.plan))
 }
 
 /** Gathers all five queues, including note-block and trapdoor events, before preflight. */
@@ -352,7 +360,50 @@ const eventDimensions = (events: RedstoneEventBatch): ReadonlyArray<RedstoneDime
   ])]
 
 const redstoneEventBatchIsEmpty = (events: RedstoneEventBatch): boolean =>
-  events.hopper.length + events.lamp.length + events.piston.length + events.powered.length + events.trigger.length === 0
+  events.hopper.length + events.lamp.length + events.piston.length + events.powered.length + events.trigger.length ===
+  ZERO_EVENT_COUNT
+
+const realmForRedstoneEvents = (
+  realms: ReadonlyArray<RedstoneHostRealm>,
+  events: RedstoneEventBatch,
+): Effect.Effect<Option.Option<RedstoneHostRealm>, RedstoneHostEventFailure> =>
+  Effect.gen(function* realmForRedstoneEventsGenerator() {
+    const dimensions = eventDimensions(events)
+    if (dimensions.length > MAX_EVENT_DIMENSION_COUNT) {
+      return yield* Effect.fail<RedstoneHostEventFailure>({ _tag: 'RedstoneHostMixedDimensions', dimensions })
+    }
+    const dimension = dimensions.at(FIRST_EVENT_DIMENSION_INDEX)
+    if (!dimension) {
+      return Option.none()
+    }
+    const realm = realms.find((candidate) => candidate.dimension === dimension)
+    if (!realm) {
+      return yield* Effect.fail<RedstoneHostEventFailure>({ _tag: 'RedstoneHostRealmMissing', dimension })
+    }
+    return Option.some(realm)
+  })
+
+const planEventPistons = (
+  realm: RedstoneHostRealm,
+  events: RedstoneEventBatch,
+) => {
+  return Effect.forEach(events.piston, (event) =>
+    Effect.map(planPistonTransitionEvent(realm, event), (plan) => ({ event, plan })),
+  )
+}
+
+const buildAndCommitRedstoneEvents = <BuildError>(
+  port: RedstoneHostWritePort<BuildError>,
+  events: RedstoneEventBatch,
+  pistonPlans: ReadonlyArray<PistonMovementPlan>,
+): Effect.Effect<void, BuildError | WorldCommitCoordinatorError> =>
+  Effect.gen(function* buildAndCommitRedstoneEventsGenerator() {
+    const built = port.buildCommitRequest(events, pistonPlans)
+    if (Result.isFailure(built)) {
+      return yield* Effect.fail(built.failure)
+    }
+    yield* port.commit(built.success)
+  })
 
 const commitRedstoneEvents = <BuildError>(
   realms: ReadonlyArray<RedstoneHostRealm>,
@@ -363,35 +414,24 @@ const commitRedstoneEvents = <BuildError>(
   BlockRegistryResolutionFailure | RedstoneHostEventFailure | RedstoneHostPositionFailure | BuildError | WorldCommitCoordinatorError
 > =>
   Effect.gen(function* commitRedstoneEventsGenerator() {
-    const dimensions = eventDimensions(events)
-    if (dimensions.length > 1) {
-      return yield* Effect.fail<RedstoneHostEventFailure>({ _tag: 'RedstoneHostMixedDimensions', dimensions })
-    }
-    const [dimension] = dimensions
-    if (typeof dimension === 'undefined') {
+    const realm = yield* realmForRedstoneEvents(realms, events)
+    if (Option.isNone(realm)) {
       return
     }
-    const realm = realms.find((candidate) => candidate.dimension === dimension)
-    if (typeof realm === 'undefined') {
-      return yield* Effect.fail<RedstoneHostEventFailure>({ _tag: 'RedstoneHostRealmMissing', dimension })
-    }
-    const byDimension = new Map([[realm.dimension, realm]])
-    const plannedPistons = yield* Effect.forEach(events.piston, (event) =>
-      planPistonTransitionEvent(byDimension, event),
+    const plannedPistons = yield* planEventPistons(realm.value, events)
+    const pistonPlans = plannedPistons.flatMap(({ plan }) =>
+      Option.match(plan, { onNone: () => [], onSome: (value) => [value] }),
     )
-    const pistonPlans = plannedPistons.filter((plan): plan is PistonMovementPlan => typeof plan !== 'undefined')
     const commitEvents: RedstoneEventBatch = {
       ...events,
-      piston: events.piston.filter((_, index) => typeof plannedPistons[index] !== 'undefined'),
+      piston: plannedPistons.flatMap(({ event, plan }) =>
+        Option.match(plan, { onNone: () => [], onSome: () => [event] }),
+      ),
     }
     if (redstoneEventBatchIsEmpty(commitEvents)) {
       return
     }
-    const built = port.buildCommitRequest(commitEvents, pistonPlans)
-    if (Result.isFailure(built)) {
-      return yield* Effect.fail(built.failure)
-    }
-    yield* port.commit(built.success)
+    yield* buildAndCommitRedstoneEvents(port, commitEvents, pistonPlans)
   })
 
 /**
