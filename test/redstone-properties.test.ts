@@ -176,7 +176,7 @@ const runHostBatch = (positionX: number, mixedDimensions: boolean) => {
     lookup: {
       isLeverActive: () => false,
       isPoweredRailPowered: () => false,
-      readContainerSlots: () => void 0,
+      readContainerSlots: () => undefined,
       readPistonCell: () => ({ kind: 'empty' }),
       readPistonFacing: () => 'north',
     },
