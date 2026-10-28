@@ -35,6 +35,7 @@
  * a regression reaching a person; these lines are what stop it reaching a person
  * who is only looking at the picture.
  */
+import { DeltaTimeSecs, FixedDurationSecs } from '@nerima-games/mc-kernel'
 import { planPush, PISTON_PUSH_LIMIT } from '../../src/domain/piston'
 import {
   emptyPowerMap,
@@ -405,8 +406,8 @@ const measureClockPeriod = (): number => {
  * drift that grows with the run length; a single pending tick would not.
  */
 const measureFrameRate = (frames: number, fps: number): { readonly ticks: number; readonly drift: number } => {
-  const dt = 1 / fps
-  let accumulated = 0
+  const dt = DeltaTimeSecs(1 / fps)
+  let accumulated = FixedDurationSecs(0)
   let total = 0
   for (let frame = 0; frame < frames; frame += 1) {
     const { ticks, remainderSecs } = ticksForFrame(accumulated, dt)

@@ -8,9 +8,10 @@
  * seam.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Deferred, Effect, Fiber, Result, Schema } from 'effect'
+import { Deferred, Effect, Fiber, Option, Result, Schema } from 'effect'
 import {
   BlockAddressSchema,
+  blockIdOf,
   BlockPositionSchema,
   DeltaTimeSecs,
   DimensionIdSchema,
@@ -20,7 +21,17 @@ import {
   type BlockPosition,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
-import { ReplicatedOwnerIdSchema, WorldCommitEmptyRequest, type WorldCommitRequest } from '@nerima-games/mc-sim'
+import {
+  HOPPER_TRANSFER_COOLDOWN_TICKS,
+  HopperTransferOutcomeSchema,
+  ReplicatedOwnerIdSchema,
+  WorldCommitEmptyRequest,
+  itemStack,
+  type HopperCooldownRequest,
+  type HopperTransferOutcome,
+  type HopperTransferRequest,
+  type WorldCommitRequest,
+} from '@nerima-games/mc-sim'
 import {
   applyRedstoneHostEvents,
   componentForBlock,
@@ -35,6 +46,7 @@ import {
 import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
+  type HopperTransferEvent,
   type RedstoneComponentSnapshot,
   type RedstoneEventBatch,
 } from '../src/application/world-runtime'
@@ -42,17 +54,33 @@ import { makeRuntimeRedstoneStages } from '../src/stages/registration'
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 // eslint-disable-next-line sort-imports
 import { FrameServicesLayer } from './frame-services'
-import type { PistonMovementPlan } from '../src/domain/piston'
+import { PISTON_PUSH_LIMIT, type PistonMovementPlan } from '../src/domain/piston'
+import { ContainerSlotSchema } from '../src/domain/comparator'
+import { HOPPER_TRANSFER_PERIOD_TICKS, HopperTransferDueRequestSchema } from '../src/domain/hopper'
 
 type RedstoneDimensionId = BlockAddress['dimension']
 
 const testWorldId = Schema.decodeUnknownSync(WorldIdSchema)('redstone-host-test-world')
+const HOPPER_BLOCK_ID = Option.getOrThrow(blockIdOf('hopper'))
 
 const dimensionId = (value: string): RedstoneDimensionId =>
   Schema.decodeUnknownSync(DimensionIdSchema)(value)
 
 const blockPosition = (x: number, y = 0, z = 0): BlockPosition =>
   Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
+
+const HOPPER_TRANSFER_DUE_REQUEST = Schema.decodeUnknownSync(HopperTransferDueRequestSchema, {
+  onExcessProperty: 'error',
+})({
+  powered: false,
+  ticksSinceTransfer: HOPPER_TRANSFER_PERIOD_TICKS,
+})
+
+const hopperTransferEvent = (dimension: RedstoneDimensionId, position: BlockPosition): HopperTransferEvent => ({
+  dimension,
+  position,
+  transferDueRequest: HOPPER_TRANSFER_DUE_REQUEST,
+})
 
 const blockAddress = (dimension: string, x: number, y = 0, z = 0): BlockAddress =>
   Schema.decodeUnknownSync(BlockAddressSchema)({ dimension, position: { x, y, z } })
@@ -85,6 +113,8 @@ const emptyEvents = (overrides: Partial<RedstoneEventBatch> = {}): RedstoneEvent
 const missingLookup: RedstoneHostLookup = {
   isLeverActive: () => false,
   isPoweredRailPowered: () => false,
+  readHopperBlockId: () => HOPPER_BLOCK_ID,
+  readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
   readContainerSlots: () => undefined,
   readPistonCell: () => ({ kind: 'missing' }),
   readPistonFacing: () => 'north',
@@ -102,12 +132,20 @@ type RecordedCall =
       readonly pistonPlans: ReadonlyArray<PistonMovementPlan>
     }
   | { readonly kind: 'commit'; readonly request: WorldCommitRequest }
+  | { readonly kind: 'hopper-cooldown'; readonly request: HopperCooldownRequest }
+  | { readonly kind: 'hopper-transfer'; readonly request: HopperTransferRequest }
 
 const buildCallsOf = (calls: ReadonlyArray<RecordedCall>) =>
   calls.filter((call): call is Extract<RecordedCall, { readonly kind: 'build' }> => call.kind === 'build')
 
 const commitCallsOf = (calls: ReadonlyArray<RecordedCall>) =>
   calls.filter((call): call is Extract<RecordedCall, { readonly kind: 'commit' }> => call.kind === 'commit')
+
+const hopperCooldownCallsOf = (calls: ReadonlyArray<RecordedCall>) =>
+  calls.filter((call): call is Extract<RecordedCall, { readonly kind: 'hopper-cooldown' }> => call.kind === 'hopper-cooldown')
+
+const hopperTransferCallsOf = (calls: ReadonlyArray<RecordedCall>) =>
+  calls.filter((call): call is Extract<RecordedCall, { readonly kind: 'hopper-transfer' }> => call.kind === 'hopper-transfer')
 
 const eventCount = (events: RedstoneEventBatch): number =>
   events.hopper.length + events.lamp.length + events.piston.length + events.powered.length + events.trigger.length
@@ -121,6 +159,17 @@ const recordingRealm = (
   readonly port: RedstoneHostWritePort
 } => {
   const calls: Array<RecordedCall> = []
+  const revisionBatch = Schema.decodeUnknownSync(WorldWriteBatchSchema)({
+    world: testWorldId,
+    expectedWorldRevision: 5,
+    dimension: String(dimension),
+    expectedDimensionRevision: 2,
+    edits: [{ position: { x: 100, y: 0, z: 0 }, block: 1 }],
+  })
+  const transferRejected: HopperTransferOutcome = {
+    _tag: 'TransferRejected',
+    transfer: { _tag: 'ContainerMove', outcome: { _tag: 'EmptySource' } },
+  }
   const port: RedstoneHostWritePort = {
     buildCommitRequest: (events, pistonPlans) => {
       calls.push({ kind: 'build', events, pistonPlans })
@@ -144,16 +193,50 @@ const recordingRealm = (
       }
       return Result.succeed(request)
     },
-    commit: (request) =>
-      Effect.sync(() => {
-        calls.push({ kind: 'commit', request })
-        return {
-          world: request.blockWrite?.world ?? testWorldId,
-          revision: request.expectedRevision,
-          changes: [],
-          blockChanges: [],
-        }
-      }),
+    buildHopperBlockWrite: (event, blockId, revisions) =>
+      Result.succeed(Schema.decodeUnknownSync(WorldWriteBatchSchema)({
+        world: testWorldId,
+        expectedWorldRevision: revisions.expectedRevision,
+        dimension: event.dimension,
+        expectedDimensionRevision: revisions.expectedDimensionRevision,
+        edits: [{ position: event.position, block: blockId }],
+      })),
+    coordinator: {
+      worldId: testWorldId,
+      revision: Effect.succeed(revisionBatch.expectedWorldRevision),
+      dimensionRevision: () => Effect.succeed(revisionBatch.expectedDimensionRevision),
+      commit: (request) =>
+        Effect.sync(() => {
+          calls.push({ kind: 'commit', request })
+          return {
+            world: request.blockWrite?.world ?? testWorldId,
+            revision: request.expectedRevision,
+            changes: [],
+            blockChanges: [],
+          }
+        }),
+    },
+    hopperService: {
+      advanceCooldown: (request) =>
+        Effect.sync(() => {
+          calls.push({ kind: 'hopper-cooldown', request })
+          return { _tag: 'NoChange' }
+        }),
+      transfer: (request) =>
+        Effect.sync(() => {
+          calls.push({ kind: 'hopper-transfer', request })
+          const stack = itemStack('redstone_dust', 1)
+          const outcome: HopperTransferOutcome = Result.match(stack, {
+            onFailure: () => transferRejected,
+            onSuccess: (item) => ({
+              _tag: 'Committed',
+              transfer: { _tag: 'Moved', item: item.item, count: 1 },
+              hopper: { address: request.hopperAddress, cooldownTicks: HOPPER_TRANSFER_COOLDOWN_TICKS },
+            }),
+          })
+          return Schema.decodeUnknownSync(HopperTransferOutcomeSchema)(outcome)
+        }),
+    },
   }
   return { calls, port, realm: { dimension, lookup } }
 }
@@ -244,11 +327,11 @@ describe('componentForBlock', () => {
           ...missingLookup,
           readContainerSlots: (readAt) => {
             expect(readAt).toStrictEqual(blockPosition(2, 0, 1))
-            return [{ count: 32, maxStack: 64 }]
+            return [Schema.decodeUnknownSync(ContainerSlotSchema)({ count: 32, maxStack: 64 })]
           },
         }
         expect(componentValue(withSlots, 'comparator', position)).toStrictEqual({
-          containerSlots: [{ count: 32, maxStack: 64 }],
+          containerSlots: [Schema.decodeUnknownSync(ContainerSlotSchema)({ count: 32, maxStack: 64 })],
           inputFrom: blockPosition(2, 0, 1),
           kind: 'comparator',
           mode: 'compare',
@@ -318,16 +401,10 @@ describe('componentForBlock', () => {
       const edge = blockPosition(Number.MAX_SAFE_INTEGER, 0, 0)
 
       expect(componentForBlock(edgeLookup, 'comparator', edge)).toStrictEqual(
-        Result.fail({
-          _tag: 'RedstoneHostPositionOutOfRange',
-          position: { x: Number.MAX_SAFE_INTEGER + 1, y: 0, z: 0 },
-        }),
+        Result.fail({ _tag: 'RedstoneHostPositionOutOfRange' }),
       )
       expect(componentForBlock(edgeLookup, 'piston', edge)).toStrictEqual(
-        Result.fail({
-          _tag: 'RedstoneHostPositionOutOfRange',
-          position: { x: Number.MAX_SAFE_INTEGER + 1, y: 0, z: 0 },
-        }),
+        Result.fail({ _tag: 'RedstoneHostPositionOutOfRange' }),
       )
       expect(headReads).toStrictEqual([])
     }),
@@ -377,10 +454,7 @@ describe('redstoneSnapshotFromRealm', () => {
     Effect.sync(() => {
       const testRealm: RedstoneHostRealm = { dimension: dimensionId('overworld'), lookup: missingLookup }
       expect(redstoneSnapshotFromRealm(testRealm, [block('comparator', Number.MAX_SAFE_INTEGER)])).toStrictEqual(
-        Result.fail({
-          _tag: 'RedstoneHostPositionOutOfRange',
-          position: { x: Number.MAX_SAFE_INTEGER + 1, y: 0, z: 0 },
-        }),
+        Result.fail({ _tag: 'RedstoneHostPositionOutOfRange' }),
       )
     }),
   )
@@ -470,7 +544,7 @@ const alwaysEmptyPistonLookup: RedstoneHostLookup = {
 }
 
 describe('applyRedstoneHostEvents', () => {
-  it.effect('applies lamp, trigger, powered-component, hopper and piston drains through the matching realm', () =>
+  it.effect('applies non-hopper drains through C4 and routes due hoppers through HopperService', () =>
     Effect.gen(function* () {
       const runtime = yield* RedstoneWorldRuntime
       const stages = yield* makeRuntimeRedstoneStages
@@ -490,12 +564,369 @@ describe('applyRedstoneHostEvents', () => {
       expect(build?.events.lamp).toContainEqual({ dimension: dimensionId('overworld'), lit: true, position: blockPosition(2, 0, 0) })
       expect(build?.events.trigger).toContainEqual({ dimension: dimensionId('overworld'), kind: 'dispenser', position: blockPosition(-1, 0, 0) })
       expect(build?.events.trigger).toContainEqual({ dimension: dimensionId('overworld'), kind: 'dropper', position: blockPosition(0, 1, 0) })
-      expect(build?.events.hopper).toContainEqual({ dimension: dimensionId('overworld'), position: blockPosition(10, 10, 10) })
+      expect(build?.events.hopper).toStrictEqual([])
       expect(build?.events.powered).toContainEqual({ dimension: dimensionId('overworld'), kind: 'door', powered: true, position: blockPosition(0, -1, 0) })
       expect(build?.events.powered).toContainEqual({ dimension: dimensionId('overworld'), kind: 'powered-rail', powered: true, position: blockPosition(0, 0, 1) })
       expect(build?.pistonPlans).toHaveLength(1)
       expect(commit?.request.changes).toHaveLength(1)
       expect(commit?.request.blockWrite?.edits).toHaveLength(1)
+      expect(hopperCooldownCallsOf(calls)).toHaveLength(1)
+      expect(hopperCooldownCallsOf(calls)[0]?.request.ticks).toBe(8)
+      expect(hopperTransferCallsOf(calls)).toStrictEqual([])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('converts four local ticks to eight game cooldown ticks and sends the selected slot endpoints', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const stages = yield* makeRuntimeRedstoneStages
+      const hopperPosition = blockPosition(10, 10, 10)
+      const sourceAddress = blockAddress('overworld', 10, 11, 10)
+      const hopperLookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readHopperTransferContext: () => ({
+          powered: false,
+          sourceAbove: { address: sourceAddress, kind: 'hopper' },
+          destinationFacing: null,
+        }),
+      }
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), hopperLookup)
+      yield* runtime.syncSnapshot({
+        components: [{ kind: 'hopper', position: hopperPosition }],
+        dimension: dimensionId('overworld'),
+      })
+
+      for (let tick = 0; tick < TICKS_TO_SETTLE_A_HOPPER; tick += 1) {
+        yield* runFrame(stages)
+      }
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+
+      expect(hopperCooldownCallsOf(calls)).toHaveLength(1)
+      expect(hopperCooldownCallsOf(calls)[0]?.request.ticks).toBe(8)
+      expect(HOPPER_TRANSFER_COOLDOWN_TICKS).toBe(8)
+      const [transfer] = hopperTransferCallsOf(calls)
+      expect(transfer?.request).toMatchObject({
+        destination: { _tag: 'Container', address: blockAddress('overworld', 10, 10, 10), slot: 0 },
+        hopperAddress: blockAddress('overworld', 10, 10, 10),
+        source: { _tag: 'Container', address: sourceAddress, slot: 0 },
+      })
+      const write = Schema.decodeUnknownSync(WorldWriteBatchSchema, { onExcessProperty: 'error' })(
+        transfer?.request.blockWrite,
+      )
+      expect(write.edits).toStrictEqual([{ block: HOPPER_BLOCK_ID, position: hopperPosition }])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('rejects malformed hopper due requests and invalid selection context', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const malformedEvent = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      Object.defineProperty(malformedEvent, 'transferDueRequest', {
+        value: { powered: false, ticksSinceTransfer: -1 },
+      })
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [malformedEvent] }))
+      const first = recordingRealm(dimensionId('overworld'), missingLookup)
+
+      const invalidDue = yield* Effect.result(applyRedstoneHostEvents(runtime, [first.realm], first.port))
+
+      expect(invalidDue).toMatchObject({ _tag: 'Failure', failure: { _tag: 'SchemaError' } })
+      expect(first.calls).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([malformedEvent])
+
+      const contextWithUnexpectedProperty = {
+        powered: false,
+        sourceAbove: null,
+        destinationFacing: null,
+        unexpected: true,
+      }
+      const invalidContextLookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readHopperTransferContext: () => contextWithUnexpectedProperty,
+      }
+      const validEvent = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [validEvent] }))
+      const second = recordingRealm(dimensionId('overworld'), invalidContextLookup)
+
+      const invalidSelection = yield* Effect.result(applyRedstoneHostEvents(runtime, [second.realm], second.port))
+
+      expect(invalidSelection).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'RedstoneHostHopperSelectionInvalid' },
+      })
+      expect(second.calls).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([validEvent])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('rejects missing hopper blocks, builder failures, and mismatched block writes', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      const sourceAddress = blockAddress('overworld', 10, 11, 10)
+      const hopperLookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readHopperTransferContext: () => ({
+          powered: false,
+          sourceAbove: { address: sourceAddress, kind: 'hopper' },
+          destinationFacing: null,
+        }),
+      }
+      const missingBlockLookup: RedstoneHostLookup = {
+        ...hopperLookup,
+        readHopperBlockId: () => null,
+      }
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+      const missingBlock = recordingRealm(dimensionId('overworld'), missingBlockLookup)
+      const missingBlockResult = yield* Effect.result(
+        applyRedstoneHostEvents(runtime, [missingBlock.realm], missingBlock.port),
+      )
+      expect(missingBlockResult).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'RedstoneHostHopperBlockMissing' },
+      })
+      expect(missingBlock.calls).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([event])
+
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+      const buildFailure = recordingRealm(dimensionId('overworld'), hopperLookup)
+      const buildFailurePort: RedstoneHostWritePort<string> = {
+        ...buildFailure.port,
+        buildHopperBlockWrite: () => Result.fail('hopper block write could not be built'),
+      }
+      const buildFailureResult = yield* Effect.result(
+        applyRedstoneHostEvents(runtime, [buildFailure.realm], buildFailurePort),
+      )
+      expect(buildFailureResult).toStrictEqual(Result.fail('hopper block write could not be built'))
+      expect(hopperTransferCallsOf(buildFailure.calls)).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([event])
+
+      const mismatchedWrites = [
+        Schema.decodeUnknownSync(WorldWriteBatchSchema)({
+          world: testWorldId,
+          expectedWorldRevision: 5,
+          dimension: dimensionId('overworld'),
+          expectedDimensionRevision: 2,
+          edits: [],
+        }),
+        Schema.decodeUnknownSync(WorldWriteBatchSchema)({
+          world: testWorldId,
+          expectedWorldRevision: 5,
+          dimension: dimensionId('overworld'),
+          expectedDimensionRevision: 2,
+          edits: [{ position: blockPosition(11, 10, 10), block: HOPPER_BLOCK_ID }],
+        }),
+      ]
+      for (const blockWrite of mismatchedWrites) {
+        yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+        const mismatch = recordingRealm(dimensionId('overworld'), hopperLookup)
+        const mismatchPort: RedstoneHostWritePort = {
+          ...mismatch.port,
+          buildHopperBlockWrite: () => Result.succeed(blockWrite),
+        }
+        const mismatchResult = yield* Effect.result(
+          applyRedstoneHostEvents(runtime, [mismatch.realm], mismatchPort),
+        )
+        expect(mismatchResult).toMatchObject({
+          _tag: 'Failure',
+          failure: { _tag: 'RedstoneHostHopperBlockWriteMismatch' },
+        })
+        expect(hopperTransferCallsOf(mismatch.calls)).toStrictEqual([])
+        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([event])
+      }
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('tries another slot after a rejected hopper candidate', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      const hopperLookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readHopperTransferContext: () => ({
+          powered: false,
+          sourceAbove: { address: blockAddress('overworld', 10, 11, 10), kind: 'hopper' },
+          destinationFacing: { address: blockAddress('overworld', 11, 10, 10), kind: 'chest' },
+        }),
+      }
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), hopperLookup)
+      let transferCount = 0
+      const transferRejected: HopperTransferOutcome = {
+        _tag: 'TransferRejected',
+        transfer: { _tag: 'ContainerMove', outcome: { _tag: 'EmptySource' } },
+      }
+      const rejectingFirstCandidate: RedstoneHostWritePort = {
+        ...port,
+        hopperService: {
+          ...port.hopperService,
+          transfer: (request) =>
+            Effect.gen(function* transferCandidateGenerator() {
+              transferCount += 1
+              if (transferCount === 1) {
+                yield* Effect.sync(() => calls.push({ kind: 'hopper-transfer', request }))
+                return transferRejected
+              }
+              return yield* port.hopperService.transfer(request)
+            }),
+        },
+      }
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+
+      yield* applyRedstoneHostEvents(runtime, [realm], rejectingFirstCandidate)
+
+      expect(transferCount).toBe(2)
+      expect(hopperTransferCallsOf(calls)).toHaveLength(2)
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('reports hopper cooldown and service validation outcomes as typed failures', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const sourceAddress = blockAddress('overworld', 10, 11, 10)
+      const hopperLookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readHopperTransferContext: () => ({
+          powered: false,
+          sourceAbove: { address: sourceAddress, kind: 'hopper' },
+          destinationFacing: null,
+        }),
+      }
+      const failures: ReadonlyArray<Readonly<{ outcome: HopperTransferOutcome; tag: string }>> = [
+        {
+          outcome: Schema.decodeUnknownSync(HopperTransferOutcomeSchema)({
+            _tag: 'CoolingDown',
+            ticks: HOPPER_TRANSFER_COOLDOWN_TICKS,
+          }),
+          tag: 'RedstoneHostHopperCooldownNotReady',
+        },
+        {
+          outcome: { _tag: 'InvalidRequest', reason: 'missing-hopper-block-edit' },
+          tag: 'RedstoneHostHopperTransferInvalid',
+        },
+      ]
+      for (const { outcome, tag } of failures) {
+        const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+        const { calls, port, realm } = recordingRealm(dimensionId('overworld'), hopperLookup)
+        const failingTransferPort: RedstoneHostWritePort = {
+          ...port,
+          hopperService: {
+            ...port.hopperService,
+            transfer: (request) =>
+              Effect.sync(() => {
+                calls.push({ kind: 'hopper-transfer', request })
+                return outcome
+              }),
+          },
+        }
+        yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+
+        const result = yield* Effect.result(applyRedstoneHostEvents(runtime, [realm], failingTransferPort))
+
+        expect(result).toMatchObject({ _tag: 'Failure', failure: { _tag: tag } })
+        expect(hopperTransferCallsOf(calls)).toHaveLength(1)
+        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([event])
+      }
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('rejects a hopper block-write builder result with excess properties', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      const sourceAddress = blockAddress('overworld', 10, 11, 10)
+      const hopperLookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readHopperTransferContext: () => ({
+          powered: false,
+          sourceAbove: { address: sourceAddress, kind: 'hopper' },
+          destinationFacing: null,
+        }),
+      }
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), hopperLookup)
+      const excessWritePort: RedstoneHostWritePort = {
+        ...port,
+        buildHopperBlockWrite: (transferEvent, blockId, revisions) => {
+          const blockWrite = Schema.decodeUnknownSync(WorldWriteBatchSchema)({
+            world: testWorldId,
+            expectedWorldRevision: revisions.expectedRevision,
+            dimension: transferEvent.dimension,
+            expectedDimensionRevision: revisions.expectedDimensionRevision,
+            edits: [{ position: transferEvent.position, block: blockId }],
+          })
+          return Result.succeed({ ...blockWrite, unexpected: true })
+        },
+      }
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+
+      const result = yield* Effect.result(applyRedstoneHostEvents(runtime, [realm], excessWritePort))
+
+      expect(result).toMatchObject({ _tag: 'Failure', failure: { _tag: 'SchemaError' } })
+      expect(hopperTransferCallsOf(calls)).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([event])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('a powered stale hopper event is locked and never reaches cooldown or transfer services', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+      const poweredLookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readHopperTransferContext: () => ({ powered: true, sourceAbove: null, destinationFacing: null }),
+      }
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), poweredLookup)
+
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+
+      expect(calls).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('a hopper failure after C4 commit restores only unprocessed hopper events', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const first = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      const second = hopperTransferEvent(dimensionId('overworld'), blockPosition(11, 10, 10))
+      const lamp = { dimension: dimensionId('overworld'), lit: true, position: blockPosition(2, 0, 0) }
+      const batch = emptyEvents({ hopper: [first, second], lamp: [lamp] })
+      yield* runtime.restoreEvents(batch)
+      const hopperLookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readHopperTransferContext: () => ({
+          powered: false,
+          sourceAbove: { address: blockAddress('overworld', 10, 11, 10), kind: 'hopper' },
+          destinationFacing: null,
+        }),
+      }
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), hopperLookup)
+      let transferCount = 0
+      const failingPort: RedstoneHostWritePort = {
+        ...port,
+        hopperService: {
+          ...port.hopperService,
+          transfer: (request) => {
+            transferCount += 1
+            if (transferCount === 2) {
+              return Effect.gen(function* failSecondTransfer() {
+                yield* Effect.sync(() => calls.push({ kind: 'hopper-transfer', request }))
+                return yield* Effect.fail(new WorldCommitEmptyRequest({}))
+              })
+            }
+            return port.hopperService.transfer(request)
+          },
+        },
+      }
+
+      const result = yield* Effect.result(applyRedstoneHostEvents(runtime, [realm], failingPort))
+
+      expect(result).toMatchObject({ _tag: 'Failure', failure: { _tag: 'WorldCommitEmptyRequest' } })
+      expect(commitCallsOf(calls)).toHaveLength(1)
+      expect(buildCallsOf(calls)[0]?.events).toMatchObject({ lamp: [lamp], hopper: [] })
+      expect(hopperTransferCallsOf(calls)).toHaveLength(2)
+      expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([second])
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
@@ -567,6 +998,92 @@ describe('applyRedstoneHostEvents', () => {
       }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
+  it.effect('preflights sticky and normal piston retractions and skips no-op transitions', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const lookup: RedstoneHostLookup = { ...missingLookup, readPistonCell: () => ({ kind: 'empty' }) }
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), lookup)
+      const sticky = {
+        dimension: dimensionId('overworld'),
+        piston: blockPosition(10, 10, 10),
+        facing: 'east' as const,
+        kind: 'sticky' as const,
+        state: 'extended' as const,
+        powered: false,
+      }
+      yield* runtime.restoreEvents(emptyEvents({ piston: [sticky] }))
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+      expect(buildCallsOf(calls)).toHaveLength(1)
+
+      const normal = { ...sticky, kind: 'normal' as const }
+      yield* runtime.restoreEvents(emptyEvents({ piston: [normal] }))
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+      expect(buildCallsOf(calls)).toHaveLength(2)
+
+      const noOp = { ...normal, powered: true }
+      yield* runtime.restoreEvents(emptyEvents({ piston: [noOp] }))
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+      expect(buildCallsOf(calls)).toHaveLength(2)
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('does not commit a piston push into a kernel-immovable block', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const bedrock = 'bedrock'
+      const lookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readPistonCell: () => ({ kind: 'block', block: bedrock }),
+      }
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), lookup)
+      const event = {
+        dimension: dimensionId('overworld'),
+        piston: blockPosition(10, 10, 10),
+        facing: 'east' as const,
+        kind: 'normal' as const,
+        state: 'retracted' as const,
+        powered: true,
+      }
+      yield* runtime.restoreEvents(emptyEvents({ piston: [event] }))
+
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+
+      expect(calls).toStrictEqual([])
+      expect(yield* runtime.drainPistonTransitions).toStrictEqual([])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('reports an out-of-range piston cell found after the head preflight', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const stone = 'stone'
+      const lookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readPistonCell: () => ({ kind: 'block', block: stone }),
+      }
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), lookup)
+      const event = {
+        dimension: dimensionId('overworld'),
+        piston: blockPosition(Number.MAX_SAFE_INTEGER - PISTON_PUSH_LIMIT, 0, 0),
+        facing: 'east' as const,
+        kind: 'normal' as const,
+        state: 'retracted' as const,
+        powered: true,
+      }
+      const batch = emptyEvents({ piston: [event] })
+      yield* runtime.restoreEvents(batch)
+
+      const failure = yield* Effect.result(applyRedstoneHostEvents(runtime, [realm], port))
+
+      expect(failure).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'RedstoneHostPositionOutOfRange' },
+      })
+      expect(calls).toStrictEqual([])
+      expect(yield* runtime.drainPistonTransitions).toStrictEqual(batch.piston)
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
   it.effect('REGRESSION: a piston transition planPistonTransition refuses is never committed', () =>
     Effect.gen(function* () {
       const runtime = yield* RedstoneWorldRuntime
@@ -602,8 +1119,8 @@ describe('applyRedstoneHostEvents', () => {
       const runtime = yield* RedstoneWorldRuntime
       const batch = emptyEvents({
         hopper: [
-          { dimension: dimensionId('overworld'), position: blockPosition(1, 0, 0) },
-          { dimension: dimensionId('nether'), position: blockPosition(2, 0, 0) },
+          hopperTransferEvent(dimensionId('overworld'), blockPosition(1, 0, 0)),
+          hopperTransferEvent(dimensionId('nether'), blockPosition(2, 0, 0)),
         ],
       })
       yield* runtime.restoreEvents(batch)
@@ -622,7 +1139,7 @@ describe('applyRedstoneHostEvents', () => {
       const runtime = yield* RedstoneWorldRuntime
       const event = {
         dimension: dimensionId('overworld'),
-        piston: { x: Number.MAX_SAFE_INTEGER, y: 0, z: 0 },
+        piston: blockPosition(Number.MAX_SAFE_INTEGER, 0, 0),
         facing: 'east' as const,
         kind: 'normal' as const,
         state: 'retracted' as const,
@@ -636,7 +1153,7 @@ describe('applyRedstoneHostEvents', () => {
 
       expect(failure).toMatchObject({
         _tag: 'Failure',
-        failure: { _tag: 'RedstoneHostPositionOutOfRange', position: { x: Number.MAX_SAFE_INTEGER + 1, y: 0, z: 0 } },
+        failure: { _tag: 'RedstoneHostPositionOutOfRange' },
       })
       expect(calls).toStrictEqual([])
       expect(yield* runtime.drainPistonTransitions).toStrictEqual(batch.piston)
@@ -646,8 +1163,10 @@ describe('applyRedstoneHostEvents', () => {
   it.effect('REGRESSION: request build and coordinator failures restore the drained batch', () =>
     Effect.gen(function* () {
       const runtime = yield* RedstoneWorldRuntime
+      const lamp = { dimension: dimensionId('overworld'), lit: true, position: blockPosition(2, 0, 0) }
       const batch = emptyEvents({
-        hopper: [{ dimension: dimensionId('overworld'), position: blockPosition(1, 0, 0) }],
+        hopper: [hopperTransferEvent(dimensionId('overworld'), blockPosition(1, 0, 0))],
+        lamp: [lamp],
       })
       yield* runtime.restoreEvents(batch)
       const { calls, port, realm } = recordingRealm(dimensionId('overworld'), missingLookup)
@@ -663,40 +1182,52 @@ describe('applyRedstoneHostEvents', () => {
       expect(buildFailure).toStrictEqual(Result.fail('request could not be built'))
       expect(commitCallsOf(calls)).toStrictEqual([])
       expect(yield* runtime.drainHopperTransferEvents).toStrictEqual(batch.hopper)
+      expect(yield* runtime.drainLampTransitions).toStrictEqual(batch.lamp)
+      expect(hopperCooldownCallsOf(calls)).toStrictEqual([])
 
       yield* runtime.restoreEvents(batch)
       const commitFailurePort: RedstoneHostWritePort = {
         ...port,
-        commit: (request) =>
+        coordinator: {
+          ...port.coordinator,
+          commit: (request) =>
           Effect.gen(function* commitFailureGenerator() {
             yield* Effect.sync(() => calls.push({ kind: 'commit', request }))
             return yield* Effect.fail(new WorldCommitEmptyRequest({}))
           }),
+        },
       }
       const commitFailure = yield* Effect.result(applyRedstoneHostEvents(runtime, [realm], commitFailurePort))
       expect(commitFailure).toMatchObject({ _tag: 'Failure', failure: { _tag: 'WorldCommitEmptyRequest' } })
       expect(commitCallsOf(calls)).toHaveLength(1)
       expect(yield* runtime.drainHopperTransferEvents).toStrictEqual(batch.hopper)
+      expect(yield* runtime.drainLampTransitions).toStrictEqual(batch.lamp)
+      expect(hopperCooldownCallsOf(calls)).toStrictEqual([])
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
   it.effect('restores a drained batch when coordinator commit is interrupted', () =>
     Effect.gen(function* () {
       const runtime = yield* RedstoneWorldRuntime
+      const lamp = { dimension: dimensionId('overworld'), lit: true, position: blockPosition(2, 0, 0) }
       const batch = emptyEvents({
-        hopper: [{ dimension: dimensionId('overworld'), position: blockPosition(1, 0, 0) }],
+        hopper: [hopperTransferEvent(dimensionId('overworld'), blockPosition(1, 0, 0))],
+        lamp: [lamp],
       })
       yield* runtime.restoreEvents(batch)
       const { calls, port, realm } = recordingRealm(dimensionId('overworld'), missingLookup)
       const entered = yield* Deferred.make<void>()
       const interruptiblePort: RedstoneHostWritePort = {
         ...port,
-        commit: (request) =>
-          Effect.gen(function* commitInterruptibly() {
-            yield* Effect.sync(() => calls.push({ kind: 'commit', request }))
-            yield* Deferred.succeed(entered, undefined)
-            return yield* Effect.never
-          }),
+        coordinator: {
+          ...port.coordinator,
+          commit: (request) =>
+            Effect.gen(function* commitInterruptibly() {
+              yield* Effect.sync(() => calls.push({ kind: 'commit', request }))
+              yield* Deferred.succeed(entered, undefined)
+              return yield* Effect.never
+            }),
+        },
       }
 
       const fiber = yield* applyRedstoneHostEvents(runtime, [realm], interruptiblePort).pipe(Effect.forkChild)
@@ -705,6 +1236,8 @@ describe('applyRedstoneHostEvents', () => {
 
       expect(commitCallsOf(calls)).toHaveLength(1)
       expect(yield* runtime.drainHopperTransferEvents).toStrictEqual(batch.hopper)
+      expect(yield* runtime.drainLampTransitions).toStrictEqual(batch.lamp)
+      expect(hopperCooldownCallsOf(calls)).toStrictEqual([])
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 })

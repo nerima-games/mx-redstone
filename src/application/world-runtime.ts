@@ -4,6 +4,8 @@ import {
   type BlockPosition,
   BlockPositionSchema,
   DimensionIdSchema,
+  FixedDurationSecs,
+  NonNegativeTickCount,
 } from '@nerima-games/mc-kernel'
 import {
   type CircuitBoard,
@@ -15,15 +17,32 @@ import {
   isLit,
   isPowered,
 } from '../domain/power-graph.js'
-import { type ComparatorMode, type ContainerSlot, containerSignalStrength } from '../domain/comparator.js'
+import {
+  type ComparatorMode,
+  type ContainerSlot,
+  ContainerSlotSchema,
+  containerSignalStrength,
+} from '../domain/comparator.js'
 import { Context, Effect, Layer, Option, Ref, Schema } from 'effect'
-import type { PistonFacing, PistonKind, PistonState, PistonTransitionRequest } from '../domain/piston.js'
+import {
+  type HopperTransferDueRequest,
+  HopperTransferDueRequestSchema,
+  hopperTransferDue,
+} from '../domain/hopper.js'
+import {
+  type PistonFacing,
+  PistonFacingSchema,
+  type PistonKind,
+  PistonKindSchema,
+  type PistonState,
+  PistonStateSchema,
+  type PistonTransitionRequest,
+} from '../domain/piston.js'
 import {
   type TimedCircuitState,
   emptyTimedCircuitState,
 } from '../domain/power-timing.js'
 import type { PositionKey } from '../domain/position-key.js'
-import { hopperTransferDue } from '../domain/hopper.js'
 
 type DimensionId = BlockAddress['dimension']
 
@@ -34,8 +53,8 @@ export type RedstoneComponentSnapshot = {
   readonly kind: ComponentKind
   readonly active?: boolean
   readonly emits?: PowerLevel
-  readonly delayTicks?: number
-  readonly pulseTicks?: number
+  readonly delayTicks?: NonNegativeTickCount
+  readonly pulseTicks?: NonNegativeTickCount
   readonly invertedBy?: RedstonePosition
   readonly inputFrom?: RedstonePosition
   readonly sideInputs?: ReadonlyArray<RedstonePosition>
@@ -76,6 +95,7 @@ export type RedstoneTriggerEvent = {
 export type HopperTransferEvent = {
   readonly dimension: DimensionId
   readonly position: RedstonePosition
+  readonly transferDueRequest: HopperTransferDueRequest
 }
 
 export type PoweredComponentKind = 'powered-rail' | 'door' | 'trapdoor'
@@ -103,12 +123,12 @@ export type RedstoneWorldState = {
   readonly pendingPistonTransitions: Ref.Ref<ReadonlyArray<PoweredPistonTransition>>
   readonly observedTriggerPower: Ref.Ref<ReadonlyMap<PositionKey, boolean>>
   readonly pendingTriggerEvents: Ref.Ref<ReadonlyArray<RedstoneTriggerEvent>>
-  readonly hopperTicksSinceTransfer: Ref.Ref<ReadonlyMap<PositionKey, number>>
+  readonly hopperTicksSinceTransfer: Ref.Ref<ReadonlyMap<PositionKey, NonNegativeTickCount>>
   readonly pendingHopperTransferEvents: Ref.Ref<ReadonlyArray<HopperTransferEvent>>
   readonly observedPoweredComponents: Ref.Ref<ReadonlyMap<PositionKey, boolean>>
   readonly pendingPoweredComponentTransitions: Ref.Ref<ReadonlyArray<PoweredComponentTransition>>
-  readonly tickAccumulatorSecs: Ref.Ref<number>
-  readonly tickCount: Ref.Ref<number>
+  readonly tickAccumulatorSecs: Ref.Ref<FixedDurationSecs>
+  readonly tickCount: Ref.Ref<NonNegativeTickCount>
 }
 
 export type RedstoneEventBatch = {
@@ -119,11 +139,46 @@ export type RedstoneEventBatch = {
   readonly trigger: ReadonlyArray<RedstoneTriggerEvent>
 }
 
+const ZERO_DURATION_SECS = 0
+const ZERO_TICK_COUNT = 0
+const fixedDurationSecsSchema = Schema.Number.pipe(Schema.fromBrand('FixedDurationSecs', FixedDurationSecs))
+const nonNegativeTickCountSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(ZERO_TICK_COUNT))
+  .pipe(Schema.fromBrand('NonNegativeTickCount', NonNegativeTickCount))
+const powerLevelSchema = Schema.Int.check(Schema.isBetween({ maximum: 15, minimum: 0 }))
 const arraySchema = Schema.Array
 const blockAxis = BlockAxis
 const literalsSchema = Schema.Literals
 const literalSchema = Schema.Literal
 const structSchema = Schema.Struct
+
+export const RedstoneComponentSnapshotSchema: Schema.Codec<RedstoneComponentSnapshot, unknown> = structSchema({
+  active: Schema.optionalKey(Schema.Boolean),
+  containerSignal: Schema.optionalKey(powerLevelSchema),
+  containerSlots: Schema.optionalKey(arraySchema(ContainerSlotSchema)),
+  delayTicks: Schema.optionalKey(nonNegativeTickCountSchema),
+  emits: Schema.optionalKey(powerLevelSchema),
+  inputFrom: Schema.optionalKey(BlockPositionSchema),
+  invertedBy: Schema.optionalKey(BlockPositionSchema),
+  kind: literalsSchema([
+    'wire', 'torch', 'lever', 'button', 'repeater', 'lamp', 'comparator',
+    'observer', 'pressure-plate', 'target', 'piston', 'hopper', 'dispenser',
+    'dropper', 'note-block', 'powered-rail', 'door', 'trapdoor',
+  ]),
+  mode: Schema.optionalKey(literalsSchema(['compare', 'subtract'])),
+  outputTo: Schema.optionalKey(BlockPositionSchema),
+  pistonFacing: Schema.optionalKey(PistonFacingSchema),
+  pistonKind: Schema.optionalKey(PistonKindSchema),
+  pistonState: Schema.optionalKey(PistonStateSchema),
+  position: BlockPositionSchema,
+  powered: Schema.optionalKey(Schema.Boolean),
+  pulseTicks: Schema.optionalKey(nonNegativeTickCountSchema),
+  sideInputs: Schema.optionalKey(arraySchema(BlockPositionSchema)),
+})
+
+export const RedstoneWorldSnapshotSchema: Schema.Codec<RedstoneWorldSnapshot, unknown> = structSchema({
+  components: arraySchema(RedstoneComponentSnapshotSchema),
+  dimension: DimensionIdSchema,
+})
 const ORIGIN_COORDINATE = 0
 const NEXT_COORDINATE = 1
 const PREVIOUS_COORDINATE = -1
@@ -133,7 +188,11 @@ const NEGATIVE_ONE_AXIS = blockAxis(PREVIOUS_COORDINATE)
 
 /** Strict decoding shape for every drained runtime event category. */
 export const RedstoneEventBatchSchema: Schema.Codec<RedstoneEventBatch, unknown> = structSchema({
-  hopper: arraySchema(structSchema({ dimension: DimensionIdSchema, position: BlockPositionSchema })),
+  hopper: arraySchema(structSchema({
+    dimension: DimensionIdSchema,
+    position: BlockPositionSchema,
+    transferDueRequest: HopperTransferDueRequestSchema,
+  })),
   lamp: arraySchema(structSchema({
     dimension: DimensionIdSchema,
     lit: Schema.Boolean,
@@ -162,7 +221,7 @@ export const RedstoneEventBatchSchema: Schema.Codec<RedstoneEventBatch, unknown>
 
 export type RedstoneWorldRuntimeService = {
   /** Replaces only the named dimension; snapshots of other dimensions remain installed. */
-  readonly syncSnapshot: (snapshot: RedstoneWorldSnapshot) => Effect.Effect<void>
+  readonly syncSnapshot: (snapshot: RedstoneWorldSnapshot) => Effect.Effect<void, Schema.SchemaError>
   /** Starts or restarts this button's configured pulse on the next redstone tick. */
   readonly pressButton: (dimension: DimensionId, position: RedstonePosition) => Effect.Effect<void>
   /** Restores a previously drained event batch after its host commit fails. */
@@ -377,9 +436,9 @@ export const circuitBoardFromSnapshots = (
 }
 
 const NO_ITEMS = 0
-const INITIAL_TICK_ACCUMULATOR_SECS = 0
-const INITIAL_TICK_COUNT = 0
-const INITIAL_TICKS_SINCE_TRANSFER = 0
+const INITIAL_TICK_ACCUMULATOR_SECS = Schema.decodeUnknownSync(fixedDurationSecsSchema)(ZERO_DURATION_SECS)
+const INITIAL_TICK_COUNT = Schema.decodeUnknownSync(nonNegativeTickCountSchema)(ZERO_TICK_COUNT)
+const INITIAL_TICKS_SINCE_TRANSFER = INITIAL_TICK_COUNT
 
 export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.gen(
   function* makeRedstoneWorldStateGenerator() {
@@ -413,7 +472,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       Ref.make<ReadonlyArray<PoweredPistonTransition>>([]),
       Ref.make<ReadonlyMap<PositionKey, boolean>>(new Map()),
       Ref.make<ReadonlyArray<RedstoneTriggerEvent>>([]),
-      Ref.make<ReadonlyMap<PositionKey, number>>(new Map()),
+      Ref.make<ReadonlyMap<PositionKey, NonNegativeTickCount>>(new Map()),
       Ref.make<ReadonlyArray<HopperTransferEvent>>([]),
       Ref.make<ReadonlyMap<PositionKey, boolean>>(new Map()),
       Ref.make<ReadonlyArray<PoweredComponentTransition>>([]),
@@ -454,11 +513,12 @@ const snapshotMap = (snapshot: RedstoneWorldSnapshot): DimensionSnapshot => {
 export const syncRedstoneSnapshot = (
   state: RedstoneWorldState,
   snapshot: RedstoneWorldSnapshot,
-): Effect.Effect<void> =>
+): Effect.Effect<void, Schema.SchemaError> =>
   Effect.gen(function* syncRedstoneSnapshotGenerator() {
+    const decoded = yield* Schema.decodeUnknownEffect(RedstoneWorldSnapshotSchema, { onExcessProperty: 'error' })(snapshot)
     const current = yield* Ref.get(state.dimensions)
     const next = new Map(current)
-    next.set(snapshot.dimension, snapshotMap(snapshot))
+    next.set(decoded.dimension, snapshotMap(decoded))
     yield* Ref.set(state.dimensions, next)
     yield* Ref.set(state.board, circuitBoardFromSnapshots(next))
   })
@@ -687,33 +747,41 @@ export const collectTriggerEvents = (state: RedstoneWorldState): Effect.Effect<v
   })
 
 type HopperTransferResult = {
-  readonly current: ReadonlyMap<PositionKey, number>
+  readonly current: ReadonlyMap<PositionKey, NonNegativeTickCount>
   readonly due: ReadonlyArray<readonly [PositionKey, HopperTransferEvent]>
 }
 
 /** `previous` and `ticks` are always consumed together (both describe hopper timing since the
  * last collection pass), so they travel as one param to keep every helper at 3 parameters. */
 type HopperTiming = {
-  readonly previous: ReadonlyMap<PositionKey, number>
-  readonly ticks: number
+  readonly previous: ReadonlyMap<PositionKey, NonNegativeTickCount>
+  readonly ticks: NonNegativeTickCount
 }
 
 const hopperTransferEntry = (
   entry: SnapshotEntry,
   circuit: CircuitReadout,
   timing: HopperTiming,
-): { readonly due: ReadonlyArray<readonly [PositionKey, HopperTransferEvent]>; readonly ticksSinceTransfer: number } => {
+): { readonly due: ReadonlyArray<readonly [PositionKey, HopperTransferEvent]>; readonly ticksSinceTransfer: NonNegativeTickCount } => {
   const { component, dimension, nodeId } = entry
-  const ticksSinceTransfer = (timing.previous.get(nodeId) ?? INITIAL_TICKS_SINCE_TRANSFER) + timing.ticks
-  const isDue = hopperTransferDue({
+  const ticksSinceTransfer = Schema.decodeUnknownSync(nonNegativeTickCountSchema)(
+    (timing.previous.get(nodeId) ?? INITIAL_TICKS_SINCE_TRANSFER) + timing.ticks,
+  )
+  const transferDueRequest = Schema.decodeUnknownSync(HopperTransferDueRequestSchema, {
+    onExcessProperty: 'error',
+  })({
     powered: isPowered(circuit.board, circuit.power, nodeId),
     ticksSinceTransfer,
   })
-  if (!isDue) {
+  if (!hopperTransferDue(transferDueRequest)) {
     return { due: [], ticksSinceTransfer }
   }
   return {
-    due: [[nodeId, { dimension, position: copyPosition(component.position) }]],
+    due: [[nodeId, {
+      dimension,
+      position: copyPosition(component.position),
+      transferDueRequest,
+    }]],
     ticksSinceTransfer: INITIAL_TICKS_SINCE_TRANSFER,
   }
 }
@@ -723,7 +791,7 @@ const computeHopperTransfers = (
   entries: ReadonlyArray<SnapshotEntry>,
   timing: HopperTiming,
 ): HopperTransferResult => {
-  const current = new Map<PositionKey, number>()
+  const current = new Map<PositionKey, NonNegativeTickCount>()
   const due: Array<readonly [PositionKey, HopperTransferEvent]> = []
   for (const entry of entries) {
     if (entry.component.kind === 'hopper') {
@@ -738,7 +806,7 @@ const computeHopperTransfers = (
 /** Emits due, unlocked hopper requests without acquiring inventory ownership. */
 export const collectHopperTransferEvents = (
   state: RedstoneWorldState,
-  ticks: number,
+  ticks: NonNegativeTickCount,
 ): Effect.Effect<void> =>
   Effect.gen(function* collectHopperTransferEventsGenerator() {
     const [board, power, dimensions, previous] = yield* Effect.all([
@@ -828,13 +896,13 @@ const runtimeStates = new WeakMap<RedstoneWorldRuntimeService, RedstoneWorldStat
 
 export type RedstoneWorldRuntimeStateError = {
   readonly _tag: 'UnregisteredRedstoneWorldRuntime'
-  readonly message: string
+  readonly message: 'RedstoneWorldRuntime was not created by makeRedstoneWorldRuntime'
 }
 
 export const RedstoneWorldRuntimeStateErrorSchema: Schema.Codec<RedstoneWorldRuntimeStateError, unknown> =
   structSchema({
     _tag: literalSchema('UnregisteredRedstoneWorldRuntime'),
-    message: Schema.String,
+    message: literalSchema('RedstoneWorldRuntime was not created by makeRedstoneWorldRuntime'),
   })
 
 export const redstoneWorldStateFor = (

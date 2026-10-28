@@ -176,6 +176,8 @@ const runHostBatch = (positionX: number, mixedDimensions: boolean) => {
     lookup: {
       isLeverActive: () => false,
       isPoweredRailPowered: () => false,
+      readHopperBlockId: () => null,
+      readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
       readContainerSlots: () => undefined,
       readPistonCell: () => ({ kind: 'empty' }),
       readPistonFacing: () => 'north',
@@ -199,9 +201,24 @@ const runHostBatch = (positionX: number, mixedDimensions: boolean) => {
       buildCalls += one
       return Result.succeed(buildCommitRequest(position, expectedRevision, expectedDimensionRevision))
     },
-    commit: (request) => {
-      commitCalls += one
-      return coordinator.commit(request)
+    buildHopperBlockWrite: (event, blockId, revisions) =>
+      Result.succeed(Schema.decodeUnknownSync(WorldWriteBatchSchema, strictDecode)({
+        world: testWorldId,
+        expectedWorldRevision: revisions.expectedRevision,
+        dimension: event.dimension,
+        expectedDimensionRevision: revisions.expectedDimensionRevision,
+        edits: [{ position: event.position, block: blockId }],
+      })),
+    coordinator: {
+      ...coordinator,
+      commit: (request) => {
+        commitCalls += one
+        return coordinator.commit(request)
+      },
+    },
+    hopperService: {
+      advanceCooldown: () => Effect.succeed({ _tag: 'NoChange' }),
+      transfer: () => Effect.never,
     },
   }
 

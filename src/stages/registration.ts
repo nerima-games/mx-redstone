@@ -25,8 +25,14 @@
  * below is bounded anyway, because relying on somebody else's clamp is how you
  * discover it was removed.
  */
-import type { DeltaTimeSecs, GameModule, StageRegistration } from '@nerima-games/mc-kernel'
-import { Effect, Option, Ref } from 'effect'
+import {
+  type DeltaTimeSecs,
+  FixedDurationSecs,
+  type GameModule,
+  NonNegativeTickCount,
+  type StageRegistration,
+} from '@nerima-games/mc-kernel'
+import { Effect, Option, Ref, Schema } from 'effect'
 import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
 import {
   RedstoneWorldRuntime,
@@ -45,8 +51,17 @@ import { type TimedCircuitState, advanceTimedCircuit } from '../domain/power-tim
 import type { CircuitBoard } from '../domain/power-graph.js'
 import type { PositionKey } from '../domain/position-key.js'
 
+const ZERO_TICK_COUNT = 0
+const REDSTONE_TICK_SECONDS = 0.1
+const MAXIMUM_TICKS_PER_FRAME = 4
+const fixedDurationSecsSchema = Schema.Number.pipe(Schema.fromBrand('FixedDurationSecs', FixedDurationSecs))
+const nonNegativeTickCountSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(ZERO_TICK_COUNT))
+  .pipe(Schema.fromBrand('NonNegativeTickCount', NonNegativeTickCount))
+const fixedDurationSecsFromNumber = Schema.decodeUnknownSync(fixedDurationSecsSchema)
+const nonNegativeTickCountFromNumber = Schema.decodeUnknownSync(nonNegativeTickCountSchema)
+
 /** Vanilla redstone runs at 10 Hz: one tick every two game ticks. */
-export const REDSTONE_TICK_SECS = 0.1
+export const REDSTONE_TICK_SECS: FixedDurationSecs = fixedDurationSecsFromNumber(REDSTONE_TICK_SECONDS)
 
 /**
  * Upper bound on redstone ticks executed in a single frame.
@@ -56,7 +71,7 @@ export const REDSTONE_TICK_SECS = 0.1
  * excess makes redstone run slow for one frame, which a player will not see;
  * the alternative is a freeze, which they will.
  */
-export const MAX_TICKS_PER_FRAME = 4
+export const MAX_TICKS_PER_FRAME: NonNegativeTickCount = nonNegativeTickCountFromNumber(MAXIMUM_TICKS_PER_FRAME)
 
 /**
  * The empty board.
@@ -81,7 +96,7 @@ export type RedstoneFrameState = RedstoneWorldState
 export const makeRedstoneFrameState: Effect.Effect<RedstoneFrameState> = makeRedstoneWorldState
 
 /** How many ticks a frame contributes when `tickSecs` is misconfigured, or when nothing is due yet. */
-const NO_TICKS = 0
+const NO_TICKS = nonNegativeTickCountFromNumber(ZERO_TICK_COUNT)
 
 /** A tick duration at or below this is misconfigured; treat the frame as advancing no ticks at all. */
 const NON_POSITIVE_TICK_SECS = 0
@@ -102,10 +117,10 @@ const DISCARDED_REMAINDER_SECS = 0
  * would make redstone run at 6 Hz instead of 10.
  */
 export const ticksForFrame = (
-  accumulatedSecs: number,
-  dt: number,
-  options: { readonly tickSecs?: number; readonly maxTicks?: number } = {},
-): { readonly ticks: number; readonly remainderSecs: number } => {
+  accumulatedSecs: FixedDurationSecs,
+  dt: DeltaTimeSecs,
+  options: { readonly tickSecs?: FixedDurationSecs; readonly maxTicks?: NonNegativeTickCount } = {},
+): { readonly ticks: NonNegativeTickCount; readonly remainderSecs: FixedDurationSecs } => {
   const tickSecs = options.tickSecs ?? REDSTONE_TICK_SECS
   const maxTicks = options.maxTicks ?? MAX_TICKS_PER_FRAME
   if (tickSecs <= NON_POSITIVE_TICK_SECS) {
@@ -114,16 +129,16 @@ export const ticksForFrame = (
 
   const available = accumulatedSecs + Math.max(MIN_DELTA_SECS, dt)
   const wanted = Math.floor(available / tickSecs)
-  const ticks = Math.min(wanted, maxTicks)
+  const ticks = nonNegativeTickCountFromNumber(Math.min(wanted, maxTicks))
 
   // When the cap bites, the un-run time is DISCARDED rather than banked.
   // Banking it guarantees the next frame is also over budget, which is the
   // Spiral of death.
-  const remainderAfterCap = (): number => {
+  const remainderAfterCap = (): FixedDurationSecs => {
     if (wanted > maxTicks) {
-      return DISCARDED_REMAINDER_SECS
+      return fixedDurationSecsFromNumber(DISCARDED_REMAINDER_SECS)
     }
-    return available - ticks * tickSecs
+    return fixedDurationSecsFromNumber(available - ticks * tickSecs)
   }
   const remainderSecs = remainderAfterCap()
 
@@ -148,7 +163,7 @@ const TICK_STEP = 1
  */
 const advancePower = (
   board: CircuitBoard,
-  ticks: number,
+  ticks: NonNegativeTickCount,
   seed: { readonly timed: TimedCircuitState; readonly pressedButtons: ReadonlySet<PositionKey> },
 ): TimedCircuitState => {
   const buttonsForTick = (tick: number): ReadonlySet<PositionKey> => {
@@ -170,12 +185,12 @@ const advancePower = (
  * Split out of the power stage's `run` for the same statement-count reason
  * `advancePower` is; the writes and their order are unchanged.
  */
-const commitPowerTick = (state: RedstoneFrameState, next: TimedCircuitState, ticks: number) =>
+const commitPowerTick = (state: RedstoneFrameState, next: TimedCircuitState, ticks: NonNegativeTickCount) =>
   Effect.gen(function* commitPowerTickEffect() {
     yield* Ref.set(state.timedCircuit, next)
     yield* Ref.set(state.power, next.power)
     yield* collectHopperTransferEvents(state, ticks)
-    yield* Ref.update(state.tickCount, (count) => count + ticks)
+    yield* Ref.update(state.tickCount, (count) => nonNegativeTickCountFromNumber(count + ticks))
   })
 
 /**

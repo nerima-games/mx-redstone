@@ -5,6 +5,7 @@ import {
   RedstoneWorldRuntimeLayer,
   redstoneNodeId as toRedstoneNodeId,
   redstoneWorldStateFor,
+  type HopperTransferEvent,
   type RedstoneComponentSnapshot,
   type RedstoneEventBatch,
   type RedstoneWorldRuntimeService,
@@ -15,22 +16,39 @@ import {
   BlockPositionSchema,
   DeltaTimeSecs,
   DimensionIdSchema,
+  NonNegativeTickCount,
   type BlockPosition,
   type FrameServices,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
 import { makeRuntimeRedstoneStages } from '../src/stages/registration'
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
+import { ContainerSlotSchema } from '../src/domain/comparator'
+import { HOPPER_TRANSFER_PERIOD_TICKS, HopperTransferDueRequestSchema } from '../src/domain/hopper'
 // eslint-disable-next-line sort-imports
 import { FrameServicesLayer } from './frame-services'
 
 type DimensionId = Schema.Schema.Type<typeof DimensionIdSchema>
+type RuntimeError = RedstoneWorldRuntimeStateError | Schema.SchemaError
 
 const dimensionId = (value: string): DimensionId =>
   Schema.decodeUnknownSync(DimensionIdSchema)(value)
 
 const blockPosition = (x: number, y = 0, z = 0): BlockPosition =>
   Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
+
+const HOPPER_TRANSFER_DUE_REQUEST = Schema.decodeUnknownSync(HopperTransferDueRequestSchema, {
+  onExcessProperty: 'error',
+})({
+  powered: false,
+  ticksSinceTransfer: HOPPER_TRANSFER_PERIOD_TICKS,
+})
+
+const hopperTransferEvent = (dimension: string, position: BlockPosition): HopperTransferEvent => ({
+  dimension: dimensionId(dimension),
+  position,
+  transferDueRequest: HOPPER_TRANSFER_DUE_REQUEST,
+})
 
 const redstoneNodeId = (
   dimension: string,
@@ -67,7 +85,7 @@ const stageById = (
 
 const runFrame = (
   stages: ReadonlyArray<StageRegistration>,
-): Effect.Effect<void, RedstoneWorldRuntimeStateError, FrameServices> =>
+): Effect.Effect<void, RuntimeError, FrameServices> =>
   Effect.gen(function* () {
     yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.1))
     yield* stageById(stages, REDSTONE_STAGE_IDS.effects).run(DeltaTimeSecs(0.1))
@@ -77,8 +95,8 @@ const runtimeProgram = <A>(
   use: (
     runtime: RedstoneWorldRuntimeService,
     stages: ReadonlyArray<StageRegistration>,
-  ) => Effect.Effect<A, RedstoneWorldRuntimeStateError, FrameServices>,
-): Effect.Effect<A, RedstoneWorldRuntimeStateError> =>
+  ) => Effect.Effect<A, RuntimeError, FrameServices>,
+): Effect.Effect<A, RuntimeError> =>
   Effect.gen(function* () {
     const runtime = yield* RedstoneWorldRuntime
     const stages = yield* makeRuntimeRedstoneStages
@@ -94,7 +112,7 @@ describe('RedstoneWorldRuntime', () => {
       Effect.gen(function* () {
         yield* runtime.syncSnapshot(snapshot('overworld', [{
           ...component(0, 'comparator'),
-          containerSlots: [{ count: 32, maxStack: 64 }],
+          containerSlots: [Schema.decodeUnknownSync(ContainerSlotSchema)({ count: 32, maxStack: 64 })],
         }]))
 
         const board = yield* Ref.get((yield* redstoneWorldStateFor(runtime)).board)
@@ -110,7 +128,7 @@ describe('RedstoneWorldRuntime', () => {
         yield* runtime.syncSnapshot(snapshot('overworld', [{
           ...component(0, 'comparator'),
           containerSignal: 11,
-          containerSlots: [{ count: 64, maxStack: 64 }],
+          containerSlots: [Schema.decodeUnknownSync(ContainerSlotSchema)({ count: 64, maxStack: 64 })],
         }]))
 
         const board = yield* Ref.get((yield* redstoneWorldStateFor(runtime)).board)
@@ -124,7 +142,7 @@ describe('RedstoneWorldRuntime', () => {
     runtimeProgram((runtime) =>
       Effect.gen(function* () {
         yield* runtime.syncSnapshot(snapshot('overworld', [{
-          ...component(2, 'repeater', undefined, 0, 0, { delayTicks: 1 }),
+          ...component(2, 'repeater', undefined, 0, 0, { delayTicks: NonNegativeTickCount(1) }),
           inputFrom: blockPosition(1, 0, 0),
           sideInputs: [blockPosition(2, 0, 1)],
         }]))
@@ -296,10 +314,10 @@ describe('RedstoneWorldRuntime', () => {
       Effect.gen(function* () {
         yield* runtime.syncSnapshot(
           snapshot('overworld', [
-            component(0, 'button', undefined, 0, 0, { pulseTicks: 4 }),
+            component(0, 'button', undefined, 0, 0, { pulseTicks: NonNegativeTickCount(4) }),
             component(1, 'wire'),
             {
-              ...component(2, 'repeater', undefined, 0, 0, { delayTicks: 2 }),
+              ...component(2, 'repeater', undefined, 0, 0, { delayTicks: NonNegativeTickCount(2) }),
               inputFrom: blockPosition(1, 0, 0),
               outputTo: blockPosition(3, 0, 0),
             },
@@ -502,7 +520,7 @@ describe('RedstoneWorldRuntime', () => {
 
         yield* runFrame(stages)
         expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
-          { dimension: 'overworld', position: { x: 0, y: 0, z: 0 } },
+          hopperTransferEvent('overworld', blockPosition(0, 0, 0)),
         ])
         expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
       }),
@@ -529,7 +547,7 @@ describe('RedstoneWorldRuntime', () => {
     runtimeProgram((runtime) =>
       Effect.gen(function* () {
         const older: RedstoneEventBatch = {
-          hopper: [{ dimension: dimensionId('overworld'), position: blockPosition(0, 0, 0) }],
+          hopper: [hopperTransferEvent('overworld', blockPosition(0, 0, 0))],
           lamp: [{ dimension: dimensionId('overworld'), position: blockPosition(0, 0, 0), lit: false }],
           piston: [{
             dimension: dimensionId('overworld'),
@@ -552,7 +570,7 @@ describe('RedstoneWorldRuntime', () => {
           }],
         }
         const newer: RedstoneEventBatch = {
-          hopper: [{ dimension: dimensionId('overworld'), position: blockPosition(1, 0, 0) }],
+          hopper: [hopperTransferEvent('overworld', blockPosition(1, 0, 0))],
           lamp: [{ dimension: dimensionId('overworld'), position: blockPosition(1, 0, 0), lit: true }],
           piston: [{
             dimension: dimensionId('overworld'),
@@ -624,8 +642,8 @@ describe('RedstoneWorldRuntime', () => {
 
         yield* runFrame(stages)
         expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
-          { dimension: 'overworld', position: { x: 0, y: 0, z: 0 } },
-          { dimension: 'overworld', position: { x: 1, y: 0, z: 0 } },
+          hopperTransferEvent('overworld', blockPosition(0, 0, 0)),
+          hopperTransferEvent('overworld', blockPosition(1, 0, 0)),
         ])
       }),
     ),

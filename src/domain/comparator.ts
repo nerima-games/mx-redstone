@@ -38,7 +38,9 @@
  * fixtures, which matters because the failure mode of an off-by-one here is a
  * circuit that is right for most inputs.
  */
+import { Brand, Schema } from 'effect'
 import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level.js'
+import { MAX_STACK_COUNT, MaxStackSize, type MaxStackSize as MaxStackSizeValue } from '@nerima-games/mc-kernel'
 
 export type ComparatorMode = 'compare' | 'subtract'
 
@@ -112,12 +114,29 @@ export const comparatorOutput = (
  * The remaining work is to connect the published container and item contracts;
  * it does not require a new upstream API.
  */
+export type ContainerItemCount = number & Brand.Brand<'ContainerItemCount'>
+
+export const ContainerItemCountSchema: Schema.Codec<ContainerItemCount, number> = Schema.Int
+  .check(Schema.isBetween({ maximum: MAX_STACK_COUNT, minimum: 0 }))
+  .pipe(Schema.brand('ContainerItemCount'))
+
+export const MaxStackSizeSchema: Schema.Codec<MaxStackSizeValue, number> = Schema.Int.pipe(
+  Schema.fromBrand('MaxStackSize', MaxStackSize),
+)
+
 export type ContainerSlot = {
   /** How many items the slot holds. */
-  readonly count: number
+  readonly count: ContainerItemCount
   /** How many of THAT item fit in one slot. */
-  readonly maxStack: number
+  readonly maxStack: MaxStackSizeValue
 }
+
+const structSchema = Schema.Struct
+
+export const ContainerSlotSchema: Schema.Codec<ContainerSlot, unknown> = structSchema({
+  count: ContainerItemCountSchema,
+  maxStack: MaxStackSizeSchema,
+})
 
 /**
  * The floor of a non-empty container's reading.

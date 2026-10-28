@@ -3,7 +3,10 @@ import { Effect, Option, Result, Schema } from 'effect'
 import {
   AIR_BLOCK_ID,
   BlockPositionSchema,
+  DimensionRevisionSchema,
   DimensionIdSchema,
+  WorldIdSchema,
+  WorldRevisionSchema,
   capabilityOfBlockId,
   blockIdOf,
   DeltaTimeSecs,
@@ -44,6 +47,9 @@ const capabilityResolutionFailure: BlockRegistryResolutionFailure = {
 
 const dimensionId = (value: string): RedstoneHostRealm['dimension'] =>
   Schema.decodeUnknownSync(DimensionIdSchema)(value)
+const testWorldId = Schema.decodeUnknownSync(WorldIdSchema)('redstone-host-failure')
+const worldRevision = Schema.decodeUnknownSync(WorldRevisionSchema)(0)
+const dimensionRevision = Schema.decodeUnknownSync(DimensionRevisionSchema)(0)
 const blockPosition = (x: number, y: number, z: number): BlockPosition =>
   Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
 
@@ -85,6 +91,8 @@ describe('kernel capability registry failures at the host boundary', () => {
         lookup: {
           isLeverActive: () => false,
           isPoweredRailPowered: () => false,
+          readHopperBlockId: () => AIR_BLOCK_ID,
+          readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
           readContainerSlots: () => undefined,
           readPistonCell: () => ({ kind: 'block', block: 'bedrock' }),
           readPistonFacing: () => 'south',
@@ -96,9 +104,19 @@ describe('kernel capability registry failures at the host boundary', () => {
           buildCalls += 1
           return Result.fail(capabilityResolutionFailure)
         },
-        commit: () => {
-          commitCalls += 1
-          return Effect.never
+        buildHopperBlockWrite: () => Result.fail(capabilityResolutionFailure),
+        coordinator: {
+          worldId: testWorldId,
+          revision: Effect.succeed(worldRevision),
+          dimensionRevision: () => Effect.succeed(dimensionRevision),
+          commit: () => {
+            commitCalls += 1
+            return Effect.never
+          },
+        },
+        hopperService: {
+          advanceCooldown: () => Effect.never,
+          transfer: () => Effect.never,
         },
       }
 
