@@ -568,6 +568,30 @@ describe('RedstoneWorldRuntime', () => {
     ),
   )
 
+  it.effect('records an unpowered hopper tick before a delayed repeater powers it', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', true),
+          component(1, 'wire'),
+          {
+            ...component(2, 'repeater', undefined, 0, 0, { delayTicks: NonNegativeTickCount(1) }),
+            inputFrom: blockPosition(1, 0, 0),
+            outputTo: blockPosition(3, 0, 0),
+          },
+          component(3, 'hopper'),
+        ]))
+
+        yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.2))
+
+        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
+          hopperTransferEvent('overworld', blockPosition(3, 0, 0), 1, false),
+          hopperTransferEvent('overworld', blockPosition(3, 0, 0), 1, true),
+        ])
+      }),
+    ),
+  )
+
   it.effect('restores older host events ahead of events collected later', () =>
     runtimeProgram((runtime) =>
       Effect.gen(function* () {

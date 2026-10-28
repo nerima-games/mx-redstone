@@ -8,7 +8,7 @@
  * seam.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Deferred, Effect, Fiber, Option, Result, Schema } from 'effect'
+import { Deferred, Effect, Fiber, Option, Result, Schema, Stream } from 'effect'
 import {
   BlockAddressSchema,
   blockIdOf,
@@ -16,6 +16,8 @@ import {
   DeltaTimeSecs,
   DimensionIdSchema,
   DimensionRevisionSchema,
+  DomainEventSchema,
+  SimulationTickSchema,
   WorldIdSchema,
   WorldRevisionSchema,
   WorldWriteBatchSchema,
@@ -32,6 +34,8 @@ import {
   type HopperServiceSnapshot,
   type HopperTransferOutcome,
   type HopperTransferTickPlanState,
+  type DomainEvent,
+  type DomainEventBusApi,
   type WorldCommitPlanFragment,
   type WorldCommitPlanSnapshot,
   type WorldCommitRequest,
@@ -144,6 +148,7 @@ type RecordedCall =
       readonly pistonPlans: ReadonlyArray<PistonMovementPlan>
     }
   | { readonly kind: 'commit'; readonly request: WorldCommitRequest }
+  | { readonly kind: 'publish'; readonly event: DomainEvent }
   | {
       readonly kind: 'hopper-cooldown-plan'
       readonly snapshot: WorldCommitPlanSnapshot<HopperServiceSnapshot>
@@ -170,6 +175,35 @@ const hopperPlanCallsOf = (calls: ReadonlyArray<RecordedCall>) =>
 
 const eventCount = (events: RedstoneEventBatch): number =>
   events.hopper.length + events.lamp.length + events.piston.length + events.powered.length + events.trigger.length
+
+const blockChangedByWorldEvent: DomainEvent = {
+  _tag: 'BlockChangedByWorld',
+  address: blockAddress('overworld', 20, 0, 0),
+  cause: 'fire',
+  tick: Schema.decodeUnknownSync(SimulationTickSchema)(1),
+}
+
+const postCommitEventPort = (
+  port: RedstoneHostWritePort,
+  event: DomainEvent,
+  eventBus?: DomainEventBusApi,
+  includeOwnerChange = true,
+): RedstoneHostWritePort => {
+  const { planAdvanceCooldown } = port.hopperService
+  return {
+    ...port,
+    ...(eventBus === undefined ? {} : { eventBus }),
+    hopperService: {
+      ...port.hopperService,
+      planAdvanceCooldown: (snapshot, request) =>
+        planAdvanceCooldown(snapshot, request).pipe(Effect.map((fragment) => ({
+          ...fragment,
+          changes: includeOwnerChange ? [{ ownerId: HOPPER_REPLICATED_OWNER_ID, state: snapshot.state }] : [],
+          postCommitEvents: [event],
+        }))),
+    },
+  }
+}
 
 const recordingRealm = (
   dimension: RedstoneDimensionId,
@@ -1156,6 +1190,154 @@ describe('applyRedstoneHostEvents', () => {
       yield* applyRedstoneHostEvents(runtime, [realm], port)
 
       expect(calls).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('keeps per-tick hopper power samples when a batch contains both sides of a power edge', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const position = blockPosition(10, 10, 10)
+      const events = [
+        hopperTransferEvent(dimensionId('overworld'), position, 1, false),
+        hopperTransferEvent(dimensionId('overworld'), position, 1, true),
+      ]
+      yield* runtime.restoreEvents(emptyEvents({ hopper: events }))
+      const currentPowerLookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readHopperTransferContext: () => ({ powered: true, sourceAbove: null, destinationFacing: null }),
+      }
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), currentPowerLookup)
+
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+
+      expect(hopperCooldownPlanCallsOf(calls).map(({ request }) => request.ticks)).toStrictEqual([2])
+      expect(hopperPlanCallsOf(calls)).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('publishes post-commit domain events only after the single world commit succeeds', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), missingLookup)
+      const eventBus: DomainEventBusApi = {
+        events: Stream.empty,
+        publish: (published) => Effect.sync(() => calls.push({ kind: 'publish', event: published })),
+      }
+
+      yield* applyRedstoneHostEvents(
+        runtime,
+        [realm],
+        postCommitEventPort(port, blockChangedByWorldEvent, eventBus),
+      )
+
+      expect(calls.map(({ kind }) => kind)).toStrictEqual(['hopper-cooldown-plan', 'commit', 'publish'])
+      expect(calls.filter((call) => call.kind === 'publish')).toStrictEqual([
+        { kind: 'publish', event: blockChangedByWorldEvent },
+      ])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('restores the batch and publishes no domain event when the world commit fails', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      const batch = emptyEvents({ hopper: [event] })
+      yield* runtime.restoreEvents(batch)
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), missingLookup)
+      const eventBus: DomainEventBusApi = {
+        events: Stream.empty,
+        publish: (published) => Effect.sync(() => calls.push({ kind: 'publish', event: published })),
+      }
+      const failingPort: RedstoneHostWritePort = {
+        ...postCommitEventPort(port, blockChangedByWorldEvent, eventBus),
+        coordinator: {
+          ...port.coordinator,
+          commit: (request) => Effect.gen(function* failCommit() {
+            yield* Effect.sync(() => calls.push({ kind: 'commit', request }))
+            return yield* Effect.fail(new WorldCommitEmptyRequest({}))
+          }),
+        },
+      }
+
+      const result = yield* Effect.result(applyRedstoneHostEvents(runtime, [realm], failingPort))
+
+      expect(result).toMatchObject({ _tag: 'Failure', failure: { _tag: 'WorldCommitEmptyRequest' } })
+      expect(calls.map(({ kind }) => kind)).toStrictEqual(['hopper-cooldown-plan', 'commit'])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([event])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('rejects post-commit events without a bus before commit and restores the batch', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), missingLookup)
+
+      const result = yield* Effect.result(applyRedstoneHostEvents(
+        runtime,
+        [realm],
+        postCommitEventPort(port, blockChangedByWorldEvent),
+      ))
+
+      expect(result).toMatchObject({ _tag: 'Failure', failure: { _tag: 'RedstoneHostEventBusUnavailable' } })
+      expect(commitCallsOf(calls)).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([event])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('rejects an event-only plan without a world change and restores the batch', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), missingLookup)
+      const eventBus: DomainEventBusApi = {
+        events: Stream.empty,
+        publish: (published) => Effect.sync(() => calls.push({ kind: 'publish', event: published })),
+      }
+
+      const result = yield* Effect.result(applyRedstoneHostEvents(
+        runtime,
+        [realm],
+        postCommitEventPort(port, blockChangedByWorldEvent, eventBus, false),
+      ))
+
+      expect(result).toMatchObject({ _tag: 'Failure', failure: { _tag: 'WorldCommitPlanEmpty' } })
+      expect(commitCallsOf(calls)).toStrictEqual([])
+      expect(calls.filter((call) => call.kind === 'publish')).toStrictEqual([])
+      expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([event])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('does not restore an already committed batch when event publication fails', () =>
+    Effect.gen(function* () {
+      const runtime = yield* RedstoneWorldRuntime
+      const event = hopperTransferEvent(dimensionId('overworld'), blockPosition(10, 10, 10))
+      yield* runtime.restoreEvents(emptyEvents({ hopper: [event] }))
+      const { calls, port, realm } = recordingRealm(dimensionId('overworld'), missingLookup)
+      const eventBus: DomainEventBusApi = {
+        events: Stream.empty,
+        publish: (published) => {
+          calls.push({ kind: 'publish', event: published })
+          return Schema.decodeUnknownEffect(DomainEventSchema)({}).pipe(Effect.asVoid)
+        },
+      }
+
+      const result = yield* Effect.result(applyRedstoneHostEvents(
+        runtime,
+        [realm],
+        postCommitEventPort(port, blockChangedByWorldEvent, eventBus),
+      ))
+
+      expect(Result.isFailure(result)).toBe(true)
+      expect(commitCallsOf(calls)).toHaveLength(1)
+      expect(calls.filter((call) => call.kind === 'publish')).toHaveLength(1)
       expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )

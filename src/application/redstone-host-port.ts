@@ -57,6 +57,8 @@ import {
   CONTAINER_STORAGE_REPLICATED_OWNER_ID,
   type ContainerStoragePlanSnapshot,
   ContainerStorageSnapshotSchema,
+  type DomainEvent,
+  type DomainEventBusApi,
   HOPPER_REPLICATED_OWNER_ID,
   HopperCooldownTicksSchema,
   type HopperElapsedTicks,
@@ -109,6 +111,7 @@ const FIRST_EVENT_DIMENSION_INDEX = 0
 const MAX_EVENT_DIMENSION_COUNT = 1
 const STRICT_DECODE_OPTIONS = { onExcessProperty: 'error' } as const
 const ZERO_EVENT_COUNT = 0
+const ONE_EVENT_COUNT = 1
 const NO_RESULT: void = Option.getOrUndefined(Option.none<void>())
 const ZERO_ELAPSED_TICKS = 0
 
@@ -201,6 +204,7 @@ export type RedstoneHostWritePort<BuildError = never> = {
     revisions: RedstoneHostHopperRevisionContext,
   ) => Result.Result<WorldWriteBatch, BuildError>
   readonly coordinator: RedstoneHostCoordinatorPort
+  readonly eventBus?: DomainEventBusApi
   readonly hopperService: RedstoneHostHopperService
 }
 
@@ -213,6 +217,7 @@ export type RedstoneHostRealm = {
 export type RedstoneHostEventFailure =
   | Readonly<{ _tag: 'RedstoneHostMixedDimensions'; dimensions: ReadonlyArray<RedstoneDimensionId> }>
   | Readonly<{ _tag: 'RedstoneHostRealmMissing'; dimension: RedstoneDimensionId }>
+  | Readonly<{ _tag: 'RedstoneHostEventBusUnavailable' }>
 
 export type RedstoneHostPositionFailure = Readonly<{ _tag: 'RedstoneHostPositionOutOfRange' }>
 
@@ -622,21 +627,34 @@ const captureRedstonePlanBase = (
   } satisfies RedstonePlanBase
 })
 
+const selectHopperEventPower = (
+  contextPowered: boolean,
+  sampledPower: boolean,
+  preserveSampledPower: boolean,
+): boolean => {
+  if (preserveSampledPower) {
+    return sampledPower
+  }
+  return contextPowered || sampledPower
+}
+
 const selectHopperEvent = (
   realm: RedstoneHostRealm,
   event: HopperTransferEvent,
+  preserveSampledPower: boolean,
 ): Effect.Effect<SelectedHopperEvent, Schema.SchemaError | RedstoneHostHopperFailure> => {
-  const context = realm.lookup.readHopperTransferContext(event.position)
+  const { dimension, elapsedRedstoneTicks, powered: sampledPower, position } = event
+  const context = realm.lookup.readHopperTransferContext(position)
   const elapsedTicks = Schema.decodeUnknownResult(HopperElapsedTicksSchema, STRICT_DECODE_OPTIONS)(
-    event.elapsedRedstoneTicks * GAME_TICKS_PER_REDSTONE_TICK,
+    elapsedRedstoneTicks * GAME_TICKS_PER_REDSTONE_TICK,
   )
   if (Result.isFailure(elapsedTicks)) {
     return Effect.fail(elapsedTicks.failure)
   }
-  const powered = context.powered || event.powered
+  const powered = selectHopperEventPower(context.powered, sampledPower, preserveSampledPower)
   const outcome = selectHopperTransferCandidates({
     ...context,
-    hopperAddress: { dimension: event.dimension, position: event.position },
+    hopperAddress: { dimension, position },
     powered,
   })
   if (outcome['_tag'] === 'InvalidRequest') {
@@ -651,8 +669,26 @@ const selectHopperEvent = (
 const selectHopperEvents = (
   realm: RedstoneHostRealm,
   events: ReadonlyArray<HopperTransferEvent>,
-): Effect.Effect<ReadonlyArray<SelectedHopperEvent>, Schema.SchemaError | RedstoneHostHopperFailure> =>
-  Effect.forEach(events, (event) => selectHopperEvent(realm, event))
+): Effect.Effect<ReadonlyArray<SelectedHopperEvent>, Schema.SchemaError | RedstoneHostHopperFailure> => {
+  const eventCounts = new Map<string, number>()
+  for (const event of events) {
+    const key = blockPositionKeyOf(event.position)
+    eventCounts.set(key, (eventCounts.get(key) ?? ZERO_EVENT_COUNT) + ONE_EVENT_COUNT)
+  }
+  const repeatedPositions = new Set<string>()
+  for (const [key, count] of eventCounts) {
+    if (count > ONE_EVENT_COUNT) {
+      repeatedPositions.add(key)
+    }
+  }
+  return Effect.forEach(events, (event) =>
+    selectHopperEvent(
+      realm,
+      event,
+      repeatedPositions.has(blockPositionKeyOf(event.position)),
+    ),
+  )
+}
 
 const sameBlockPosition = (left: BlockPosition, right: BlockPosition): boolean =>
   left.x === right.x && left.y === right.y && left.z === right.z
@@ -1127,6 +1163,11 @@ type RedstoneCommitContext<BuildError> = Readonly<{
   realms: ReadonlyArray<RedstoneHostRealm>
 }>
 
+type RedstonePostCommitPublication = Readonly<{
+  events: ReadonlyArray<DomainEvent>
+  eventBus: DomainEventBusApi
+}>
+
 const planRedstoneEventBatch = <BuildError>(
   context: RedstoneCommitContext<BuildError>,
   base: RedstonePlanBase,
@@ -1159,27 +1200,50 @@ const planRedstoneEventBatch = <BuildError>(
   return yield* redstonePlanFromRequest(base, request)
 })
 
+const prepareRedstonePostCommitPublication = <BuildError>(
+  port: RedstoneHostWritePort<BuildError>,
+  plans: ReadonlyArray<WorldCommitPlanFragment<unknown>>,
+): Effect.Effect<Option.Option<RedstonePostCommitPublication>, RedstoneHostEventFailure> => {
+  const events = plans.flatMap(({ postCommitEvents }) => postCommitEvents)
+  if (events.length === ZERO_EVENT_COUNT) {
+    return Effect.succeed(Option.none())
+  }
+  const { eventBus: providedEventBus } = port
+  const eventBus = Option.fromUndefinedOr(providedEventBus)
+  if (Option.isNone(eventBus)) {
+    return Effect.fail({ _tag: 'RedstoneHostEventBusUnavailable' })
+  }
+  return Effect.succeed(Option.some({ eventBus: eventBus.value, events }))
+}
+
 const mergeAndCommitRedstonePlans = <BuildError>(
   port: RedstoneHostWritePort<BuildError>,
   plans: ReadonlyArray<WorldCommitPlanFragment<unknown>>,
-) => Effect.gen(function* mergeAndCommitRedstonePlansGenerator() {
+): Effect.Effect<
+  Option.Option<RedstonePostCommitPublication>,
+  WorldCommitPlanConflict | Schema.SchemaError | RedstoneHostEventFailure | WorldCommitCoordinatorError
+> => Effect.gen(function* mergeAndCommitRedstonePlansGenerator() {
   const merged = yield* Effect.fromResult(mergeWorldCommitPlans(plans))
+  const publication = yield* prepareRedstonePostCommitPublication(port, plans)
   const hasBlockWrite = Option.isSome(Option.fromUndefinedOr(merged.blockWrite))
   if (merged.changes.length > ZERO_EVENT_COUNT || hasBlockWrite) {
     yield* port.coordinator.commit(merged)
+  } else if (Option.isSome(publication)) {
+    return yield* Effect.fail<WorldCommitPlanConflict>({ _tag: 'WorldCommitPlanEmpty' })
   }
+  return publication
 })
 
 const commitRedstoneEvents = <BuildError>(
   context: RedstoneCommitContext<BuildError>,
 ): Effect.Effect<
-  void,
-  BlockRegistryResolutionFailure | RedstoneHostEventFailure | RedstoneHostPositionFailure | RedstoneHostHopperFailure | BuildError | Schema.SchemaError | WorldCommitCoordinatorError | HopperServiceError
+  Option.Option<RedstonePostCommitPublication>,
+  BlockRegistryResolutionFailure | RedstoneHostEventFailure | RedstoneHostPositionFailure | RedstoneHostHopperFailure | BuildError | Schema.SchemaError | WorldCommitPlanConflict | WorldCommitCoordinatorError | HopperServiceError
 > =>
   Effect.gen(function* commitRedstoneEventsGenerator() {
     const realm = yield* realmForRedstoneEvents(context.realms, context.events)
     if (Option.isNone(realm)) {
-      return
+      return Option.none()
     }
     const base = yield* captureRedstonePlanBase(context.port, realm.value.dimension)
     const redstonePlan = yield* planRedstoneEventBatch(context, base, realm.value)
@@ -1193,7 +1257,7 @@ const commitRedstoneEvents = <BuildError>(
       onNone: () => [redstonePlan] as const,
       onSome: (fragment) => [redstonePlan, fragment] as const,
     })
-    yield* mergeAndCommitRedstonePlans(context.port, plans)
+    return yield* mergeAndCommitRedstonePlans(context.port, plans)
   })
 
 /**
@@ -1219,6 +1283,12 @@ export const applyRedstoneHostEvents = <BuildError>(
       if (Exit.isFailure(result)) {
         yield* runtime.restoreEvents(events)
         return yield* Effect.failCause(result.cause)
+      }
+      const publication = result.value
+      if (Option.isSome(publication)) {
+        for (const event of publication.value.events) {
+          yield* publication.value.eventBus.publish(event)
+        }
       }
     }),
   )

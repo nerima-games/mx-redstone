@@ -4,6 +4,7 @@ import {
   chunkCoordOfBlock,
   CHUNK_SIZE_XZ,
   DimensionRevisionSchema,
+  SimulationTickSchema,
   WorldRevisionSchema,
   WorldIdSchema,
   WorldWriteBatchSchema,
@@ -43,9 +44,11 @@ import {
   type HopperTransferRequest,
   type WorldCommitPlanSnapshot,
   type WorldCommitRequest,
+  type DomainEvent,
+  type DomainEventBusApi,
 } from '@nerima-games/mc-sim'
 import * as fc from 'fast-check'
-import { Effect, Option, Result, Schema } from 'effect'
+import { Effect, Option, Result, Schema, Stream } from 'effect'
 import { describe, expect, it } from '@effect/vitest'
 import {
   selectHopperTransferCandidates,
@@ -90,6 +93,10 @@ const HOPPER_ADDRESS: BlockAddress = Schema.decodeUnknownSync(BlockAddressSchema
   dimension: 'overworld',
   position: { x: 0, y: 64, z: 0 },
 })
+const COOLDOWN_HOPPER_ADDRESS: BlockAddress = Schema.decodeUnknownSync(BlockAddressSchema)({
+  dimension: 'overworld',
+  position: { x: 8, y: 64, z: 0 },
+})
 const CHEST_ADDRESS: BlockAddress = Schema.decodeUnknownSync(BlockAddressSchema)({
   dimension: 'overworld',
   position: { x: 1, y: 64, z: 0 },
@@ -114,6 +121,12 @@ const VANILLA_HOPPER_CADENCE_FIXTURE = {
   unpoweredTicksToCoolingDown: 7,
   finalUnpoweredTicks: 1,
 } as const
+const HOPPER_PLAN_COMMITTED_EVENT: DomainEvent = {
+  _tag: 'BlockChangedByWorld',
+  address: COOLDOWN_HOPPER_ADDRESS,
+  cause: 'fire',
+  tick: Schema.decodeUnknownSync(SimulationTickSchema)(1),
+}
 
 const countStorageItems = (snapshot: Schema.Schema.Type<typeof ContainerStorageSnapshotSchema>): number =>
   snapshot.containers.reduce(
@@ -126,7 +139,10 @@ const countStorageItems = (snapshot: Schema.Schema.Type<typeof ContainerStorageS
     0,
   )
 
-const makeHopperTransferScenario = (initialItemCount: number) =>
+const makeHopperTransferScenario = (
+  initialItemCount: number,
+  initialHopperSnapshot: Schema.Schema.Type<typeof HopperServiceSnapshotSchema> = INITIAL_HOPPER_SERVICE_SNAPSHOT,
+) =>
   Effect.gen(function* makeHopperTransferScenarioGenerator() {
     const stackResult = itemStack('redstone_dust', initialItemCount)
     if (Result.isFailure(stackResult)) {
@@ -162,7 +178,7 @@ const makeHopperTransferScenario = (initialItemCount: number) =>
       chunkStores: { forDimension: () => chunkStore },
       owners: [
         containerStorageOwnerRegistration(initialStorage),
-        hopperOwnerRegistration(INITIAL_HOPPER_SERVICE_SNAPSHOT),
+        hopperOwnerRegistration(initialHopperSnapshot),
       ],
       world: TEST_WORLD_ID,
     })
@@ -257,6 +273,13 @@ const makeHopperTransferScenario = (initialItemCount: number) =>
       const lampBlockWrite = yield* makeBlockWrite(expectedRevision, [
         { block: LAMP_BLOCK_ID, position: LAMP_ADDRESS.position },
       ])
+      const publishedEvents: Array<DomainEvent> = []
+      const eventBus: DomainEventBusApi = {
+        events: Stream.empty,
+        publish: (event) => Effect.sync(() => {
+          publishedEvents.push(event)
+        }),
+      }
       const blockWriteFor = (
         event: HopperTransferEvent,
         blockId: number,
@@ -275,15 +298,32 @@ const makeHopperTransferScenario = (initialItemCount: number) =>
           isLeverActive: () => false,
           isPoweredRailPowered: () => false,
           readHopperBlockId: () => HOPPER_BLOCK_ID,
-          readHopperTransferContext: () => ({
-            powered: false,
-            sourceAbove: null,
-            destinationFacing: { address: CHEST_ADDRESS, kind: 'chest' },
-          }),
+          readHopperTransferContext: (position) => position.x === COOLDOWN_HOPPER_ADDRESS.position.x
+            ? { powered: false, sourceAbove: null, destinationFacing: null }
+            : {
+                powered: false,
+                sourceAbove: null,
+                destinationFacing: { address: CHEST_ADDRESS, kind: 'chest' },
+              },
           readContainerSlots: () => undefined,
           readPistonCell: () => ({ kind: 'empty' }),
           readPistonFacing: () => 'north',
         },
+      }
+      const hopperServiceWithPostCommitEvent: typeof hopper = {
+        ...hopper,
+        planAdvanceCooldown: (...args) => hopper.planAdvanceCooldown(...args).pipe(
+          Effect.map((fragment) => ({
+            ...fragment,
+            postCommitEvents: [HOPPER_PLAN_COMMITTED_EVENT],
+          })),
+        ),
+        planTransferTick: (...args) => hopper.planTransferTick(...args).pipe(
+          Effect.map((fragment) => ({
+            ...fragment,
+            postCommitEvents: [HOPPER_PLAN_COMMITTED_EVENT],
+          })),
+        ),
       }
       const port: RedstoneHostWritePort = {
         buildCommitRequest: (_events, pistonPlans) => Result.succeed({
@@ -302,6 +342,7 @@ const makeHopperTransferScenario = (initialItemCount: number) =>
           }),
         }),
         buildHopperBlockWrite: blockWriteFor,
+        eventBus,
         coordinator: {
           ...coordinator,
           commit: (request) => {
@@ -335,9 +376,9 @@ const makeHopperTransferScenario = (initialItemCount: number) =>
             return coordinator.commit(staleRequest)
           },
         },
-        hopperService: hopper,
+        hopperService: hopperServiceWithPostCommitEvent,
       }
-      return { commitCount: () => commitCount, port, realm }
+      return { commitCount: () => commitCount, port, publishedEvents, realm }
     })
     const blockWrite = yield* Effect.flatMap(coordinator.revision, makeBlockWrite)
     return {
@@ -568,7 +609,12 @@ describe('HopperService transfer properties', () => {
   it.effect('host commit failure preserves hopper state and queued events; success commits the batch once', () =>
     Effect.sync(() => {
       const runHostBatch = (initialItemCount: number, failCommit: boolean) => {
-        const scenario = Effect.runSync(makeHopperTransferScenario(initialItemCount))
+        const initialHopperSnapshot = failCommit
+          ? Schema.decodeUnknownSync(HopperServiceSnapshotSchema, strictDecode)({
+              hoppers: [{ address: COOLDOWN_HOPPER_ADDRESS, cooldownTicks: 6 }],
+            })
+          : INITIAL_HOPPER_SERVICE_SNAPSHOT
+        const scenario = Effect.runSync(makeHopperTransferScenario(initialItemCount, initialHopperSnapshot))
         const harness = Effect.runSync(scenario.makeAtomicHostHarness(failCommit))
         const positions = [
           { dimension: HOPPER_ADDRESS.dimension, position: HOPPER_ADDRESS.position },
@@ -583,20 +629,27 @@ describe('HopperService transfer properties', () => {
         const beforeDimensionRevision = Effect.runSync(scenario.dimensionsRevision)
         const lamp = { dimension: LAMP_ADDRESS.dimension, lit: true, position: LAMP_ADDRESS.position }
         const events: RedstoneEventBatch = {
-          hopper: [
-            hopperTransferEvent({
-              dimension: HOPPER_ADDRESS.dimension,
-              position: HOPPER_ADDRESS.position,
-              elapsedRedstoneTicks: 1,
-              powered: true,
-            }),
-            hopperTransferEvent({
-              dimension: HOPPER_ADDRESS.dimension,
-              position: HOPPER_ADDRESS.position,
-              elapsedRedstoneTicks: 4,
-              powered: false,
-            }),
-          ],
+          hopper: failCommit
+            ? [hopperTransferEvent({
+                dimension: COOLDOWN_HOPPER_ADDRESS.dimension,
+                position: COOLDOWN_HOPPER_ADDRESS.position,
+                elapsedRedstoneTicks: 1,
+                powered: false,
+              })]
+            : [
+                hopperTransferEvent({
+                  dimension: HOPPER_ADDRESS.dimension,
+                  position: HOPPER_ADDRESS.position,
+                  elapsedRedstoneTicks: 1,
+                  powered: true,
+                }),
+                hopperTransferEvent({
+                  dimension: HOPPER_ADDRESS.dimension,
+                  position: HOPPER_ADDRESS.position,
+                  elapsedRedstoneTicks: 4,
+                  powered: false,
+                }),
+              ],
           lamp: [lamp],
           piston: [{
             dimension: PISTON_ADDRESS.dimension,
@@ -641,6 +694,7 @@ describe('HopperService transfer properties', () => {
           events,
           execution,
           initialItemCount,
+          publishedEvents: harness.publishedEvents,
         }
       }
 
@@ -654,19 +708,24 @@ describe('HopperService transfer properties', () => {
           expect(failed.commitCount).toBe(1)
           expect(failed.afterStorage).toStrictEqual(failed.beforeStorage)
           expect(failed.afterHopper).toStrictEqual(failed.beforeHopper)
+          expect(failed.afterHopper.hoppers.find(({ address }) => address.position.x === COOLDOWN_HOPPER_ADDRESS.position.x)?.cooldownTicks)
+            .toBe(6)
           expect(failed.afterObserved).toStrictEqual(failed.beforeObserved)
           expect(failed.afterWorldRevision).toBe(failed.beforeWorldRevision)
           expect(failed.afterDimensionRevision).toBe(failed.beforeDimensionRevision)
           expect(failed.execution.remaining).toStrictEqual(failed.events)
+          expect(failed.publishedEvents).toStrictEqual([])
 
           const succeeded = runHostBatch(initialItemCount, false)
           expect(Result.isSuccess(succeeded.execution.result)).toBe(true)
           expect(succeeded.commitCount).toBe(1)
+          expect(succeeded.publishedEvents).toStrictEqual([HOPPER_PLAN_COMMITTED_EVENT])
           expect(succeeded.afterWorldRevision).toBe(Number(succeeded.beforeWorldRevision) + 1)
           expect(succeeded.afterDimensionRevision).toBe(Number(succeeded.beforeDimensionRevision) + 1)
           expect(countStorageItems(succeeded.afterStorage)).toBe(initialItemCount)
           expect(countStorageItems(succeeded.afterObserved.state)).toBe(initialItemCount)
-          expect(succeeded.afterHopper.hoppers[0]?.cooldownTicks).toBe(HOPPER_TRANSFER_COOLDOWN_TICKS)
+          expect(succeeded.afterHopper.hoppers.find(({ address }) => address.position.x === HOPPER_ADDRESS.position.x)?.cooldownTicks)
+            .toBe(HOPPER_TRANSFER_COOLDOWN_TICKS)
           expect(succeeded.afterObserved.blocks).toEqual(expect.arrayContaining([
             {
               dimension: HOPPER_ADDRESS.dimension,
