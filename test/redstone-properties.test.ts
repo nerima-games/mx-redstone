@@ -16,6 +16,8 @@ import {
   ReplicatedOwnerChangeSchema,
   WorldCommitCoordinatorErrorSchema,
   WorldCommitResultSchema,
+  containerStorageOwnerRegistration,
+  hopperOwnerRegistration,
   type WorldCommitRequest,
 } from '@nerima-games/mc-sim'
 import {
@@ -185,7 +187,7 @@ const runHostBatch = (positionX: number, mixedDimensions: boolean) => {
   }
   const coordinatorResult = Effect.runSync(Effect.result(makeWorldCommitCoordinator({
     world: testWorldId,
-    owners: [],
+    owners: [containerStorageOwnerRegistration(), hopperOwnerRegistration()],
     dimensions: ['overworld'],
   })))
   if (Result.isFailure(coordinatorResult)) {
@@ -217,8 +219,8 @@ const runHostBatch = (positionX: number, mixedDimensions: boolean) => {
       },
     },
     hopperService: {
-      advanceCooldown: () => Effect.succeed({ _tag: 'NoChange' }),
-      transfer: () => Effect.never,
+      planAdvanceCooldown: () => Effect.never,
+      planTransferTick: () => Effect.never,
     },
   }
 

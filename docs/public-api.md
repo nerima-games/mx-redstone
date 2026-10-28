@@ -118,15 +118,12 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 この境界があるから電力グラフ全体がワールドなしでテストできる。
 2つのstageは「電力計算、その後に効果適用」という順序を固定する。
 
-host は stage 実行後に`applyRedstoneHostEvents`で5つのqueueをdrainする。対象はlamp transition、piston transition、trigger、hopper transfer、powered-component transitionである。
-hopper以外のeventはpiston planとまとめて`WorldCommitRequest`を1つ作り、coordinatorへ1回commitする。
-hopper eventは`transferDueRequest`をschemaでdecodeし、host lookupからpower状態と隣接containerを読み、`selectHopperTransferCandidates`で候補を選ぶ。
-候補のendpointとslotで`HopperTransferRequest`を組み立てる。
-`blockWrite`は`WorldWriteBatchSchema`でdecodeし、hopper blockの単一editと現行world/dimension revisionが一致することを確かめてから`HopperService.transfer`へ渡す。
-powered hopperでは`transfer`を呼ばない。
-HopperServiceが進めるcooldownは8 game ticksであり、4 redstone ticksに相当する。
-非hopper commitより前に処理が失敗または中断した場合は全queueをruntimeへ戻す。
-非hopper commit後にhopper transferが失敗または中断した場合は未処理のhopper eventをruntimeへ戻す。
+host は stage 実行後に`applyRedstoneHostEvents`を呼んで5つのqueueをdrainし、同じ world revision と dimension revision から plan を作る。対象はlamp transition、piston transition、trigger、hopper transfer、powered-component transitionである。
+hopper以外のeventはpiston planと合わせてplan fragmentにする。hopper eventは経過redstone tickとpoweredを持ち、hostは経過redstone tickをgame tickに換算してから`HopperService.planTransferTick`へ渡す。
+候補endpointとslotは`selectHopperTransferCandidates`が選び、cooldownの進行と移送の可否はHopperServiceが判定する。候補がないhopperのcooldownは`planAdvanceCooldown`で進める。Java Editionの通常のcontainer移送後cooldownは8 game ticksである。
+lamp、piston、hopperのfragmentは`mergeWorldCommitPlans`でまとめ、coordinatorの`commit`を1回だけ呼ぶ。成功した移送のfragmentにはitem owner、hopper cooldown、hopper block editが含まれる。
+plan、merge、commitのいずれかが失敗または中断した場合は、古いfragmentを再利用せずdrainしたevent batch全体をruntimeへ戻す。成功したbatchのqueueはcommit完了後に消費される。
+runtimeは経過redstone tickとpoweredを渡し、移送周期やcooldownの独自カウンタを持たない。
 ボタンは `pressButton(dimension, position)` で次tickのパルスを予約する。`pulseTicks` の既定値は
 10で、パルス中の再入力は残り時間を設定値へ戻す。リピーターの `delayTicks` は1–4に丸められ、
 入力のONとOFFの双方へ同じtick遅延を適用する。
@@ -184,7 +181,7 @@ mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしてお�
 | `RedstoneWorldRuntimeLayer` | **契約** | runtime port の Layer |
 | `RedstoneWorldRuntimeService` | **契約** | dimension snapshot の置換、ボタン入力、5 event queue の drain と、失敗時の batch 復元 |
 | `RedstoneWorldSnapshot` / `RedstoneComponentSnapshot` / `RedstonePosition` | **契約** | compose/gameplay 型に依存しない意味型 |
-| `LampTransition` / `PoweredComponentKind` / `PoweredComponentTransition` / `PoweredPistonTransition` / `TriggeredComponentKind` / `HopperTransferEvent` / `RedstoneTriggerEvent` | **契約** | host が world write や action に変換する runtime event。`HopperTransferEvent`の`transferDueRequest`は`powered`と`NonNegativeTickCount`型の`ticksSinceTransfer`を持つ |
+| `LampTransition` / `PoweredComponentKind` / `PoweredComponentTransition` / `PoweredPistonTransition` / `TriggeredComponentKind` / `HopperTransferEvent` / `RedstoneTriggerEvent` | **契約** | host が world write や action に変換する runtime event。`HopperTransferEvent`は`elapsedRedstoneTicks`と`powered`を持つ |
 
 snapshot から `CircuitBoard` を構築する関数、内部 state、node ID はバレルへ公開しない。
 
@@ -195,7 +192,7 @@ host port は host block を `RedstoneComponentSnapshot` に分類し、runtime 
 | エクスポート | 区分 | 備考 |
 | --- | --- | --- |
 | `redstoneSnapshotFromRealm` | **契約** | ホストの生ブロック列から 1 dimension 分の `RedstoneWorldSnapshot` を組む |
-| `applyRedstoneHostEvents` | **契約** | 5つのqueueをdrainする。hopper以外のeventを1つの`WorldCommitRequest`にまとめる。hopper eventは候補選択とblock writeのschema検証後に`HopperService.transfer`へ渡す |
+| `applyRedstoneHostEvents` | **契約** | 5つのqueueをdrainし、lamp、piston、hopperのplan fragmentを1つにmergeしてcoordinatorのcommitを1回呼ぶ。mergeかcommitが失敗した場合、drainしたbatch全体をruntimeへ戻す |
 | `RedstoneHostBlock` / `RedstoneHostLookup` / `RedstoneHostWritePort` / `RedstoneHostRealm` | **契約** | host block は `BlockAddress` と typed block を持つ。lookup は hopper block と transfer context も読む。write port はevent requestとhopper block writeを組み立て、coordinatorと`HopperService`を使う |
 | `componentForBlock` | 内部（可視） | ブロック文字列 1 つの分類。テストとホストの直接検証のために可視 |
 | `kernelPistonCapabilities` | 内部（可視） | mc-kernel の `pistonImmovable` 能力テーブルを読む `BlockCapabilityLookup` |
@@ -308,9 +305,7 @@ kernel 所有の座標語彙であり、`index.ts` から re-export していな
 | `DispenserPlanFailure` | `domain/dispenser.ts` | 内部（可視） |
 | `DispenserPlanFailureSchema` | `domain/dispenser.ts` | 内部（可視） |
 | `planDispenserAction` | `domain/dispenser.ts` | 内部（可視） |
-| `HOPPER_TRANSFER_PERIOD_TICKS` | `domain/hopper.ts` | 内部（可視） |
 | `GAME_TICKS_PER_REDSTONE_TICK` | `domain/hopper.ts` | 内部（可視） |
-| `HOPPER_TRANSFER_COOLDOWN_GAME_TICKS` | `domain/hopper.ts` | 内部（可視） |
 | `HopperAdjacentContainer` | `domain/hopper.ts` | 内部（可視） |
 | `HopperTransferSelectionRequest` | `domain/hopper.ts` | 内部（可視） |
 | `HopperContainerEndpoint` | `domain/hopper.ts` | 内部（可視） |
@@ -321,11 +316,8 @@ kernel 所有の座標語彙であり、`index.ts` から re-export していな
 | `HopperTransferSelectionOutcome` | `domain/hopper.ts` | 内部（可視） |
 | `HopperTransferSelectionOutcomeSchema` | `domain/hopper.ts` | 内部（可視） |
 | `selectHopperTransferCandidates` | `domain/hopper.ts` | 内部（可視） |
-| `HopperTransferDueRequest` / `HopperTransferDueRequestInput` | `domain/hopper.ts` | 契約 |
-| `HopperTransferDueRequestSchema` | `domain/hopper.ts` | 契約 |
 | `HOPPER_TRANSFER_ITEMS` | `domain/hopper.ts` | 内部（可視） |
 | `isHopperLocked` | `domain/hopper.ts` | 内部（可視） |
-| `hopperTransferDue` | `domain/hopper.ts` | 内部（可視） |
 | `OBSERVER_PULSE_TICKS` | `domain/observer.ts` | 内部（可視） |
 | `Sightings` | `domain/observer.ts` | 内部（可視） |
 | `ObserverSweep` | `domain/observer.ts` | 内部（可視） |

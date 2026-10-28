@@ -16,6 +16,10 @@ import {
 } from '@nerima-games/mc-kernel'
 import { vi } from 'vitest'
 import {
+  CONTAINER_STORAGE_SNAPSHOT_VERSION,
+  HOPPER_REPLICATED_OWNER_ID,
+} from '@nerima-games/mc-sim'
+import {
   applyRedstoneHostEvents,
   kernelPistonCapabilities,
   type RedstoneHostRealm,
@@ -109,14 +113,22 @@ describe('kernel capability registry failures at the host boundary', () => {
           worldId: testWorldId,
           revision: Effect.succeed(worldRevision),
           dimensionRevision: () => Effect.succeed(dimensionRevision),
+          snapshot: (ownerId, schema) => {
+            const state = ownerId === HOPPER_REPLICATED_OWNER_ID
+              ? { hoppers: [] }
+              : { version: CONTAINER_STORAGE_SNAPSHOT_VERSION, containers: [] }
+            return Schema.decodeUnknownEffect(schema)(state).pipe(
+              Effect.map((decodedState) => ({ world: testWorldId, revision: worldRevision, state: decodedState })),
+            )
+          },
           commit: () => {
             commitCalls += 1
             return Effect.never
           },
         },
         hopperService: {
-          advanceCooldown: () => Effect.never,
-          transfer: () => Effect.never,
+          planAdvanceCooldown: () => Effect.never,
+          planTransferTick: () => Effect.never,
         },
       }
 

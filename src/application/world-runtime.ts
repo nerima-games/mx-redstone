@@ -25,11 +25,6 @@ import {
 } from '../domain/comparator.js'
 import { Context, Effect, Layer, Option, Ref, Schema } from 'effect'
 import {
-  type HopperTransferDueRequest,
-  HopperTransferDueRequestSchema,
-  hopperTransferDue,
-} from '../domain/hopper.js'
-import {
   type PistonFacing,
   PistonFacingSchema,
   type PistonKind,
@@ -95,7 +90,8 @@ export type RedstoneTriggerEvent = {
 export type HopperTransferEvent = {
   readonly dimension: DimensionId
   readonly position: RedstonePosition
-  readonly transferDueRequest: HopperTransferDueRequest
+  readonly elapsedRedstoneTicks: NonNegativeTickCount
+  readonly powered: boolean
 }
 
 export type PoweredComponentKind = 'powered-rail' | 'door' | 'trapdoor'
@@ -123,7 +119,6 @@ export type RedstoneWorldState = {
   readonly pendingPistonTransitions: Ref.Ref<ReadonlyArray<PoweredPistonTransition>>
   readonly observedTriggerPower: Ref.Ref<ReadonlyMap<PositionKey, boolean>>
   readonly pendingTriggerEvents: Ref.Ref<ReadonlyArray<RedstoneTriggerEvent>>
-  readonly hopperTicksSinceTransfer: Ref.Ref<ReadonlyMap<PositionKey, NonNegativeTickCount>>
   readonly pendingHopperTransferEvents: Ref.Ref<ReadonlyArray<HopperTransferEvent>>
   readonly observedPoweredComponents: Ref.Ref<ReadonlyMap<PositionKey, boolean>>
   readonly pendingPoweredComponentTransitions: Ref.Ref<ReadonlyArray<PoweredComponentTransition>>
@@ -190,8 +185,9 @@ const NEGATIVE_ONE_AXIS = blockAxis(PREVIOUS_COORDINATE)
 export const RedstoneEventBatchSchema: Schema.Codec<RedstoneEventBatch, unknown> = structSchema({
   hopper: arraySchema(structSchema({
     dimension: DimensionIdSchema,
+    elapsedRedstoneTicks: nonNegativeTickCountSchema,
     position: BlockPositionSchema,
-    transferDueRequest: HopperTransferDueRequestSchema,
+    powered: Schema.Boolean,
   })),
   lamp: arraySchema(structSchema({
     dimension: DimensionIdSchema,
@@ -232,7 +228,7 @@ export type RedstoneWorldRuntimeService = {
   readonly drainPistonTransitions: Effect.Effect<ReadonlyArray<PoweredPistonTransition>>
   /** Returns rising-edge actions for dispensers, droppers, and note blocks. */
   readonly drainTriggerEvents: Effect.Effect<ReadonlyArray<RedstoneTriggerEvent>>
-  /** Returns due, unlocked hopper transfer requests for host application. */
+  /** Returns per-hopper ticks and power state for HopperService planning. */
   readonly drainHopperTransferEvents: Effect.Effect<ReadonlyArray<HopperTransferEvent>>
   /** Returns power-state changes for rails, doors, and trapdoors. */
   readonly drainPoweredComponentTransitions: Effect.Effect<ReadonlyArray<PoweredComponentTransition>>
@@ -438,7 +434,6 @@ export const circuitBoardFromSnapshots = (
 const NO_ITEMS = 0
 const INITIAL_TICK_ACCUMULATOR_SECS = Schema.decodeUnknownSync(fixedDurationSecsSchema)(ZERO_DURATION_SECS)
 const INITIAL_TICK_COUNT = Schema.decodeUnknownSync(nonNegativeTickCountSchema)(ZERO_TICK_COUNT)
-const INITIAL_TICKS_SINCE_TRANSFER = INITIAL_TICK_COUNT
 
 export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.gen(
   function* makeRedstoneWorldStateGenerator() {
@@ -454,7 +449,6 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       pendingPistonTransitions,
       observedTriggerPower,
       pendingTriggerEvents,
-      hopperTicksSinceTransfer,
       pendingHopperTransferEvents,
       observedPoweredComponents,
       pendingPoweredComponentTransitions,
@@ -472,7 +466,6 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       Ref.make<ReadonlyArray<PoweredPistonTransition>>([]),
       Ref.make<ReadonlyMap<PositionKey, boolean>>(new Map()),
       Ref.make<ReadonlyArray<RedstoneTriggerEvent>>([]),
-      Ref.make<ReadonlyMap<PositionKey, NonNegativeTickCount>>(new Map()),
       Ref.make<ReadonlyArray<HopperTransferEvent>>([]),
       Ref.make<ReadonlyMap<PositionKey, boolean>>(new Map()),
       Ref.make<ReadonlyArray<PoweredComponentTransition>>([]),
@@ -482,7 +475,6 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
     return {
       board,
       dimensions,
-      hopperTicksSinceTransfer,
       observedLamps,
       observedPistonStates,
       observedPoweredComponents,
@@ -746,79 +738,32 @@ export const collectTriggerEvents = (state: RedstoneWorldState): Effect.Effect<v
     }
   })
 
-type HopperTransferResult = {
-  readonly current: ReadonlyMap<PositionKey, NonNegativeTickCount>
-  readonly due: ReadonlyArray<readonly [PositionKey, HopperTransferEvent]>
-}
-
-/** `previous` and `ticks` are always consumed together (both describe hopper timing since the
- * last collection pass), so they travel as one param to keep every helper at 3 parameters. */
-type HopperTiming = {
-  readonly previous: ReadonlyMap<PositionKey, NonNegativeTickCount>
-  readonly ticks: NonNegativeTickCount
-}
-
-const hopperTransferEntry = (
-  entry: SnapshotEntry,
-  circuit: CircuitReadout,
-  timing: HopperTiming,
-): { readonly due: ReadonlyArray<readonly [PositionKey, HopperTransferEvent]>; readonly ticksSinceTransfer: NonNegativeTickCount } => {
-  const { component, dimension, nodeId } = entry
-  const ticksSinceTransfer = Schema.decodeUnknownSync(nonNegativeTickCountSchema)(
-    (timing.previous.get(nodeId) ?? INITIAL_TICKS_SINCE_TRANSFER) + timing.ticks,
-  )
-  const transferDueRequest = Schema.decodeUnknownSync(HopperTransferDueRequestSchema, {
-    onExcessProperty: 'error',
-  })({
-    powered: isPowered(circuit.board, circuit.power, nodeId),
-    ticksSinceTransfer,
-  })
-  if (!hopperTransferDue(transferDueRequest)) {
-    return { due: [], ticksSinceTransfer }
-  }
-  return {
-    due: [[nodeId, {
-      dimension,
-      position: copyPosition(component.position),
-      transferDueRequest,
-    }]],
-    ticksSinceTransfer: INITIAL_TICKS_SINCE_TRANSFER,
-  }
-}
-
 const computeHopperTransfers = (
   circuit: CircuitReadout,
   entries: ReadonlyArray<SnapshotEntry>,
-  timing: HopperTiming,
-): HopperTransferResult => {
-  const current = new Map<PositionKey, NonNegativeTickCount>()
-  const due: Array<readonly [PositionKey, HopperTransferEvent]> = []
-  for (const entry of entries) {
-    if (entry.component.kind === 'hopper') {
-      const result = hopperTransferEntry(entry, circuit, timing)
-      current.set(entry.nodeId, result.ticksSinceTransfer)
-      due.push(...result.due)
-    }
-  }
-  return { current, due }
-}
+  elapsedRedstoneTicks: NonNegativeTickCount,
+): ReadonlyArray<readonly [PositionKey, HopperTransferEvent]> => entries
+  .filter((entry) => entry.component.kind === 'hopper')
+  .map(({ component, dimension, nodeId }) => [nodeId, {
+    dimension,
+    elapsedRedstoneTicks,
+    position: copyPosition(component.position),
+    powered: isPowered(circuit.board, circuit.power, nodeId),
+  }] as const)
 
-/** Emits due, unlocked hopper requests without acquiring inventory ownership. */
+/** Emits each hopper's power state and the elapsed redstone ticks for host planning. */
 export const collectHopperTransferEvents = (
   state: RedstoneWorldState,
   ticks: NonNegativeTickCount,
 ): Effect.Effect<void> =>
   Effect.gen(function* collectHopperTransferEventsGenerator() {
-    const [board, power, dimensions, previous] = yield* Effect.all([
+    const [board, power, dimensions] = yield* Effect.all([
       Ref.get(state.board),
       Ref.get(state.power),
       Ref.get(state.dimensions),
-      Ref.get(state.hopperTicksSinceTransfer),
     ])
-    const entries = flattenSnapshotEntries(dimensions)
-    const { current, due } = computeHopperTransfers({ board, power }, entries, { previous, ticks })
-    const sorted = [...due].sort(([left], [right]) => left.localeCompare(right))
-    yield* Ref.set(state.hopperTicksSinceTransfer, current)
+    const sorted = [...computeHopperTransfers({ board, power }, flattenSnapshotEntries(dimensions), ticks)]
+      .sort(([left], [right]) => left.localeCompare(right))
     if (sorted.length > NO_ITEMS) {
       yield* Ref.update(state.pendingHopperTransferEvents, (pending) => [
         ...pending,

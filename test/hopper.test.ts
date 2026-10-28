@@ -1,5 +1,5 @@
 /**
- * The hopper's rules: the inversion, endpoint order, and transfer timing.
+ * The hopper's rules: the inversion and endpoint order.
  *
  * The inversion is the interesting one. Every other component in this repository
  * acts when power arrives; a hopper STOPS. A reader who knows the rest of the
@@ -44,39 +44,14 @@ import * as fc from 'fast-check'
 import { Effect, Option, Result, Schema } from 'effect'
 import { describe, expect, it } from '@effect/vitest'
 import {
-  GAME_TICKS_PER_REDSTONE_TICK,
-  HOPPER_TRANSFER_COOLDOWN_GAME_TICKS,
-  HOPPER_TRANSFER_ITEMS,
-  HOPPER_TRANSFER_PERIOD_TICKS,
-  HopperTransferDueRequestSchema,
   HopperTransferSelectionRequestSchema,
   HopperTransferSelectionOutcomeSchema,
-  hopperTransferDue,
   isHopperLocked,
   selectHopperTransferCandidates,
 } from '../src/domain/hopper'
-import { REDSTONE_TICK_SECS } from '../src/stages/registration'
 
 const PROPERTY_RUN_COUNT = 32
 const CHUNK_BIOME_COUNT = CHUNK_SIZE_XZ * CHUNK_SIZE_XZ
-
-const sourceUrl = 'https://minecraft.wiki/w/Hopper'
-const versionSourceUrl = 'https://minecraft.wiki/w/Java_Edition'
-
-// This inference describes the newly initialized sim service, not a Java timing claim.
-const initialEligibilityFixture = {
-  firstEligibleGameTick: 0,
-  evidence: 'inference from INITIAL_HOPPER_SERVICE_SNAPSHOT having no hopper cooldown entry',
-  vanillaNumericFixture: false,
-} as const
-
-const periodicCooldownFixture = {
-  edition: 'Java Edition',
-  version: '26.3',
-  sourceUrl,
-  versionSourceUrl,
-  cooldownGameTicks: 8,
-} as const
 
 const address = (x: number, y: number, z: number): BlockAddress =>
   Schema.decodeUnknownSync(BlockAddressSchema)({
@@ -182,120 +157,6 @@ describe('hopper locking — the one component power switches OFF', () => {
     }),
   )
 
-  it.effect('REGRESSION: a locked hopper transfers nothing, whatever its cooldown says', () =>
-    Effect.sync(() => {
-      // Both halves matter. A rule that only checked the lock would transfer
-      // every tick; a rule that only checked the cadence would drain a locked
-      // filter every fourth tick, which is the sorting machine failing slowly
-      // enough that nobody notices until the chest is empty.
-      for (let ticks = 0; ticks < 20; ticks += 1) {
-        expect(hopperTransferDue({ powered: true, ticksSinceTransfer: ticks })).toBe(false)
-      }
-    }),
-  )
-})
-
-describe('hopper timing', () => {
-  it.effect('records tick-zero eligibility as an inference from the empty initial sim state', () =>
-    Effect.sync(() => {
-      // Vanilla's source establishes the cooldown after a transfer, not the exact
-      // first eligible tick. Tick zero is an inference from the new service state
-      // having no cooldown entry, so it stays separate from the numeric fixture.
-      expect(initialEligibilityFixture).toStrictEqual({
-        firstEligibleGameTick: 0,
-        evidence: 'inference from INITIAL_HOPPER_SERVICE_SNAPSHOT having no hopper cooldown entry',
-        vanillaNumericFixture: false,
-      })
-      expect(INITIAL_HOPPER_SERVICE_SNAPSHOT.hoppers).toStrictEqual([])
-    }),
-  )
-
-  it.effect('converts the Java Edition 26.3 eight-game-tick cooldown to four local ticks', () =>
-    Effect.sync(() => {
-      // Redstone runs at 10 Hz (DN-RS-3, `REDSTONE_TICK_SECS`) and the game at
-      // 20, so eight game ticks is four local ticks. Assert the conversion so a
-      // future tick-rate change cannot leave the two units silently mismatched.
-      expect(periodicCooldownFixture).toStrictEqual({
-        edition: 'Java Edition',
-        version: '26.3',
-        sourceUrl,
-        versionSourceUrl,
-        cooldownGameTicks: 8,
-      })
-      expect(HOPPER_TRANSFER_COOLDOWN_GAME_TICKS).toBe(periodicCooldownFixture.cooldownGameTicks)
-      expect(GAME_TICKS_PER_REDSTONE_TICK).toBe(2)
-      expect(HOPPER_TRANSFER_PERIOD_TICKS).toBe(4)
-      expect(HOPPER_TRANSFER_PERIOD_TICKS * GAME_TICKS_PER_REDSTONE_TICK).toBe(
-        periodicCooldownFixture.cooldownGameTicks,
-      )
-      expect(HOPPER_TRANSFER_PERIOD_TICKS * REDSTONE_TICK_SECS).toBeCloseTo(0.4, 10)
-      expect(HOPPER_TRANSFER_ITEMS).toBe(1)
-      // The local counter gate remains only to compile the current runtime caller;
-      // service integration replaces this state with HopperService cooldown.
-      expect(hopperTransferDue({ powered: false, ticksSinceTransfer: 3 })).toBe(false)
-      expect(hopperTransferDue({ powered: false, ticksSinceTransfer: 4 })).toBe(true)
-
-      // Start eligible to isolate the repeat interval from the initial-tick inference above.
-      const transferLocalTicks: Array<number> = []
-      let ticksSinceTransfer = HOPPER_TRANSFER_PERIOD_TICKS
-      for (let localTick = 0; localTick < 16; localTick += 1) {
-        if (localTick > 0) ticksSinceTransfer += 1
-        if (hopperTransferDue({ powered: false, ticksSinceTransfer })) {
-          transferLocalTicks.push(localTick)
-          ticksSinceTransfer = 0
-        }
-      }
-      expect(transferLocalTicks).toStrictEqual([0, 4, 8, 12])
-    }),
-  )
-
-  it.effect('rejects invalid compatibility tick counts through its request schema', () =>
-    Effect.sync(() => {
-      for (const ticksSinceTransfer of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-        const input = { powered: false, ticksSinceTransfer }
-        expect(
-          Result.isFailure(
-            Schema.decodeUnknownResult(HopperTransferDueRequestSchema, {
-              onExcessProperty: 'error',
-            })(input),
-          ),
-        ).toBe(true)
-        expect(hopperTransferDue(input)).toBe(false)
-      }
-    }),
-  )
-
-  it.effect('REGRESSION: a skipped local deadline still passes the compatibility gate', () =>
-    Effect.sync(() => {
-      // `stages/registration.ts` runs up to MAX_TICKS_PER_FRAME ticks in a loop
-      // and DISCARDS the excess after a long frame (DN-RS-3), so a counter can
-      // jump past any particular value. An `===` here would leave that hopper
-      // waiting for a number it will never see again — a machine that stops
-      // after a lag spike and never restarts.
-      for (const ticks of [4, 5, 9, 400]) {
-        expect(hopperTransferDue({ powered: false, ticksSinceTransfer: ticks })).toBe(true)
-      }
-      for (const ticks of [0, 1, 2, 3]) {
-        expect(hopperTransferDue({ powered: false, ticksSinceTransfer: ticks })).toBe(false)
-      }
-    }),
-  )
-
-  it.effect('a long-locked hopper passes the compatibility gate immediately when unlocked', () =>
-    Effect.sync(() => {
-      // What makes a redstone-clocked filter emit one item per PULSE rather than
-      // one item per pulse that happens to coincide with the cadence. The
-      // counter keeps running while the hopper is locked because the caller only
-      // resets it on a transfer, and there were none. This is transitional caller
-      // behavior; HopperService owns cooldown state after integration.
-      let ticksSinceTransfer = 0
-      for (let tick = 0; tick < 30; tick += 1) {
-        expect(hopperTransferDue({ powered: true, ticksSinceTransfer })).toBe(false)
-        ticksSinceTransfer += 1
-      }
-      expect(hopperTransferDue({ powered: false, ticksSinceTransfer })).toBe(true)
-    }),
-  )
 })
 
 describe('hopper transfer candidates', () => {

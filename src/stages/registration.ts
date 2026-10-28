@@ -150,22 +150,18 @@ const FIRST_TICK_INDEX = 0
 
 /** How much the tick counter advances per loop iteration. */
 const TICK_STEP = 1
+const ONE_TICK = nonNegativeTickCountFromNumber(TICK_STEP)
 
 /**
- * Runs `board` forward `ticks` redstone ticks from `seed.timed`, feeding the
- * frame's pressed buttons into only the first one — the rest see none, since
- * a button press is a one-tick edge and not a held condition.
- *
- * Pure and separate from the effectful stage below so that stage's statement
- * count stays under the threshold; the loop itself is unchanged. `timed` and
- * `pressedButtons` travel together in `seed` so the parameter count stays
- * under its own threshold.
+ * Runs `board` forward `ticks` redstone ticks from `seed.timed`, retaining
+ * each intermediate state so hopper events use the power from their own tick.
+ * The frame's pressed buttons enter only the first tick.
  */
 const advancePower = (
   board: CircuitBoard,
   ticks: NonNegativeTickCount,
   seed: { readonly timed: TimedCircuitState; readonly pressedButtons: ReadonlySet<PositionKey> },
-): TimedCircuitState => {
+): ReadonlyArray<TimedCircuitState> => {
   const buttonsForTick = (tick: number): ReadonlySet<PositionKey> => {
     if (tick === FIRST_TICK_INDEX) {
       return seed.pressedButtons
@@ -173,24 +169,24 @@ const advancePower = (
     return new Set()
   }
 
+  const states: Array<TimedCircuitState> = []
   let next = seed.timed
   for (let tick = FIRST_TICK_INDEX; tick < ticks; tick += TICK_STEP) {
     next = advanceTimedCircuit(board, next, buttonsForTick(tick))
+    states.push(next)
   }
-  return next
+  return states
 }
 
-/**
- * Writes one tick's outcome back into `state` and drains the hopper cadence.
- * Split out of the power stage's `run` for the same statement-count reason
- * `advancePower` is; the writes and their order are unchanged.
- */
-const commitPowerTick = (state: RedstoneFrameState, next: TimedCircuitState, ticks: NonNegativeTickCount) =>
-  Effect.gen(function* commitPowerTickEffect() {
-    yield* Ref.set(state.timedCircuit, next)
-    yield* Ref.set(state.power, next.power)
-    yield* collectHopperTransferEvents(state, ticks)
-    yield* Ref.update(state.tickCount, (count) => nonNegativeTickCountFromNumber(count + ticks))
+/** Commits every simulated tick and records hopper power for the same tick. */
+const commitPowerTicks = (state: RedstoneFrameState, states: ReadonlyArray<TimedCircuitState>) =>
+  Effect.gen(function* commitPowerTicksEffect() {
+    for (const next of states) {
+      yield* Ref.set(state.timedCircuit, next)
+      yield* Ref.set(state.power, next.power)
+      yield* collectHopperTransferEvents(state, ONE_TICK)
+      yield* Ref.update(state.tickCount, (count) => nonNegativeTickCountFromNumber(count + ONE_TICK))
+    }
   })
 
 /**
@@ -220,8 +216,8 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
         // `domain/power-graph.ts`.
         const pressedButtons = yield* Ref.getAndSet(state.pendingButtonPresses, new Set())
         const timed = yield* Ref.get(state.timedCircuit)
-        const next = advancePower(board, ticks, { pressedButtons, timed })
-        yield* commitPowerTick(state, next, ticks)
+        const nexts = advancePower(board, ticks, { pressedButtons, timed })
+        yield* commitPowerTicks(state, nexts)
       }),
   },
   {

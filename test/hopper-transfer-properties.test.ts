@@ -3,8 +3,9 @@ import {
   BlockAddressSchema,
   chunkCoordOfBlock,
   CHUNK_SIZE_XZ,
-  WorldIdSchema,
+  DimensionRevisionSchema,
   WorldRevisionSchema,
+  WorldIdSchema,
   WorldWriteBatchSchema,
   type BlockAddress,
   type WorldRevision,
@@ -19,8 +20,11 @@ import {
   ContainerStorageSnapshotSchema,
   containerCapacity,
   containerStorageOwnerRegistration,
+  HOPPER_TRANSFER_COOLDOWN_TICKS,
+  HopperElapsedTicksSchema,
   HopperServiceErrorSchema,
   HopperServiceSnapshotSchema,
+  HOPPER_REPLICATED_OWNER_ID,
   ItemStackFailureSchema,
   HopperTransferOutcomeSchema,
   hopperOwnerRegistration,
@@ -29,11 +33,16 @@ import {
   makeContainerStorageService,
   makeHopperService,
   makeWorldCommitCoordinator,
+  mergeWorldCommitPlans,
+  WorldRevisionConflict,
   WorldCommitCoordinator,
   WorldReadSnapshotSchema,
   worldContainerIdAt,
   type Container,
+  type HopperTransferTickPlanState,
   type HopperTransferRequest,
+  type WorldCommitPlanSnapshot,
+  type WorldCommitRequest,
 } from '@nerima-games/mc-sim'
 import * as fc from 'fast-check'
 import { Effect, Option, Result, Schema } from 'effect'
@@ -42,11 +51,40 @@ import {
   selectHopperTransferCandidates,
   type HopperTransferCandidate,
 } from '../src/domain/hopper.js'
+import { applyRedstoneHostEvents, type RedstoneHostRealm, type RedstoneHostWritePort } from '../src/application/redstone-host-port.js'
+import {
+  RedstoneEventBatchSchema,
+  RedstoneWorldRuntime,
+  RedstoneWorldRuntimeLayer,
+  type HopperTransferEvent,
+  type RedstoneEventBatch,
+} from '../src/application/world-runtime.js'
 
 const PROPERTY_RUN_COUNT = 32
 const CHUNK_BIOME_COUNT = CHUNK_SIZE_XZ * CHUNK_SIZE_XZ
 const strictDecode = { onExcessProperty: 'error' } as const
+const hopperTransferEvent = (event: {
+  dimension: string
+  position: BlockAddress['position']
+  elapsedRedstoneTicks: number
+  powered: boolean
+}): HopperTransferEvent => {
+  const [decoded] = Schema.decodeUnknownSync(RedstoneEventBatchSchema)({
+    hopper: [event],
+    lamp: [],
+    piston: [],
+    powered: [],
+    trigger: [],
+  }).hopper
+  if (decoded === undefined) {
+    throw new Error('Expected a decoded hopper transfer event')
+  }
+  return decoded
+}
 const HOPPER_BLOCK_ID = Option.getOrThrow(blockIdOf('hopper'))
+const LAMP_BLOCK_ID = Option.getOrThrow(blockIdOf('redstone_lamp_lit'))
+const PISTON_BLOCK_ID = Option.getOrThrow(blockIdOf('piston'))
+const PISTON_HEAD_BLOCK_ID = Option.getOrThrow(blockIdOf('piston_head'))
 const TEST_WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('redstone-hopper-transfer-property')
 const HOPPER_ADDRESS: BlockAddress = Schema.decodeUnknownSync(BlockAddressSchema)({
   dimension: 'overworld',
@@ -56,6 +94,26 @@ const CHEST_ADDRESS: BlockAddress = Schema.decodeUnknownSync(BlockAddressSchema)
   dimension: 'overworld',
   position: { x: 1, y: 64, z: 0 },
 })
+const LAMP_ADDRESS: BlockAddress = Schema.decodeUnknownSync(BlockAddressSchema)({
+  dimension: 'overworld',
+  position: { x: 2, y: 64, z: 0 },
+})
+const PISTON_ADDRESS: BlockAddress = Schema.decodeUnknownSync(BlockAddressSchema)({
+  dimension: 'overworld',
+  position: { x: 3, y: 64, z: 0 },
+})
+const PISTON_HEAD_ADDRESS: BlockAddress = Schema.decodeUnknownSync(BlockAddressSchema)({
+  dimension: 'overworld',
+  position: { x: 4, y: 64, z: 0 },
+})
+const VANILLA_HOPPER_CADENCE_FIXTURE = {
+  edition: 'Java Edition',
+  source: 'https://minecraft.wiki/w/Hopper',
+  cooldownGameTicks: 8,
+  poweredPauseGameTicks: 20,
+  unpoweredTicksToCoolingDown: 7,
+  finalUnpoweredTicks: 1,
+} as const
 
 const countStorageItems = (snapshot: Schema.Schema.Type<typeof ContainerStorageSnapshotSchema>): number =>
   snapshot.containers.reduce(
@@ -128,11 +186,14 @@ const makeHopperTransferScenario = (initialItemCount: number) =>
       return yield* Effect.fail('Expected hopper transfer candidate')
     }
     const candidate: HopperTransferCandidate = selected.candidates[0]
-    const makeBlockWrite = (expectedWorldRevision: WorldRevision) =>
+    const makeBlockWrite = (
+      expectedWorldRevision: WorldRevision,
+      edits = [{ block: HOPPER_BLOCK_ID, position: HOPPER_ADDRESS.position }],
+    ) =>
       Effect.map(coordinator.dimensionRevision(HOPPER_ADDRESS.dimension), (expectedDimensionRevision) =>
         Schema.decodeUnknownSync(WorldWriteBatchSchema, strictDecode)({
           dimension: HOPPER_ADDRESS.dimension,
-          edits: [{ block: HOPPER_BLOCK_ID, position: HOPPER_ADDRESS.position }],
+          edits,
           expectedDimensionRevision,
           expectedWorldRevision,
           world: coordinator.worldId,
@@ -144,11 +205,9 @@ const makeHopperTransferScenario = (initialItemCount: number) =>
       hopperAddress: HOPPER_ADDRESS,
       source: candidate.source,
     })
-    const observe = () =>
+    const observe = (positions = [{ dimension: HOPPER_ADDRESS.dimension, position: HOPPER_ADDRESS.position }]) =>
       Effect.map(
-        coordinator.observe(CONTAINER_STORAGE_REPLICATED_OWNER_ID, ContainerStorageSnapshotSchema, [
-          { dimension: HOPPER_ADDRESS.dimension, position: HOPPER_ADDRESS.position },
-        ]),
+        coordinator.observe(CONTAINER_STORAGE_REPLICATED_OWNER_ID, ContainerStorageSnapshotSchema, positions),
         (snapshot) => Schema.decodeUnknownSync(
           WorldReadSnapshotSchema(ContainerStorageSnapshotSchema),
           strictDecode,
@@ -162,12 +221,132 @@ const makeHopperTransferScenario = (initialItemCount: number) =>
       Effect.map(hopper.snapshot, (snapshot) =>
         Schema.decodeUnknownSync(HopperServiceSnapshotSchema, strictDecode)(snapshot.state),
       )
+    const makeTransferTickPlanSnapshot = () => Effect.gen(function* makeTransferTickPlanSnapshotGenerator() {
+      const [hoppers, containers, expectedDimensionRevision] = yield* Effect.all([
+        coordinator.snapshot(HOPPER_REPLICATED_OWNER_ID, HopperServiceSnapshotSchema),
+        coordinator.snapshot(CONTAINER_STORAGE_REPLICATED_OWNER_ID, ContainerStorageSnapshotSchema),
+        coordinator.dimensionRevision(HOPPER_ADDRESS.dimension),
+      ])
+      const expectedDimensions = [{ dimension: HOPPER_ADDRESS.dimension, expectedRevision: expectedDimensionRevision }]
+      const blockWrite = yield* makeBlockWrite(hoppers.revision)
+      return {
+        world: hoppers.world,
+        expectedRevision: hoppers.revision,
+        expectedDimensions,
+        state: {
+          hoppers: hoppers.state,
+          containers: {
+            world: containers.world,
+            expectedRevision: containers.revision,
+            expectedDimensions,
+            state: containers.state,
+          },
+          player: { _tag: 'None' },
+          intent: {
+            hopperAddress: HOPPER_ADDRESS,
+            source: candidate.source,
+            destination: candidate.destination,
+            blockEdits: { dimension: HOPPER_ADDRESS.dimension, edits: blockWrite.edits },
+          },
+        },
+      } satisfies WorldCommitPlanSnapshot<HopperTransferTickPlanState>
+    })
+    const makeAtomicHostHarness = (failCommit: boolean) => Effect.gen(function* makeAtomicHostHarnessGenerator() {
+      const expectedRevision = yield* coordinator.revision
+      const expectedDimensionRevision = yield* coordinator.dimensionRevision(HOPPER_ADDRESS.dimension)
+      const lampBlockWrite = yield* makeBlockWrite(expectedRevision, [
+        { block: LAMP_BLOCK_ID, position: LAMP_ADDRESS.position },
+      ])
+      const blockWriteFor = (
+        event: HopperTransferEvent,
+        blockId: number,
+        revisions: Readonly<{ expectedRevision: WorldRevision; expectedDimensionRevision: typeof expectedDimensionRevision }>,
+      ) => Result.succeed(Schema.decodeUnknownSync(WorldWriteBatchSchema, strictDecode)({
+        dimension: event.dimension,
+        edits: [{ block: blockId, position: event.position }],
+        expectedDimensionRevision: revisions.expectedDimensionRevision,
+        expectedWorldRevision: revisions.expectedRevision,
+        world: coordinator.worldId,
+      }))
+      let commitCount = 0
+      const realm: RedstoneHostRealm = {
+        dimension: HOPPER_ADDRESS.dimension,
+        lookup: {
+          isLeverActive: () => false,
+          isPoweredRailPowered: () => false,
+          readHopperBlockId: () => HOPPER_BLOCK_ID,
+          readHopperTransferContext: () => ({
+            powered: false,
+            sourceAbove: null,
+            destinationFacing: { address: CHEST_ADDRESS, kind: 'chest' },
+          }),
+          readContainerSlots: () => undefined,
+          readPistonCell: () => ({ kind: 'empty' }),
+          readPistonFacing: () => 'north',
+        },
+      }
+      const port: RedstoneHostWritePort = {
+        buildCommitRequest: (_events, pistonPlans) => Result.succeed({
+          expectedRevision,
+          expectedDimensions: [{ dimension: HOPPER_ADDRESS.dimension, expectedRevision: expectedDimensionRevision }],
+          changes: [],
+          blockWrite: Schema.decodeUnknownSync(WorldWriteBatchSchema, strictDecode)({
+            ...lampBlockWrite,
+            edits: [
+              ...lampBlockWrite.edits,
+              ...pistonPlans.flatMap(({ piston }) => [
+                { block: PISTON_BLOCK_ID, position: piston },
+                { block: PISTON_HEAD_BLOCK_ID, position: PISTON_HEAD_ADDRESS.position },
+              ]),
+            ],
+          }),
+        }),
+        buildHopperBlockWrite: blockWriteFor,
+        coordinator: {
+          ...coordinator,
+          commit: (request) => {
+            commitCount += 1
+            if (!failCommit) return coordinator.commit(request)
+            const staleRevision = Schema.decodeUnknownSync(WorldRevisionSchema, strictDecode)(
+              Number(request.expectedRevision) + 1,
+            )
+            const staleDimensions = request.expectedDimensions.map((expectation) => ({
+              ...expectation,
+              expectedRevision: Schema.decodeUnknownSync(DimensionRevisionSchema, strictDecode)(
+                Number(expectation.expectedRevision) + 1,
+              ),
+            }))
+            const staleBlockWrite = request.blockWrite === undefined
+              ? undefined
+              : Schema.decodeUnknownSync(WorldWriteBatchSchema, strictDecode)({
+                  ...request.blockWrite,
+                  expectedWorldRevision: staleRevision,
+                  expectedDimensionRevision: Schema.decodeUnknownSync(
+                    DimensionRevisionSchema,
+                    strictDecode,
+                  )(Number(request.blockWrite.expectedDimensionRevision) + 1),
+                })
+            const staleRequest: WorldCommitRequest = {
+              ...request,
+              expectedRevision: staleRevision,
+              expectedDimensions: staleDimensions,
+              ...(staleBlockWrite === undefined ? {} : { blockWrite: staleBlockWrite }),
+            }
+            return coordinator.commit(staleRequest)
+          },
+        },
+        hopperService: hopper,
+      }
+      return { commitCount: () => commitCount, port, realm }
+    })
     const blockWrite = yield* Effect.flatMap(coordinator.revision, makeBlockWrite)
     return {
       candidate,
       coordinator,
       hopper,
       makeBlockWrite,
+      makeTransferTickPlanSnapshot,
+      makeAtomicHostHarness,
       makeRequest,
       observe,
       snapshotHopper,
@@ -180,6 +359,79 @@ const makeHopperTransferScenario = (initialItemCount: number) =>
   })
 
 describe('HopperService transfer properties', () => {
+  it.effect('matches the Java Edition hopper cooldown while powered ticks pause it', () =>
+    Effect.sync(() => {
+      expect(VANILLA_HOPPER_CADENCE_FIXTURE).toMatchObject({
+        edition: 'Java Edition',
+        source: 'https://minecraft.wiki/w/Hopper',
+        cooldownGameTicks: 8,
+      })
+      fc.assert(
+        fc.property(fc.integer({ min: 2, max: 64 }), (initialItemCount) => {
+          // The source's 7-tick case applies when another block inserts an item
+          // into an empty hopper; this scenario transfers from a non-empty hopper.
+          const scenario = Effect.runSync(makeHopperTransferScenario(initialItemCount))
+          const firstTransfer = Effect.runSync(
+            scenario.hopper.transfer(scenario.makeRequest(scenario.blockWrite)),
+          )
+          expect(firstTransfer._tag).toBe('Committed')
+          expect(Effect.runSync(scenario.snapshotHopper()).hoppers[0]?.cooldownTicks).toBe(
+            HOPPER_TRANSFER_COOLDOWN_TICKS,
+          )
+
+          const afterTransfer = Effect.runSync(scenario.makeTransferTickPlanSnapshot())
+          const sevenUnpoweredTicks = Effect.runSync(
+            scenario.hopper.planTransferTick(
+              afterTransfer,
+              Schema.decodeUnknownSync(HopperElapsedTicksSchema, strictDecode)(
+                VANILLA_HOPPER_CADENCE_FIXTURE.unpoweredTicksToCoolingDown,
+              ),
+              false,
+            ),
+          )
+          expect(sevenUnpoweredTicks.result).toMatchObject({ _tag: 'CoolingDown', ticks: 1 })
+          const cooldownRequest = Effect.runSync(
+            Effect.fromResult(mergeWorldCommitPlans([sevenUnpoweredTicks])),
+          )
+          Effect.runSync(scenario.coordinator.commit(cooldownRequest))
+
+          const oneTickRemaining = Effect.runSync(scenario.makeTransferTickPlanSnapshot())
+          const poweredPause = Effect.runSync(
+            scenario.hopper.planTransferTick(
+              oneTickRemaining,
+              Schema.decodeUnknownSync(HopperElapsedTicksSchema, strictDecode)(
+                VANILLA_HOPPER_CADENCE_FIXTURE.poweredPauseGameTicks,
+              ),
+              true,
+            ),
+          )
+          expect(poweredPause.result).toStrictEqual({ _tag: 'Disabled' })
+          expect(poweredPause.changes).toStrictEqual([])
+          expect(Effect.runSync(scenario.snapshotHopper()).hoppers[0]?.cooldownTicks).toBe(1)
+
+          const finalUnpoweredTick = Effect.runSync(
+            scenario.hopper.planTransferTick(
+              oneTickRemaining,
+              Schema.decodeUnknownSync(HopperElapsedTicksSchema, strictDecode)(
+                VANILLA_HOPPER_CADENCE_FIXTURE.finalUnpoweredTicks,
+              ),
+              false,
+            ),
+          )
+          expect(finalUnpoweredTick.result._tag).toBe('Committed')
+          const transferRequest = Effect.runSync(
+            Effect.fromResult(mergeWorldCommitPlans([finalUnpoweredTick])),
+          )
+          Effect.runSync(scenario.coordinator.commit(transferRequest))
+          expect(Effect.runSync(scenario.snapshotHopper()).hoppers[0]?.cooldownTicks).toBe(
+            HOPPER_TRANSFER_COOLDOWN_TICKS,
+          )
+        }),
+        { numRuns: PROPERTY_RUN_COUNT },
+      )
+    }),
+  )
+
   it.effect('covers fixed item-count boundaries and adjacent invalid counts', () =>
     Effect.sync(() => {
       for (const initialItemCount of [1, 64]) {
@@ -307,6 +559,143 @@ describe('HopperService transfer properties', () => {
           expect(Effect.runSync(scenario.worldRevision)).toBe(beforeWorldRevision)
           expect(Effect.runSync(scenario.dimensionsRevision)).toBe(beforeDimensionRevision)
           expect(countStorageItems(beforeStorage)).toBe(initialItemCount)
+        }),
+        { numRuns: PROPERTY_RUN_COUNT },
+      )
+    }),
+  )
+
+  it.effect('host commit failure preserves hopper state and queued events; success commits the batch once', () =>
+    Effect.sync(() => {
+      const runHostBatch = (initialItemCount: number, failCommit: boolean) => {
+        const scenario = Effect.runSync(makeHopperTransferScenario(initialItemCount))
+        const harness = Effect.runSync(scenario.makeAtomicHostHarness(failCommit))
+        const positions = [
+          { dimension: HOPPER_ADDRESS.dimension, position: HOPPER_ADDRESS.position },
+          { dimension: LAMP_ADDRESS.dimension, position: LAMP_ADDRESS.position },
+          { dimension: PISTON_ADDRESS.dimension, position: PISTON_ADDRESS.position },
+          { dimension: PISTON_HEAD_ADDRESS.dimension, position: PISTON_HEAD_ADDRESS.position },
+        ]
+        const beforeStorage = Effect.runSync(scenario.snapshotStorage())
+        const beforeHopper = Effect.runSync(scenario.snapshotHopper())
+        const beforeObserved = Effect.runSync(scenario.observe(positions))
+        const beforeWorldRevision = Effect.runSync(scenario.worldRevision)
+        const beforeDimensionRevision = Effect.runSync(scenario.dimensionsRevision)
+        const lamp = { dimension: LAMP_ADDRESS.dimension, lit: true, position: LAMP_ADDRESS.position }
+        const events: RedstoneEventBatch = {
+          hopper: [
+            hopperTransferEvent({
+              dimension: HOPPER_ADDRESS.dimension,
+              position: HOPPER_ADDRESS.position,
+              elapsedRedstoneTicks: 1,
+              powered: true,
+            }),
+            hopperTransferEvent({
+              dimension: HOPPER_ADDRESS.dimension,
+              position: HOPPER_ADDRESS.position,
+              elapsedRedstoneTicks: 4,
+              powered: false,
+            }),
+          ],
+          lamp: [lamp],
+          piston: [{
+            dimension: PISTON_ADDRESS.dimension,
+            piston: PISTON_ADDRESS.position,
+            facing: 'east',
+            kind: 'normal',
+            state: 'retracted',
+            powered: true,
+          }],
+          powered: [],
+          trigger: [],
+        }
+        const execution = Effect.runSync(
+          Effect.gen(function* runHostBatchGenerator() {
+            const runtime = yield* RedstoneWorldRuntime
+            yield* runtime.restoreEvents(events)
+            const result = yield* Effect.result(
+              applyRedstoneHostEvents(runtime, [harness.realm], harness.port),
+            )
+            const remaining = {
+              hopper: yield* runtime.drainHopperTransferEvents,
+              lamp: yield* runtime.drainLampTransitions,
+              piston: yield* runtime.drainPistonTransitions,
+              powered: yield* runtime.drainPoweredComponentTransitions,
+              trigger: yield* runtime.drainTriggerEvents,
+            }
+            return { remaining, result }
+          }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+        )
+        return {
+          afterHopper: Effect.runSync(scenario.snapshotHopper()),
+          afterObserved: Effect.runSync(scenario.observe(positions)),
+          afterStorage: Effect.runSync(scenario.snapshotStorage()),
+          afterWorldRevision: Effect.runSync(scenario.worldRevision),
+          afterDimensionRevision: Effect.runSync(scenario.dimensionsRevision),
+          beforeHopper,
+          beforeObserved,
+          beforeStorage,
+          beforeWorldRevision,
+          beforeDimensionRevision,
+          commitCount: harness.commitCount(),
+          events,
+          execution,
+          initialItemCount,
+        }
+      }
+
+      fc.assert(
+        fc.property(fc.integer({ min: 1, max: 64 }), (initialItemCount) => {
+          const failed = runHostBatch(initialItemCount, true)
+          expect(Result.isFailure(failed.execution.result)).toBe(true)
+          if (Result.isFailure(failed.execution.result)) {
+            expect(failed.execution.result.failure).toBeInstanceOf(WorldRevisionConflict)
+          }
+          expect(failed.commitCount).toBe(1)
+          expect(failed.afterStorage).toStrictEqual(failed.beforeStorage)
+          expect(failed.afterHopper).toStrictEqual(failed.beforeHopper)
+          expect(failed.afterObserved).toStrictEqual(failed.beforeObserved)
+          expect(failed.afterWorldRevision).toBe(failed.beforeWorldRevision)
+          expect(failed.afterDimensionRevision).toBe(failed.beforeDimensionRevision)
+          expect(failed.execution.remaining).toStrictEqual(failed.events)
+
+          const succeeded = runHostBatch(initialItemCount, false)
+          expect(Result.isSuccess(succeeded.execution.result)).toBe(true)
+          expect(succeeded.commitCount).toBe(1)
+          expect(succeeded.afterWorldRevision).toBe(Number(succeeded.beforeWorldRevision) + 1)
+          expect(succeeded.afterDimensionRevision).toBe(Number(succeeded.beforeDimensionRevision) + 1)
+          expect(countStorageItems(succeeded.afterStorage)).toBe(initialItemCount)
+          expect(countStorageItems(succeeded.afterObserved.state)).toBe(initialItemCount)
+          expect(succeeded.afterHopper.hoppers[0]?.cooldownTicks).toBe(HOPPER_TRANSFER_COOLDOWN_TICKS)
+          expect(succeeded.afterObserved.blocks).toEqual(expect.arrayContaining([
+            {
+              dimension: HOPPER_ADDRESS.dimension,
+              position: HOPPER_ADDRESS.position,
+              reading: { _tag: 'Block', block: HOPPER_BLOCK_ID },
+            },
+            {
+              dimension: LAMP_ADDRESS.dimension,
+              position: LAMP_ADDRESS.position,
+              reading: { _tag: 'Block', block: LAMP_BLOCK_ID },
+            },
+            {
+              dimension: PISTON_ADDRESS.dimension,
+              position: PISTON_ADDRESS.position,
+              reading: { _tag: 'Block', block: PISTON_BLOCK_ID },
+            },
+            {
+              dimension: PISTON_HEAD_ADDRESS.dimension,
+              position: PISTON_HEAD_ADDRESS.position,
+              reading: { _tag: 'Block', block: PISTON_HEAD_BLOCK_ID },
+            },
+          ]))
+          expect(succeeded.execution.remaining).toStrictEqual({
+            hopper: [],
+            lamp: [],
+            piston: [],
+            powered: [],
+            trigger: [],
+          })
         }),
         { numRuns: PROPERTY_RUN_COUNT },
       )

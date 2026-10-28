@@ -34,9 +34,11 @@ import {
   type BlockPosition,
   type BlockRegistryResolutionFailure,
   type BlockType,
+  type Dimension,
   type WorldWriteBatch,
   WorldWriteBatchSchema,
   blockIdOf,
+  blockPositionKeyOf,
   capabilityOfBlockId,
   isBlockType,
 } from '@nerima-games/mc-kernel'
@@ -51,26 +53,35 @@ import {
   type PistonPosition,
   planPistonTransition,
 } from '../domain/piston.js'
+import {
+  CONTAINER_STORAGE_REPLICATED_OWNER_ID,
+  type ContainerStoragePlanSnapshot,
+  ContainerStorageSnapshotSchema,
+  HOPPER_REPLICATED_OWNER_ID,
+  HopperCooldownTicksSchema,
+  type HopperElapsedTicks,
+  HopperElapsedTicksSchema,
+  type HopperServiceApi,
+  type HopperServiceError,
+  type HopperServiceSnapshot,
+  HopperServiceSnapshotSchema,
+  type HopperTransferOutcome,
+  type HopperTransferTickPlanState,
+  type WorldCommitCoordinatorApi,
+  type WorldCommitCoordinatorError,
+  type WorldCommitPlanConflict,
+  type WorldCommitPlanFragment,
+  type WorldCommitPlanSnapshot,
+  type WorldCommitRequest,
+  mergeWorldCommitPlans,
+} from '@nerima-games/mc-sim'
 import { Effect, Exit, Option, Result, Schema } from 'effect'
 import {
-  HOPPER_TRANSFER_COOLDOWN_GAME_TICKS,
+  GAME_TICKS_PER_REDSTONE_TICK,
   type HopperAdjacentContainer,
-  type HopperTransferCandidate,
-  type HopperTransferDueRequest,
-  HopperTransferDueRequestSchema,
   type HopperTransferSelectionOutcome,
-  hopperTransferDue,
   selectHopperTransferCandidates,
 } from '../domain/hopper.js'
-import type {
-  HopperServiceApi,
-  HopperServiceError,
-  HopperTransferOutcome,
-  HopperTransferRequest,
-  WorldCommitCoordinatorApi,
-  WorldCommitCoordinatorError,
-  WorldCommitRequest,
-} from '@nerima-games/mc-sim'
 import {
   type HopperTransferEvent,
   type PoweredPistonTransition,
@@ -98,6 +109,8 @@ const FIRST_EVENT_DIMENSION_INDEX = 0
 const MAX_EVENT_DIMENSION_COUNT = 1
 const STRICT_DECODE_OPTIONS = { onExcessProperty: 'error' } as const
 const ZERO_EVENT_COUNT = 0
+const NO_RESULT: void = Option.getOrUndefined(Option.none<void>())
+const ZERO_ELAPSED_TICKS = 0
 
 /** The mc-kernel capability name `kernelPistonCapabilities` reads. */
 const PISTON_IMMOVABLE_CAPABILITY = 'pistonImmovable'
@@ -168,10 +181,9 @@ export type RedstoneHostHopperRevisionContext = Readonly<{
 
 type RedstoneHostCoordinatorPort = Pick<
   WorldCommitCoordinatorApi,
-  'worldId' | 'commit' | 'revision' | 'dimensionRevision'
+  'worldId' | 'commit' | 'revision' | 'dimensionRevision' | 'snapshot'
 >
-type RedstoneHostHopperService = Pick<HopperServiceApi, 'advanceCooldown' | 'transfer'>
-type HopperCooldownRemaining = Extract<HopperTransferOutcome, { readonly _tag: 'CoolingDown' }>['ticks']
+type RedstoneHostHopperService = Pick<HopperServiceApi, 'planAdvanceCooldown' | 'planTransferTick'>
 type HopperInvalidRequestReason = Extract<HopperTransferOutcome, { readonly _tag: 'InvalidRequest' }>['reason']
 
 /**
@@ -207,7 +219,6 @@ export type RedstoneHostPositionFailure = Readonly<{ _tag: 'RedstoneHostPosition
 export type RedstoneHostHopperFailure =
   | Readonly<{ _tag: 'RedstoneHostHopperSelectionInvalid'; event: HopperTransferEvent }>
   | Readonly<{ _tag: 'RedstoneHostHopperBlockMissing'; event: HopperTransferEvent }>
-  | Readonly<{ _tag: 'RedstoneHostHopperCooldownNotReady'; event: HopperTransferEvent; ticks: HopperCooldownRemaining }>
   | Readonly<{
       _tag: 'RedstoneHostHopperTransferInvalid'
       event: HopperTransferEvent
@@ -555,38 +566,78 @@ const planEventPistons = (
     Effect.map(planPistonTransitionEvent(realm, event), (plan) => ({ event, plan })),
   )
 
-type HopperCandidateOutcome = Extract<HopperTransferSelectionOutcome, { readonly _tag: 'Candidates' }>
-
 type SelectedHopperEvent = Readonly<{
-  dueRequest: HopperTransferDueRequest
+  elapsedTicks: HopperElapsedTicks
   event: HopperTransferEvent
   outcome: Exclude<HopperTransferSelectionOutcome, { readonly _tag: 'InvalidRequest' }>
+  powered: boolean
 }>
 
-type RedstoneHostEventProgress = {
-  nonHopperEventsCommitted: boolean
-  completedHopperEvents: number
-}
+type RedstonePlanBase = Readonly<{
+  world: WorldCommitPlanSnapshot<unknown>['world']
+  expectedRevision: WorldCommitPlanSnapshot<unknown>['expectedRevision']
+  expectedDimensions: WorldCommitPlanSnapshot<unknown>['expectedDimensions']
+  hoppers: HopperServiceSnapshot
+  containers: Schema.Schema.Type<typeof ContainerStorageSnapshotSchema>
+}>
+
+type VirtualHopperState = Readonly<{
+  hoppers: HopperServiceSnapshot
+  containers: Schema.Schema.Type<typeof ContainerStorageSnapshotSchema>
+}>
+
+const captureRedstonePlanBase = (
+  port: RedstoneHostWritePort<unknown>,
+  dimension: RedstoneDimensionId,
+) => Effect.gen(function* captureRedstonePlanBaseGenerator() {
+  const [hoppers, containers, revisionBefore, expectedDimensionRevision] = yield* Effect.all([
+    port.coordinator.snapshot(HOPPER_REPLICATED_OWNER_ID, HopperServiceSnapshotSchema),
+    port.coordinator.snapshot(CONTAINER_STORAGE_REPLICATED_OWNER_ID, ContainerStorageSnapshotSchema),
+    port.coordinator.revision,
+    port.coordinator.dimensionRevision(dimension),
+  ])
+  const revisionAfter = yield* port.coordinator.revision
+  if (hoppers.world !== containers.world || hoppers.world !== port.coordinator.worldId) {
+    return yield* Effect.fail<WorldCommitPlanConflict>({
+      _tag: 'WorldCommitPlanWorldConflict',
+      actual: containers.world,
+      expected: port.coordinator.worldId,
+    })
+  }
+  for (const actualRevision of [containers.revision, revisionBefore, revisionAfter]) {
+    if (actualRevision !== hoppers.revision) {
+      return yield* Effect.fail<WorldCommitPlanConflict>({
+        _tag: 'WorldCommitPlanRevisionConflict',
+        actual: actualRevision,
+        expected: hoppers.revision,
+      })
+    }
+  }
+  return {
+    containers: containers.state,
+    expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
+    expectedRevision: hoppers.revision,
+    hoppers: hoppers.state,
+    world: hoppers.world,
+  } satisfies RedstonePlanBase
+})
 
 const selectHopperEvent = (
   realm: RedstoneHostRealm,
   event: HopperTransferEvent,
 ): Effect.Effect<SelectedHopperEvent, Schema.SchemaError | RedstoneHostHopperFailure> => {
   const context = realm.lookup.readHopperTransferContext(event.position)
-  const transferDueRequest = Schema.decodeUnknownResult(
-    HopperTransferDueRequestSchema,
-    STRICT_DECODE_OPTIONS,
-  )({
-    ...event.transferDueRequest,
-    powered: context.powered || event.transferDueRequest.powered,
-  })
-  if (Result.isFailure(transferDueRequest)) {
-    return Effect.fail(transferDueRequest.failure)
+  const elapsedTicks = Schema.decodeUnknownResult(HopperElapsedTicksSchema, STRICT_DECODE_OPTIONS)(
+    event.elapsedRedstoneTicks * GAME_TICKS_PER_REDSTONE_TICK,
+  )
+  if (Result.isFailure(elapsedTicks)) {
+    return Effect.fail(elapsedTicks.failure)
   }
+  const powered = context.powered || event.powered
   const outcome = selectHopperTransferCandidates({
     ...context,
     hopperAddress: { dimension: event.dimension, position: event.position },
-    powered: transferDueRequest.success.powered,
+    powered,
   })
   if (outcome['_tag'] === 'InvalidRequest') {
     return Effect.fail<RedstoneHostHopperFailure>({
@@ -594,11 +645,7 @@ const selectHopperEvent = (
       event,
     })
   }
-  return Effect.succeed({
-    dueRequest: transferDueRequest.success,
-    event,
-    outcome,
-  })
+  return Effect.succeed({ elapsedTicks: elapsedTicks.success, event, outcome, powered })
 }
 
 const selectHopperEvents = (
@@ -640,25 +687,6 @@ const blockWriteMatchesHopper = ({
   )
 }
 
-type HopperCooldownAdvanceContext = Readonly<{
-  coordinator: RedstoneHostCoordinatorPort
-  event: HopperTransferEvent
-  hopperAddress: BlockAddress
-  hopperService: RedstoneHostHopperService
-}>
-
-const advanceHopperCooldown = (context: HopperCooldownAdvanceContext) =>
-  Effect.gen(function* advanceHopperCooldownGenerator() {
-    const cooldownRevision = yield* context.coordinator.revision
-    const cooldownDimensionRevision = yield* context.coordinator.dimensionRevision(context.event.dimension)
-    yield* context.hopperService.advanceCooldown({
-      address: context.hopperAddress,
-      expectedDimensionRevision: cooldownDimensionRevision,
-      expectedRevision: cooldownRevision,
-      ticks: HOPPER_TRANSFER_COOLDOWN_GAME_TICKS,
-    })
-  })
-
 type HopperBlockWriteBuildContext<BuildError> = Readonly<{
   port: RedstoneHostWritePort<BuildError>
   event: HopperTransferEvent
@@ -691,53 +719,6 @@ const buildValidatedHopperBlockWrite = <BuildError>(context: HopperBlockWriteBui
     return decoded.success
   })
 
-const isHopperCandidateOutcome = (
-  outcome: SelectedHopperEvent['outcome'],
-): outcome is HopperCandidateOutcome => outcome['_tag'] === 'Candidates'
-
-type PreparedHopperTransfer<BuildError> = Readonly<{
-  blockWrite: WorldWriteBatch
-  candidates: HopperCandidateOutcome['candidates']
-  event: HopperTransferEvent
-  hopperAddress: BlockAddress
-  port: RedstoneHostWritePort<BuildError>
-}>
-
-type HopperTransferPreparationContext<BuildError> = Readonly<{
-  port: RedstoneHostWritePort<BuildError>
-  realm: RedstoneHostRealm
-  selected: SelectedHopperEvent
-}>
-
-type PreparedHopperTransferBuildContext<BuildError> = Readonly<{
-  blockId: BlockId
-  candidates: HopperCandidateOutcome['candidates']
-  event: HopperTransferEvent
-  hopperAddress: BlockAddress
-  port: RedstoneHostWritePort<BuildError>
-}>
-
-const buildPreparedHopperTransfer = <BuildError>(context: PreparedHopperTransferBuildContext<BuildError>) =>
-  Effect.gen(function* buildPreparedHopperTransferGenerator() {
-    const revisions: RedstoneHostHopperRevisionContext = {
-      expectedDimensionRevision: yield* context.port.coordinator.dimensionRevision(context.event.dimension),
-      expectedRevision: yield* context.port.coordinator.revision,
-    }
-    const blockWrite = yield* buildValidatedHopperBlockWrite({
-      blockId: context.blockId,
-      event: context.event,
-      port: context.port,
-      revisions,
-    })
-    return {
-      blockWrite,
-      candidates: context.candidates,
-      event: context.event,
-      hopperAddress: context.hopperAddress,
-      port: context.port,
-    }
-  })
-
 const readHopperBlockId = (
   realm: RedstoneHostRealm,
   event: HopperTransferEvent,
@@ -752,166 +733,442 @@ const readHopperBlockId = (
   return Effect.succeed(blockId)
 }
 
-const prepareHopperTransfer = <BuildError>(context: HopperTransferPreparationContext<BuildError>) =>
-  Effect.gen(function* prepareHopperTransferGenerator() {
-    const { event } = context.selected
-    if (!hopperTransferDue(context.selected.dueRequest)) {
-      return Option.none<PreparedHopperTransfer<BuildError>>()
-    }
-    const hopperAddress: BlockAddress = { dimension: event.dimension, position: event.position }
-    const blockId = yield* readHopperBlockId(context.realm, event)
-    yield* advanceHopperCooldown({
-      coordinator: context.port.coordinator,
-      event,
-      hopperAddress,
-      hopperService: context.port.hopperService,
-    })
-    if (!isHopperCandidateOutcome(context.selected.outcome)) {
-      return Option.none<PreparedHopperTransfer<BuildError>>()
-    }
-    const prepared = yield* buildPreparedHopperTransfer({
-      blockId,
-      candidates: context.selected.outcome.candidates,
-      event,
-      hopperAddress,
-      port: context.port,
-    })
-    return Option.some(prepared)
-  })
+const planSnapshotForHopper = (
+  base: RedstonePlanBase,
+  virtual: VirtualHopperState,
+  intent: HopperTransferTickPlanState['intent'],
+): WorldCommitPlanSnapshot<HopperTransferTickPlanState> => ({
+  expectedDimensions: base.expectedDimensions,
+  expectedRevision: base.expectedRevision,
+  state: {
+    containers: {
+      expectedDimensions: base.expectedDimensions,
+      expectedRevision: base.expectedRevision,
+      state: virtual.containers,
+      world: base.world,
+    } satisfies ContainerStoragePlanSnapshot,
+    hoppers: virtual.hoppers,
+    intent,
+    player: { _tag: 'None' },
+  },
+  world: base.world,
+})
 
-type HopperCandidateTransferContext<BuildError> = Readonly<{
-  candidate: HopperTransferCandidate
-  prepared: PreparedHopperTransfer<BuildError>
+const virtualStateAfterFragment = (
+  virtual: VirtualHopperState,
+  fragment: WorldCommitPlanFragment<unknown>,
+) => Effect.gen(function* virtualStateAfterFragmentGenerator() {
+  const hopperChange = Option.fromUndefinedOr(
+    fragment.changes.find(({ ownerId }) => ownerId === HOPPER_REPLICATED_OWNER_ID),
+  )
+  const containerChange = Option.fromUndefinedOr(
+    fragment.changes.find(({ ownerId }) => ownerId === CONTAINER_STORAGE_REPLICATED_OWNER_ID),
+  )
+  const containers = yield* Option.match(containerChange, {
+    onNone: () => Effect.succeed(virtual.containers),
+    onSome: ({ state }) => Schema.decodeUnknownEffect(ContainerStorageSnapshotSchema)(state),
+  })
+  const hoppers = yield* Option.match(hopperChange, {
+    onNone: () => Effect.succeed(virtual.hoppers),
+    onSome: ({ state }) => Schema.decodeUnknownEffect(HopperServiceSnapshotSchema)(state),
+  })
+  return { containers, hoppers } satisfies VirtualHopperState
+})
+
+type SelectedHopperPlanContext<BuildError> = Readonly<{
+  base: RedstonePlanBase
+  port: RedstoneHostWritePort<BuildError>
+  realm: RedstoneHostRealm
+  selected: SelectedHopperEvent
+  virtual: VirtualHopperState
 }>
 
-const transferHopperCandidate = <BuildError>(context: HopperCandidateTransferContext<BuildError>) =>
-  Effect.gen(function* transferHopperCandidateGenerator() {
-    const request: HopperTransferRequest = {
-      blockWrite: context.prepared.blockWrite,
-      destination: context.candidate.destination,
-      hopperAddress: context.prepared.hopperAddress,
-      source: context.candidate.source,
-    }
-    const outcome: HopperTransferOutcome = yield* context.prepared.port.hopperService.transfer(request)
-    if (outcome['_tag'] === 'Committed') {
-      return true
-    }
-    if (outcome['_tag'] === 'TransferRejected') {
-      return false
-    }
-    if (outcome['_tag'] === 'CoolingDown') {
-      return yield* Effect.fail<RedstoneHostHopperFailure>({
-        _tag: 'RedstoneHostHopperCooldownNotReady',
-        event: context.prepared.event,
-        ticks: outcome.ticks,
-      })
-    }
-    return yield* Effect.fail<RedstoneHostHopperFailure>({
-      _tag: 'RedstoneHostHopperTransferInvalid',
-      event: context.prepared.event,
-      reason: outcome.reason,
-    })
-  })
+type HopperTransferCandidate = Extract<
+  HopperTransferSelectionOutcome,
+  { readonly _tag: 'Candidates' }
+>['candidates'][number]
 
-const transferHopperCandidates = <BuildError>(prepared: PreparedHopperTransfer<BuildError>) =>
-  Effect.gen(function* transferHopperCandidatesGenerator() {
-    for (const candidate of prepared.candidates) {
-      const committed = yield* transferHopperCandidate({ candidate, prepared })
-      if (committed) {
-        return
-      }
-    }
-  })
+type CandidateHopperTransferPlanContext<BuildError> = Readonly<{
+  blockWrite: WorldWriteBatch
+  candidate: HopperTransferCandidate
+  planContext: SelectedHopperPlanContext<BuildError>
+  virtual: VirtualHopperState
+}>
 
-const applyHopperTransferEvent = <BuildError>(
-  port: RedstoneHostWritePort<BuildError>,
-  realm: RedstoneHostRealm,
-  selected: SelectedHopperEvent,
-): Effect.Effect<
-  void,
-  BuildError | Schema.SchemaError | WorldCommitCoordinatorError | HopperServiceError | RedstoneHostHopperFailure
-> =>
-  Effect.gen(function* applyHopperTransferEventGenerator() {
-    const prepared = yield* prepareHopperTransfer({ port, realm, selected })
-    if (Option.isNone(prepared)) {
-      return
-    }
-    yield* transferHopperCandidates(prepared.value)
-  })
-
-const restoreAfterRedstoneFailure = (
-  runtime: RedstoneWorldRuntimeService,
-  events: RedstoneEventBatch,
-  progress: RedstoneHostEventProgress,
-): Effect.Effect<void> => {
-  if (!progress.nonHopperEventsCommitted) {
-    return runtime.restoreEvents(events)
-  }
-  const remainingHoppers = events.hopper.slice(progress.completedHopperEvents)
-  return runtime.restoreEvents({
-    hopper: remainingHoppers,
-    lamp: [],
-    piston: [],
-    powered: [],
-    trigger: [],
+const hopperRevisionContext = (
+  base: RedstonePlanBase,
+  dimension: Dimension,
+): Effect.Effect<RedstoneHostHopperRevisionContext, WorldCommitPlanConflict> => {
+  const expected = Option.fromUndefinedOr(
+    base.expectedDimensions.find((entry) => entry.dimension === dimension),
+  )
+  return Option.match(expected, {
+    onNone: () => Effect.fail({
+      _tag: 'WorldCommitPlanDimensionRevisionMissing',
+      dimension,
+    }),
+    onSome: ({ expectedRevision }) => Effect.succeed({
+      expectedDimensionRevision: expectedRevision,
+      expectedRevision: base.expectedRevision,
+    }),
   })
 }
 
-const buildAndCommitRedstoneEvents = <BuildError>(
-  port: RedstoneHostWritePort<BuildError>,
-  events: RedstoneEventBatch,
-  pistonPlans: ReadonlyArray<PistonMovementPlan>,
-): Effect.Effect<void, BuildError | WorldCommitCoordinatorError> =>
-  Effect.gen(function* buildAndCommitRedstoneEventsGenerator() {
-    const built = port.buildCommitRequest(events, pistonPlans)
-    if (Result.isFailure(built)) {
-      return yield* Effect.fail(built.failure)
+const planCandidateHopperTransfer = <BuildError>(
+  context: CandidateHopperTransferPlanContext<BuildError>,
+) => Effect.gen(function* planCandidateHopperTransferGenerator() {
+  const { event, elapsedTicks, powered } = context.planContext.selected
+  const { candidate, planContext } = context
+  const fragment = yield* planContext.port.hopperService.planTransferTick(
+    planSnapshotForHopper(planContext.base, context.virtual, {
+      blockEdits: { dimension: context.blockWrite.dimension, edits: context.blockWrite.edits },
+      destination: candidate.destination,
+      hopperAddress: { dimension: event.dimension, position: event.position },
+      source: candidate.source,
+    }),
+    elapsedTicks,
+    powered,
+  )
+  if (fragment.result['_tag'] === 'InvalidRequest') {
+    return yield* Effect.fail<RedstoneHostHopperFailure>({
+      _tag: 'RedstoneHostHopperTransferInvalid',
+      event,
+      reason: fragment.result.reason,
+    })
+  }
+  return {
+    fragment,
+    virtual: yield* virtualStateAfterFragment(context.virtual, fragment),
+  }
+})
+
+const planCandidateHopperTransfers = <BuildError>(
+  context: Readonly<{
+    blockWrite: WorldWriteBatch
+    candidates: ReadonlyArray<HopperTransferCandidate>
+    planContext: SelectedHopperPlanContext<BuildError>
+  }>,
+) => Effect.gen(function* planCandidateHopperTransfersGenerator() {
+  const { blockWrite, candidates, planContext } = context
+  const plan: {
+    fragments: Array<WorldCommitPlanFragment<unknown>>
+    virtual: VirtualHopperState
+  } = {
+    fragments: [],
+    virtual: planContext.virtual,
+  }
+  for (const candidate of candidates) {
+    const { fragment, virtual: nextVirtual } = yield* planCandidateHopperTransfer({
+      blockWrite,
+      candidate,
+      planContext,
+      virtual: plan.virtual,
+    })
+    plan.fragments.push(fragment)
+    plan.virtual = nextVirtual
+    if (fragment.result['_tag'] !== 'TransferRejected') {
+      break
     }
-    yield* port.coordinator.commit(built.success)
+  }
+  return plan
+})
+
+const planCandidateHopperEvent = <BuildError>(
+  context: Readonly<{
+    candidates: ReadonlyArray<HopperTransferCandidate>
+    planContext: SelectedHopperPlanContext<BuildError>
+  }>,
+) => Effect.gen(function* planCandidateHopperEventGenerator() {
+  const { event } = context.planContext.selected
+  const blockId = yield* readHopperBlockId(context.planContext.realm, event)
+  const revisions = yield* hopperRevisionContext(context.planContext.base, event.dimension)
+  const blockWrite = yield* buildValidatedHopperBlockWrite({
+    blockId,
+    event,
+    port: context.planContext.port,
+    revisions,
+  })
+  return yield* planCandidateHopperTransfers({
+    blockWrite,
+    candidates: context.candidates,
+    planContext: context.planContext,
+  })
+})
+
+const planHopperCooldownEvent = <BuildError>(
+  context: SelectedHopperPlanContext<BuildError>,
+) => Effect.gen(function* planHopperCooldownEventGenerator() {
+  const { elapsedTicks, event } = context.selected
+  const ticks = yield* Schema.decodeUnknownEffect(HopperCooldownTicksSchema)(elapsedTicks)
+  const fragment = yield* context.port.hopperService.planAdvanceCooldown({
+    expectedDimensions: context.base.expectedDimensions,
+    expectedRevision: context.base.expectedRevision,
+    state: context.virtual.hoppers,
+    world: context.base.world,
+  }, { address: { dimension: event.dimension, position: event.position }, ticks })
+  return {
+    fragments: [fragment],
+    virtual: yield* virtualStateAfterFragment(context.virtual, fragment),
+  }
+})
+
+const planSelectedHopperEvent = <BuildError>(
+  context: SelectedHopperPlanContext<BuildError>,
+) => Effect.gen(function* planSelectedHopperEventGenerator() {
+  const { elapsedTicks, outcome, powered } = context.selected
+  if (outcome['_tag'] === 'Candidates') {
+    return yield* planCandidateHopperEvent({
+      candidates: outcome.candidates,
+      planContext: context,
+    })
+  }
+  if (outcome['_tag'] === 'NoCandidates' && !powered && elapsedTicks > ZERO_ELAPSED_TICKS) {
+    return yield* planHopperCooldownEvent(context)
+  }
+  return { fragments: [], virtual: context.virtual }
+})
+
+type HopperPlanMergeAccumulator = {
+  changesByOwner: Map<string, WorldCommitPlanFragment<unknown>['changes'][number]>
+  dimensions: Set<Dimension>
+  editsByPosition: Map<string, WorldWriteBatch['edits'][number]>
+  postCommitEvents: Array<WorldCommitPlanFragment<unknown>['postCommitEvents'][number]>
+}
+
+const addHopperBlockEdits = (
+  accumulator: HopperPlanMergeAccumulator,
+  blockEdits: NonNullable<WorldCommitPlanFragment<unknown>['blockEdits']>,
+): Option.Option<WorldCommitPlanConflict> => {
+  accumulator.dimensions.add(blockEdits.dimension)
+  for (const edit of blockEdits.edits) {
+    const key = blockPositionKeyOf(edit.position)
+    const existing = Option.fromUndefinedOr(accumulator.editsByPosition.get(key))
+    if (Option.isSome(existing) && existing.value.block !== edit.block) {
+      return Option.some({
+        _tag: 'WorldCommitPlanBlockConflict',
+        dimension: blockEdits.dimension,
+        position: edit.position,
+      })
+    }
+    accumulator.editsByPosition.set(key, edit)
+  }
+  return Option.none()
+}
+
+const accumulateHopperPlanFragment = (
+  accumulator: HopperPlanMergeAccumulator,
+  fragment: WorldCommitPlanFragment<unknown>,
+): Option.Option<WorldCommitPlanConflict> => {
+  for (const change of fragment.changes) {
+    accumulator.changesByOwner.set(change.ownerId, change)
+  }
+  accumulator.postCommitEvents.push(...fragment.postCommitEvents)
+  return Option.match(Option.fromUndefinedOr(fragment.blockEdits), {
+    onNone: () => Option.none(),
+    onSome: (blockEdits) => addHopperBlockEdits(accumulator, blockEdits),
+  })
+}
+
+const combineHopperPlanFragments = (
+  base: RedstonePlanBase,
+  fragments: ReadonlyArray<WorldCommitPlanFragment<unknown>>,
+): Result.Result<WorldCommitPlanFragment<void>, WorldCommitPlanConflict> => {
+  const accumulator: HopperPlanMergeAccumulator = {
+    changesByOwner: new Map(),
+    dimensions: new Set(),
+    editsByPosition: new Map(),
+    postCommitEvents: [],
+  }
+  for (const fragment of fragments) {
+    const conflict = accumulateHopperPlanFragment(accumulator, fragment)
+    if (Option.isSome(conflict)) {
+      return Result.fail(conflict.value)
+    }
+  }
+  if (accumulator.dimensions.size > MAX_EVENT_DIMENSION_COUNT) {
+    return Result.fail({
+      _tag: 'WorldCommitPlanDimensionConflict',
+      dimensions: [...accumulator.dimensions],
+    })
+  }
+  const dimension = Option.fromUndefinedOr(
+    Array.from(accumulator.dimensions)[FIRST_EVENT_DIMENSION_INDEX],
+  )
+  const optionalBlockEdits = Option.match(dimension, {
+    onNone: () => ({}),
+    onSome: (value) => ({
+      blockEdits: { dimension: value, edits: [...accumulator.editsByPosition.values()] },
+    }),
+  })
+  return Result.succeed({
+    ...optionalBlockEdits,
+    changes: [...accumulator.changesByOwner.values()],
+    expectedDimensions: base.expectedDimensions,
+    expectedRevision: base.expectedRevision,
+    postCommitEvents: accumulator.postCommitEvents,
+    result: NO_RESULT,
+    world: base.world,
+  })
+}
+
+const planHopperEvents = <BuildError>(
+  context: Readonly<{
+    base: RedstonePlanBase
+    events: ReadonlyArray<HopperTransferEvent>
+    port: RedstoneHostWritePort<BuildError>
+    realm: RedstoneHostRealm
+  }>,
+) => Effect.gen(function* planHopperEventsGenerator() {
+  const { base, events, port, realm } = context
+  const selected = yield* selectHopperEvents(realm, events)
+  const plan: {
+    fragments: Array<WorldCommitPlanFragment<unknown>>
+    virtual: VirtualHopperState
+  } = {
+    fragments: [],
+    virtual: { containers: base.containers, hoppers: base.hoppers },
+  }
+  for (const hopperEvent of selected) {
+    const { fragments, virtual } = yield* planSelectedHopperEvent({
+      base,
+      port,
+      realm,
+      selected: hopperEvent,
+      virtual: plan.virtual,
+    })
+    plan.virtual = virtual
+    plan.fragments.push(...fragments)
+  }
+  if (plan.fragments.length === ZERO_EVENT_COUNT) {
+    return Option.none<WorldCommitPlanFragment<void>>()
+  }
+  return yield* Effect.fromResult(combineHopperPlanFragments(base, plan.fragments)).pipe(
+    Effect.map(Option.some),
+  )
+})
+
+type RedstoneBlockWrite = NonNullable<WorldCommitRequest['blockWrite']>
+
+const validateExpectedDimensionRevisions = (
+  base: RedstonePlanBase,
+  expectedDimensions: WorldCommitRequest['expectedDimensions'],
+) => Effect.gen(function* validateExpectedDimensionRevisionsGenerator() {
+  for (const expectation of expectedDimensions) {
+    const common = yield* hopperRevisionContext(base, expectation.dimension)
+    if (common.expectedDimensionRevision !== expectation.expectedRevision) {
+      return yield* Effect.fail<WorldCommitPlanConflict>({
+        _tag: 'WorldCommitPlanDimensionRevisionConflict',
+        actual: expectation.expectedRevision,
+        dimension: expectation.dimension,
+        expected: common.expectedDimensionRevision,
+      })
+    }
+  }
+})
+
+const validateRedstoneBlockWriteRevision = (
+  base: RedstonePlanBase,
+  blockWrite: RedstoneBlockWrite,
+) => Effect.gen(function* validateRedstoneBlockWriteRevisionGenerator() {
+  const common = yield* hopperRevisionContext(base, blockWrite.dimension)
+  if (blockWrite.world !== base.world || blockWrite.expectedWorldRevision !== base.expectedRevision) {
+    return yield* Effect.fail<WorldCommitPlanConflict>({
+      _tag: 'WorldCommitPlanRevisionConflict',
+      actual: blockWrite.expectedWorldRevision,
+      expected: base.expectedRevision,
+    })
+  }
+  if (common.expectedDimensionRevision !== blockWrite.expectedDimensionRevision) {
+    return yield* Effect.fail<WorldCommitPlanConflict>({
+      _tag: 'WorldCommitPlanDimensionRevisionConflict',
+      actual: blockWrite.expectedDimensionRevision,
+      dimension: blockWrite.dimension,
+      expected: common.expectedDimensionRevision,
+    })
+  }
+})
+
+const redstonePlanFromRequest = (
+  base: RedstonePlanBase,
+  request: WorldCommitRequest,
+): Effect.Effect<WorldCommitPlanFragment<void>, WorldCommitPlanConflict> =>
+  Effect.gen(function* redstonePlanFromRequestGenerator() {
+    if (request.expectedRevision !== base.expectedRevision) {
+      return yield* Effect.fail<WorldCommitPlanConflict>({
+        _tag: 'WorldCommitPlanRevisionConflict',
+        actual: request.expectedRevision,
+        expected: base.expectedRevision,
+      })
+    }
+    yield* validateExpectedDimensionRevisions(base, request.expectedDimensions)
+    const blockWrite = Option.fromUndefinedOr(request.blockWrite)
+    yield* Option.match(blockWrite, {
+      onNone: () => Effect.void,
+      onSome: (value) => validateRedstoneBlockWriteRevision(base, value),
+    })
+    const optionalBlockEdits = Option.match(blockWrite, {
+      onNone: () => ({}),
+      onSome: ({ dimension, edits }) => ({ blockEdits: { dimension, edits } }),
+    })
+    return {
+      ...optionalBlockEdits,
+      changes: request.changes,
+      expectedDimensions: base.expectedDimensions,
+      expectedRevision: base.expectedRevision,
+      postCommitEvents: [],
+      result: NO_RESULT,
+      world: base.world,
+    } satisfies WorldCommitPlanFragment<void>
   })
 
 type RedstoneCommitContext<BuildError> = Readonly<{
   events: RedstoneEventBatch
   port: RedstoneHostWritePort<BuildError>
-  progress: RedstoneHostEventProgress
   realms: ReadonlyArray<RedstoneHostRealm>
 }>
 
-const commitPlannedPistons = <BuildError>(
-  port: RedstoneHostWritePort<BuildError>,
-  events: RedstoneEventBatch,
-  plannedPistons: ReadonlyArray<Readonly<{ event: PoweredPistonTransition; plan: Option.Option<PistonMovementPlan> }>>,
-) => {
-  const pistonPlans = plannedPistons.flatMap(({ plan }) =>
-    Option.match(plan, { onNone: () => [], onSome: (value) => [value] }),
-  )
+const planRedstoneEventBatch = <BuildError>(
+  context: RedstoneCommitContext<BuildError>,
+  base: RedstonePlanBase,
+  realm: RedstoneHostRealm,
+) => Effect.gen(function* planRedstoneEventBatchGenerator() {
+  const plannedPistons = yield* planEventPistons(realm, context.events)
   const commitEvents: RedstoneEventBatch = {
-    ...events,
+    ...context.events,
     hopper: [],
     piston: plannedPistons.flatMap(({ event, plan }) =>
       Option.match(plan, { onNone: () => [], onSome: () => [event] }),
     ),
   }
+  const pistonPlans = plannedPistons.flatMap(({ plan }) =>
+    Option.match(plan, { onNone: () => [], onSome: (value) => [value] }),
+  )
   if (redstoneEventBatchIsEmpty(commitEvents)) {
-    return Effect.void
+    return {
+      changes: [],
+      expectedDimensions: base.expectedDimensions,
+      expectedRevision: base.expectedRevision,
+      postCommitEvents: [],
+      result: NO_RESULT,
+      world: base.world,
+    } satisfies WorldCommitPlanFragment<void>
   }
-  return buildAndCommitRedstoneEvents(port, commitEvents, pistonPlans)
-}
+  const request = yield* Effect.fromResult(
+    context.port.buildCommitRequest(commitEvents, pistonPlans),
+  )
+  return yield* redstonePlanFromRequest(base, request)
+})
 
-const applySelectedHopperEvents = <BuildError>(
-  context: Readonly<{
-    port: RedstoneHostWritePort<BuildError>
-    progress: RedstoneHostEventProgress
-    realm: RedstoneHostRealm
-    selected: ReadonlyArray<SelectedHopperEvent>
-  }>,
-) =>
-  Effect.gen(function* applySelectedHopperEventsGenerator() {
-    for (const selected of context.selected) {
-      yield* applyHopperTransferEvent(context.port, context.realm, selected)
-      context.progress.completedHopperEvents += 1
-    }
-  })
+const mergeAndCommitRedstonePlans = <BuildError>(
+  port: RedstoneHostWritePort<BuildError>,
+  plans: ReadonlyArray<WorldCommitPlanFragment<unknown>>,
+) => Effect.gen(function* mergeAndCommitRedstonePlansGenerator() {
+  const merged = yield* Effect.fromResult(mergeWorldCommitPlans(plans))
+  const hasBlockWrite = Option.isSome(Option.fromUndefinedOr(merged.blockWrite))
+  if (merged.changes.length > ZERO_EVENT_COUNT || hasBlockWrite) {
+    yield* port.coordinator.commit(merged)
+  }
+})
 
 const commitRedstoneEvents = <BuildError>(
   context: RedstoneCommitContext<BuildError>,
@@ -924,16 +1181,19 @@ const commitRedstoneEvents = <BuildError>(
     if (Option.isNone(realm)) {
       return
     }
-    const plannedPistons = yield* planEventPistons(realm.value, context.events)
-    const selectedHoppers = yield* selectHopperEvents(realm.value, context.events.hopper)
-    yield* commitPlannedPistons(context.port, context.events, plannedPistons)
-    context.progress.nonHopperEventsCommitted = true
-    yield* applySelectedHopperEvents({
+    const base = yield* captureRedstonePlanBase(context.port, realm.value.dimension)
+    const redstonePlan = yield* planRedstoneEventBatch(context, base, realm.value)
+    const hopperPlan = yield* planHopperEvents({
+      base,
+      events: context.events.hopper,
       port: context.port,
-      progress: context.progress,
       realm: realm.value,
-      selected: selectedHoppers,
     })
+    const plans = Option.match(hopperPlan, {
+      onNone: () => [redstonePlan] as const,
+      onSome: (fragment) => [redstonePlan, fragment] as const,
+    })
+    yield* mergeAndCommitRedstonePlans(context.port, plans)
   })
 
 /**
@@ -955,18 +1215,9 @@ export const applyRedstoneHostEvents = <BuildError>(
   Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* applyRedstoneHostEventsGenerator() {
       const events = yield* drainRedstoneEvents(runtime)
-      const progress: RedstoneHostEventProgress = {
-        completedHopperEvents: ZERO_EVENT_COUNT,
-        nonHopperEventsCommitted: false,
-      }
-      const result = yield* Effect.exit(restore(commitRedstoneEvents({
-        events,
-        port,
-        progress,
-        realms,
-      })))
+      const result = yield* Effect.exit(restore(commitRedstoneEvents({ events, port, realms })))
       if (Exit.isFailure(result)) {
-        yield* restoreAfterRedstoneFailure(runtime, events, progress)
+        yield* runtime.restoreEvents(events)
         return yield* Effect.failCause(result.cause)
       }
     }),

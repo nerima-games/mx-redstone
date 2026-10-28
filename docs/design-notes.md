@@ -916,11 +916,14 @@ DN-RS-2 の規則文は「受電できるのはワイヤとランプだけ」で
 毎フレーム手の届く範囲を全部移す。ロックを無視するホッパーは**遅いホッパーではなく、
 フィルタとして使えないホッパー**であり、ゲーム中の仕分け機は全部フィルタである。
 
-搬送周期 `HOPPER_TRANSFER_PERIOD_TICKS = 4`（バニラの 8 game tick、redstone は 10 Hz なので半分）は
-**規則**なのでここにあり、**カウンタは呼び出し側**にある。4 回目の同じ答えである。
-比較が `>=` であって `===` でないのは、`stages/registration.ts` が長いフレームのあと
-超過分を**捨てる**（DN-RS-3）ので、カウンタは任意の値を飛び越えうるからである。
-`===` にすると、そのホッパーは二度と来ない数を永久に待つ。
+移送周期とcooldownはmc-simの`HopperService`が所有する。runtimeは経過redstone tick数とpoweredをeventに載せる。
+`applyRedstoneHostEvents`は経過redstone tickを2 game ticksに換算してから、同じrevisionのsnapshotで
+`planTransferTick`または`planAdvanceCooldown`を呼び、lamp / pistonのplanと合わせて1回のWCC commitへまとめる。
+したがって通常の8 game tick cooldownは4 redstone ticksに相当し、runtime側に周期カウンタやdue判定は置かない。
+Java Editionでは通常のcontainer移送後に8 game ticksのcooldownがあり、powered中はcooldownが進まず、
+電力が切れても残り時間は保たれる。空のhopperへ別のblockがitemを押し込む場合の7-game-tick例外は、
+この通常移送のfixtureでは扱わない。`test/hopper-transfer-properties.test.ts`は非empty hopperの通常移送を対象にし、
+powered pauseとunpowered countdownを`https://minecraft.wiki/w/Hopper`のfixtureで固定する。
 
 ---
 

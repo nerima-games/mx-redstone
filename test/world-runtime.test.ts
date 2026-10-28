@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref, Schema } from 'effect'
 import {
+  RedstoneEventBatchSchema,
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
   redstoneNodeId as toRedstoneNodeId,
@@ -24,7 +25,6 @@ import {
 import { makeRuntimeRedstoneStages } from '../src/stages/registration'
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 import { ContainerSlotSchema } from '../src/domain/comparator'
-import { HOPPER_TRANSFER_PERIOD_TICKS, HopperTransferDueRequestSchema } from '../src/domain/hopper'
 // eslint-disable-next-line sort-imports
 import { FrameServicesLayer } from './frame-services'
 
@@ -37,18 +37,29 @@ const dimensionId = (value: string): DimensionId =>
 const blockPosition = (x: number, y = 0, z = 0): BlockPosition =>
   Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
 
-const HOPPER_TRANSFER_DUE_REQUEST = Schema.decodeUnknownSync(HopperTransferDueRequestSchema, {
-  onExcessProperty: 'error',
-})({
-  powered: false,
-  ticksSinceTransfer: HOPPER_TRANSFER_PERIOD_TICKS,
-})
-
-const hopperTransferEvent = (dimension: string, position: BlockPosition): HopperTransferEvent => ({
-  dimension: dimensionId(dimension),
-  position,
-  transferDueRequest: HOPPER_TRANSFER_DUE_REQUEST,
-})
+const hopperTransferEvent = (
+  dimension: string,
+  position: BlockPosition,
+  elapsedRedstoneTicks = 1,
+  powered = false,
+): HopperTransferEvent => {
+  const [event] = Schema.decodeUnknownSync(RedstoneEventBatchSchema)({
+    hopper: [{
+      dimension: dimensionId(dimension),
+      position,
+      elapsedRedstoneTicks,
+      powered,
+    }],
+    lamp: [],
+    piston: [],
+    powered: [],
+    trigger: [],
+  }).hopper
+  if (event === undefined) {
+    throw new Error('Expected a decoded hopper transfer event')
+  }
+  return event
+}
 
 const redstoneNodeId = (
   dimension: string,
@@ -508,26 +519,22 @@ describe('RedstoneWorldRuntime', () => {
     ),
   )
 
-  it.effect('emits an unlocked hopper request once per four redstone ticks', () =>
+  it.effect('emits elapsed redstone ticks and power for HopperService on every tick', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {
         yield* runtime.syncSnapshot(snapshot('overworld', [component(0, 'hopper')]))
 
         for (let tick = 0; tick < 3; tick += 1) {
           yield* runFrame(stages)
-          expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
+          expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
+            hopperTransferEvent('overworld', blockPosition(0, 0, 0)),
+          ])
         }
-
-        yield* runFrame(stages)
-        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
-          hopperTransferEvent('overworld', blockPosition(0, 0, 0)),
-        ])
-        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
       }),
     ),
   )
 
-  it.effect('keeps powered hoppers locked after their transfer period', () =>
+  it.effect('passes powered hopper state to HopperService every redstone tick', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {
         yield* runtime.syncSnapshot(snapshot('overworld', [
@@ -535,10 +542,28 @@ describe('RedstoneWorldRuntime', () => {
           component(1, 'hopper'),
         ]))
 
-        for (let tick = 0; tick < 4; tick += 1) {
-          yield* runFrame(stages)
-          expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
-        }
+        yield* runFrame(stages)
+        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
+          hopperTransferEvent('overworld', blockPosition(1, 0, 0), 1, true),
+        ])
+      }),
+    ),
+  )
+
+  it.effect('preserves hopper power changes within a multi-tick frame', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'button', undefined, 0, 0, { pulseTicks: NonNegativeTickCount(1) }),
+          component(1, 'hopper'),
+        ]))
+        yield* runtime.pressButton(dimensionId('overworld'), blockPosition(0, 0, 0))
+
+        yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.2))
+        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
+          hopperTransferEvent('overworld', blockPosition(1, 0, 0), 1, true),
+          hopperTransferEvent('overworld', blockPosition(1, 0, 0), 1, false),
+        ])
       }),
     ),
   )
@@ -627,18 +652,13 @@ describe('RedstoneWorldRuntime', () => {
     }),
   )
 
-  it.effect('orders simultaneous hopper transfer requests by node id', () =>
+  it.effect('orders simultaneous hopper plan requests by node id', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {
         yield* runtime.syncSnapshot(snapshot('overworld', [
           component(1, 'hopper', undefined, 0, 0),
           component(0, 'hopper', undefined, 0, 0),
         ]))
-
-        for (let tick = 0; tick < 3; tick += 1) {
-          yield* runFrame(stages)
-          expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([])
-        }
 
         yield* runFrame(stages)
         expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
