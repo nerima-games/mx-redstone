@@ -12,8 +12,6 @@ mc-compose の W5 host は root から `pistonPositionAt`、`planPistonTransitio
 
 ## 2. なぜ電力グラフは内部でなければならないのか
 
-理由は 1 つだけで、しかも十分に強い。**電力グラフの形は必ず変わるから**である。
-
 現在の `CircuitBoard` は `ReadonlyMap<PositionKey, Component>` と隣接リストの素朴な組であり、
 `propagateTick` は毎 tick 全部品を走査する（`domain/power-graph.ts:106-148`）。
 回路が大きくなればこれは持たない。想定される変更:
@@ -29,7 +27,6 @@ kernel ほどではないにせよ、`mc-compose` はこのリポジトリをピ
 その 1 つ 1 つが協調リリースを要求する。内部に閉じておけば、同じ変更が PATCH で済む。
 
 これは [versioning.md](./versioning.md) §5 で「このリポジトリで破壊的変更とは何か」として再度扱う。
-`index.ts` の「見えるが公開ではない」という気持ち悪さに対して支払われている対価は、これ 1 つである。
 
 ## 3. 契約そのもの（plan.md §4.1）
 
@@ -91,9 +88,7 @@ input
 
 ### 4-1. `after: [gameplay:fluids]` を宣言しない理由
 
-骨格は `fluids → redstone → time/weather` と書いている。素直に読めば
-`after: [StageId('gameplay:fluids')]` と書きたくなる。**書かない。**
-
+骨格は `fluids → redstone → time/weather` と書いている。
 `fluids` も `time/weather` も mx-gameplay の stage である。
 名指しすれば import は増えないが、**mx-redstone のフレーム位置が別の体験モジュールの存在に依存する**。
 mx-gameplay を外した構成（回路盤プレビュー、あるいは将来のミニマル合成）で
@@ -121,17 +116,17 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
   オブザーバのパルスを host が適用する。
 
 この境界があるから電力グラフ全体がワールドなしでテストできる。
-`the two registered stages split at the purity boundary: power, then effects` が順序と `after` を固定している。
+2つのstageは「電力計算、その後に効果適用」という順序を固定する。
 
-host は stage 実行後に`applyRedstoneHostEvents`で5つのqueueをdrainする。
+host は stage 実行後に`applyRedstoneHostEvents`で5つのqueueをdrainする。対象はlamp transition、piston transition、trigger、hopper transfer、powered-component transitionである。
 hopper以外のeventはpiston planとまとめて`WorldCommitRequest`を1つ作り、coordinatorへ1回commitする。
 hopper eventは`transferDueRequest`をschemaでdecodeし、host lookupからpower状態と隣接containerを読み、`selectHopperTransferCandidates`で候補を選ぶ。
 候補のendpointとslotで`HopperTransferRequest`を組み立てる。
 `blockWrite`は`WorldWriteBatchSchema`でdecodeし、hopper blockの単一editと現行world/dimension revisionが一致することを確かめてから`HopperService.transfer`へ渡す。
 powered hopperでは`transfer`を呼ばない。
 HopperServiceが進めるcooldownは8 game ticksであり、4 redstone ticksに相当する。
-非hopper commitより前の失敗では全queueをruntimeへ戻す。
-非hopper commit後にhopper transferが失敗した場合は未処理のhopper eventをruntimeへ戻す。
+非hopper commitより前に処理が失敗または中断した場合は全queueをruntimeへ戻す。
+非hopper commit後にhopper transferが失敗または中断した場合は未処理のhopper eventをruntimeへ戻す。
 ボタンは `pressButton(dimension, position)` で次tickのパルスを予約する。`pulseTicks` の既定値は
 10で、パルス中の再入力は残り時間を設定値へ戻す。リピーターの `delayTicks` は1–4に丸められ、
 入力のONとOFFの双方へ同じtick遅延を適用する。
@@ -144,11 +139,8 @@ HopperServiceが進めるcooldownは8 game ticksであり、4 redstone ticksに�
 > そのうち stage internals と domain internals は export が見えていても契約ではない。
 > W5 が使う piston planning names は下表で契約として明示する。どの名前が契約かは本表が定める。
 >
-> 同ファイルには**不在**を固定するテストもある。
 > `REGRESSION: does not republish mc-kernel’s vocabulary as its own` は
-> `StageId` と `DeltaTimeSecs` がバレルに**現れない**ことを assert する。
-> 「見えるが契約ではない」の管理はドキュメントでできるが、
-> 「所有していないものを公開する」はドキュメントでは止められない——消えるのが約束だからである。
+> `StageId` と `DeltaTimeSecs` がバレルに現れないことも検査する。
 
 ### mc-kernel stage contract — **バレルには載せない**
 
@@ -175,6 +167,7 @@ mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしてお�
 | エクスポート | 区分 | 備考 |
 | --- | --- | --- |
 | `makeRuntimeRedstoneStages` | **契約** | 同じ Effect context の `RedstoneWorldRuntime` と状態を共有する stage 登録 |
+| `redstoneModule` | **契約** | `RedstoneWorldRuntimeLayer` と `makeRuntimeRedstoneStages` をまとめる `GameModule` |
 | `makeRedstoneStages` | 内部（可視） | runtime port を持たない単体利用・互換経路 |
 | `redstoneStages` | 内部（可視） | 状態を外から渡す版。テストとプレビュー用 |
 | `makeRedstoneFrameState` | 内部（可視） | 再入可能な初期化（[design-notes.md](./design-notes.md) DN-RS-8） |
@@ -232,18 +225,9 @@ event batchにはnote-block triggerとtrapdoor transitionも含めてrequestへ�
 `TORCH_BURNOUT_COOLDOWN_TICKS` / `RepeaterTimer` / `ButtonTimer` / `TorchTimer` / `TimedCircuitState` /
 `emptyTimedCircuitState` / `advanceTimedCircuit`
 
-`propagateTick` の互換契約を変えずに、tickをまたぐ遅延とパルスを値として保持するAPIである。
-同じ盤面・状態・押下集合には同じ次状態を返し、壁時計や反復順序を参照しない。
-リピーターの `sideInputs` は前tickの電力を読み、いずれかが通電中なら現在出力を保持する。
-ロック中の未確定遷移は破棄し、解除後は背面入力を設定遅延の先頭から評価し直す。
-トーチは30 tick内の8回目の消灯でburnoutし、80 tick出力を停止してから再評価する。
-
 ### `domain/target-block.ts` — すべて内部（可視）
 
 `TargetHit` / `targetSignal`
-
-ターゲット面の正規化座標を入力し、中心からの Chebyshev 距離を 1–15 の信号強度へ写像する純粋規則である。
-命中なしは 0、中心は 15、辺と角は 1 とし、範囲外座標は面の境界へ clamp する。
 
 ### `domain/piston.ts`
 
@@ -426,7 +410,7 @@ kernel 所有の座標語彙であり、`index.ts` から re-export していな
 
 ## 6. `GameModule` を実装した（`redstoneModule`）
 
-plan.md §4.1 はもう 1 つ契約型を定義している。縦切りスパイク後の形はこうである。
+plan.md §4.1 の `GameModule` 契約は次の形である。
 
 ```typescript
 interface GameModule<ROut, E, RIn, RRegister = never> {
@@ -435,18 +419,8 @@ interface GameModule<ROut, E, RIn, RRegister = never> {
 }
 ```
 
-ここには長らく「`RIn` を書けないので実装していない」と書いてあった。
-**診断は半分間違っていて、間違っていた側が重要だった。**
-
-Layer は runtime port を提供する。電力グラフ自体は公開せず、ホストが同期する snapshot と
-ホストが適用する effect だけを意味型として公開する。
-
-本当の障害は **`frameStages` が配列だったこと**である。本リポジトリの stage は Effect の中で確保した
-`Ref`（盤面・電力マップ・tick アキュムレータ）から組み立てられるので、`ReadonlyArray` 型のフィールドに
-入れる方法が無かった。mc-sim が publish されても解決しない。
-配列であることは同時に、**どのモジュールにも stage を組み立てるためにサービスを取得する文脈が無い**
-ことを意味しており、それが `FrameServices` を肥大させていた原因でもあった
-（mc-kernel `docs/freeze-checklist.md` (b)）。
+`frameStages` は配列ではなく Effect として公開する。stage state はその Effect の実行時に `Ref` として確保する。
+Layer は runtime port を提供し、電力グラフは公開せず、ホストが同期する snapshot と適用する effect を意味型で公開する。
 
 ```typescript
 export const makeRuntimeRedstoneStages:
