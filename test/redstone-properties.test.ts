@@ -245,6 +245,30 @@ const runHostBatch = (positionX: number, mixedDimensions: boolean) => {
 }
 
 describe('redstone property boundaries', () => {
+  it('decodes safe integer limits and rejects their immediate neighbors', () => {
+    const axes = ['x', 'y', 'z'] as const
+    const safeValues = [Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER]
+    const outOfRangeValues = [
+      Number.MIN_SAFE_INTEGER - one,
+      Number.MAX_SAFE_INTEGER + one,
+    ]
+
+    for (const axis of axes) {
+      for (const value of safeValues) {
+        const coordinates = { x: zero, y: zero, z: zero, [axis]: value }
+        const decoded = Schema.decodeUnknownSync(BlockPositionSchema, strictDecode)(coordinates)
+        expect(decoded[axis]).toBe(value)
+      }
+
+      for (const value of outOfRangeValues) {
+        const coordinates = { x: zero, y: zero, z: zero, [axis]: value }
+        expect(() =>
+          Schema.decodeUnknownSync(BlockPositionSchema, strictDecode)(coordinates),
+        ).toThrow()
+      }
+    }
+  })
+
   it('returns typed tick failures or strictly decoded batches with kernel-branded coordinates', () => {
     fc.assert(
       fc.property(
