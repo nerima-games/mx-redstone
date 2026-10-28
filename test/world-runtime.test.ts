@@ -6,6 +6,7 @@ import {
   redstoneNodeId,
   redstoneWorldStateFor,
   type RedstoneComponentSnapshot,
+  type RedstoneEventBatch,
   type RedstoneWorldRuntimeService,
   type RedstoneWorldSnapshot,
 } from '../src/application/world-runtime'
@@ -75,7 +76,7 @@ describe('RedstoneWorldRuntime', () => {
           containerSlots: [{ count: 32, maxStack: 64 }],
         }]))
 
-        const board = yield* Ref.get(redstoneWorldStateFor(runtime).board)
+        const board = yield* Ref.get((yield* redstoneWorldStateFor(runtime)).board)
         const comparator = board.components.get(redstoneNodeId('overworld', { x: 0, y: 0, z: 0 }))
         expect(comparator).toMatchObject({ containerSignal: 8 })
       }),
@@ -91,7 +92,7 @@ describe('RedstoneWorldRuntime', () => {
           containerSlots: [{ count: 64, maxStack: 64 }],
         }]))
 
-        const board = yield* Ref.get(redstoneWorldStateFor(runtime).board)
+        const board = yield* Ref.get((yield* redstoneWorldStateFor(runtime)).board)
         const comparator = board.components.get(redstoneNodeId('overworld', { x: 0, y: 0, z: 0 }))
         expect(comparator).toMatchObject({ containerSignal: 11 })
       }),
@@ -107,7 +108,7 @@ describe('RedstoneWorldRuntime', () => {
           sideInputs: [{ x: 2, y: 0, z: 1 }],
         }]))
 
-        const board = yield* Ref.get(redstoneWorldStateFor(runtime).board)
+        const board = yield* Ref.get((yield* redstoneWorldStateFor(runtime)).board)
         const repeater = board.components.get(redstoneNodeId('overworld', { x: 2, y: 0, z: 0 }))
         expect(repeater).toMatchObject({
           sideInputs: [redstoneNodeId('overworld', { x: 2, y: 0, z: 1 })],
@@ -128,7 +129,7 @@ describe('RedstoneWorldRuntime', () => {
         )
         yield* runtime.syncSnapshot(snapshot('nether', [component(1, 'comparator')]))
 
-        const board = yield* Ref.get(redstoneWorldStateFor(runtime).board)
+        const board = yield* Ref.get((yield* redstoneWorldStateFor(runtime)).board)
         const lever = redstoneNodeId('overworld', { x: 0, y: 0, z: 0 })
         const wire = redstoneNodeId('overworld', { x: 1, y: 0, z: 0 })
         const diagonal = redstoneNodeId('overworld', { x: 1, y: 1, z: 0 })
@@ -472,12 +473,61 @@ describe('RedstoneWorldRuntime', () => {
     ),
   )
 
-  it.effect('REGRESSION: redstoneWorldStateFor rejects a runtime service not built by makeRedstoneWorldRuntime', () =>
-    Effect.sync(() => {
-      // The internal state lives in a WeakMap keyed by the exact runtime
-      // object `makeRedstoneWorldRuntime` returned. A conforming-but-foreign
-      // service — e.g. a hand-rolled test double — must fail loudly rather
-      // than silently reading another dimension's state or `undefined`.
+  it.effect('restores older host events ahead of events collected later', () =>
+    runtimeProgram((runtime) =>
+      Effect.gen(function* () {
+        const older: RedstoneEventBatch = {
+          hopper: [{ dimension: 'overworld', position: { x: 0, y: 0, z: 0 } }],
+          lamp: [{ dimension: 'overworld', position: { x: 0, y: 0, z: 0 }, lit: false }],
+          piston: [{
+            dimension: 'overworld',
+            piston: { x: 0, y: 0, z: 0 },
+            facing: 'north',
+            kind: 'normal',
+            state: 'retracted',
+            powered: false,
+          }],
+          powered: [{
+            dimension: 'overworld',
+            position: { x: 0, y: 0, z: 0 },
+            kind: 'door',
+            powered: false,
+          }],
+          trigger: [{ dimension: 'overworld', position: { x: 0, y: 0, z: 0 }, kind: 'note-block' }],
+        }
+        const newer: RedstoneEventBatch = {
+          hopper: [{ dimension: 'overworld', position: { x: 1, y: 0, z: 0 } }],
+          lamp: [{ dimension: 'overworld', position: { x: 1, y: 0, z: 0 }, lit: true }],
+          piston: [{
+            dimension: 'overworld',
+            piston: { x: 1, y: 0, z: 0 },
+            facing: 'east',
+            kind: 'sticky',
+            state: 'extended',
+            powered: true,
+          }],
+          powered: [{
+            dimension: 'overworld',
+            position: { x: 1, y: 0, z: 0 },
+            kind: 'powered-rail',
+            powered: true,
+          }],
+          trigger: [{ dimension: 'overworld', position: { x: 1, y: 0, z: 0 }, kind: 'dispenser' }],
+        }
+        yield* runtime.restoreEvents(newer)
+        yield* runtime.restoreEvents(older)
+
+        expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([...older.hopper, ...newer.hopper])
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([...older.lamp, ...newer.lamp])
+        expect(yield* runtime.drainPistonTransitions).toStrictEqual([...older.piston, ...newer.piston])
+        expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([...older.powered, ...newer.powered])
+        expect(yield* runtime.drainTriggerEvents).toStrictEqual([...older.trigger, ...newer.trigger])
+      }),
+    ),
+  )
+
+  it.effect('returns a typed failure for a runtime service not built by makeRedstoneWorldRuntime', () =>
+    Effect.gen(function* () {
       const foreignRuntime: RedstoneWorldRuntimeService = {
         drainHopperTransferEvents: Effect.succeed([]),
         drainLampTransitions: Effect.succeed([]),
@@ -485,11 +535,17 @@ describe('RedstoneWorldRuntime', () => {
         drainPoweredComponentTransitions: Effect.succeed([]),
         drainTriggerEvents: Effect.succeed([]),
         pressButton: () => Effect.void,
+        restoreEvents: () => Effect.void,
         syncSnapshot: () => Effect.void,
       }
-      expect(() => redstoneWorldStateFor(foreignRuntime)).toThrow(
-        'RedstoneWorldRuntime was not created by makeRedstoneWorldRuntime',
-      )
+      const result = yield* Effect.match(redstoneWorldStateFor(foreignRuntime), {
+        onFailure: (error) => error,
+        onSuccess: () => null,
+      })
+      expect(result).toStrictEqual({
+        _tag: 'UnregisteredRedstoneWorldRuntime',
+        message: 'RedstoneWorldRuntime was not created by makeRedstoneWorldRuntime',
+      })
     }),
   )
 
