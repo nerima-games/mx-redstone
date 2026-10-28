@@ -86,16 +86,13 @@ const importSpecifiers = exportEntries.map(([subpath]) => (subpath === "." ? pac
 
 // This repository's `dependencies` are the org's runtime dependency graph
 // (DEPENDENCY_POLICY.md, Tier 3): `effect` plus the already-published sibling
-// packages. The `@nerima-games/*` siblings are resolved as `file:` deps
-// pointing at this repository's own (already `pnpm install`-resolved)
-// node_modules entries, since fetching them would need GitHub Packages auth.
-// `effect` is left as its declared version so npm resolves it — and its own
-// transitive deps (`fast-check`, `pure-rand`) — from the public registry,
-// which needs no auth and is the only way to get a *consistent* dependency
-// tree without hand-walking effect's own dependency graph.
+// packages. Resolve them from this repository's pnpm installation so its local
+// sibling packages share one Effect module instance in the consumer probe.
+// Fetching the `@nerima-games/*` packages would need GitHub Packages auth; npm
+// still resolves Effect's transitive dependencies from its package manifest.
 const runtimeDependencyEntries = await Promise.all(
   Object.entries(manifest.dependencies ?? {}).map(async ([dependencyName, declaredVersion]) => {
-    if (!dependencyName.startsWith("@nerima-games/")) {
+    if (!dependencyName.startsWith("@nerima-games/") && dependencyName !== "effect") {
       return [dependencyName, declaredVersion];
     }
     const sourcePath = await realpath(join(root, "node_modules", ...dependencyName.split("/")));
