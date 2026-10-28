@@ -13,6 +13,7 @@ import type { ItemType } from '@nerima-games/mc-kernel'
 import * as fc from 'fast-check'
 import {
   DISPENSER_CONTAINER_CAPACITY,
+  ItemStackFailureSchema,
   itemStack,
   type Container,
   type ItemStackFailure,
@@ -317,6 +318,37 @@ describe('dispenser item action planning', () => {
         ),
         { numRuns: PROPERTY_RUN_COUNT },
       )
+    }),
+  )
+
+  it.effect('covers item-count boundaries and adjacent invalid counts', () =>
+    Effect.sync(() => {
+      for (const count of [1, 64]) {
+        const inventory = makeDispenser([[0, 'arrow', count]])
+        expect(Result.isSuccess(inventory)).toBe(true)
+        if (Result.isFailure(inventory)) return
+
+        const itemCountBefore = countContainerItems(inventory.success)
+        expect(itemCountBefore).toBe(count)
+        const outcome = planDispenserAction(inventory.success, 0)
+        expect(Result.isSuccess(outcome)).toBe(true)
+        if (Result.isFailure(outcome)) return
+
+        expect(Result.isSuccess(decodeStrictAction(outcome.success))).toBe(true)
+        expect(countContainerItems(inventory.success)).toBe(itemCountBefore)
+      }
+
+      for (const invalidCount of [0, 65]) {
+        const inventory = makeDispenser([[0, 'arrow', invalidCount]])
+        expect(Result.isFailure(inventory)).toBe(true)
+        if (Result.isFailure(inventory)) {
+          const decodedFailure = Schema.decodeUnknownResult(
+            ItemStackFailureSchema,
+            { onExcessProperty: 'error' },
+          )(inventory.failure)
+          expect(Result.isSuccess(decodedFailure)).toBe(true)
+        }
+      }
     }),
   )
 
