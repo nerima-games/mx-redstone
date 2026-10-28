@@ -1,71 +1,63 @@
 /**
  * The host boundary this repository's own stages never cross.
  *
- * The host-boundary split moves this file's responsibility out of mc-compose —
- * it used to be `apps/multiplayer-server/redstone-runtime.ts`,
- * hand-rolled per host — and into its real home. Classifying a block string
- * into a `RedstoneComponentSnapshot` is this repository's own component
- * roster (docs/responsibility.md §2-1: 「レッドストーン部品はどれか」という名簿は
- * ここに来る), not a host's; a host reimplementing that switch every time it
- * embeds mx-redstone was duplication this repository could remove.
+ * This responsibility moved from mc-compose's hand-rolled per-host runtime.
+ * Block classification belongs here; hosts supply decoded addresses, block
+ * names, local state reads, and request context.
  *
- * `RedstoneHostLookup` and `RedstoneHostWritePort` are exactly what the
- * mc-compose source's `MultiplayerServerCore` already provided — only the
- * shape moved to a named, host-agnostic Port, not the responsibility. This
- * repository still knows nothing of mx-multiplayer, mc-sim's entity/inventory
- * state, or any concrete world representation (docs/responsibility.md §2):
- * every write stays a callback the host supplies, and `readContainerSlots`
- * returning `undefined` here means exactly what it meant there — the
- * boundary recorded in `domain/comparator.ts`'s `ContainerSlot` doc comment,
- * not an error.
+ * `RedstoneHostLookup` and `RedstoneHostWritePort` keep the seam
+ * host-agnostic. This package does not own a concrete world representation or
+ * mx-multiplayer state. The request builder supplies owner candidates, world
+ * revisions, and an optional dimension-local `WorldWriteBatch`. An absent
+ * container slot reading means the host cannot read one, not that it is empty.
  *
- * Block-name vocabulary stays out of this file on purpose (same doc,
- * non-scope row 1): `applyLampTransition` / `applyDoorTransition` take a
- * boolean, never a block id, so the HOST — not this repository — decides
- * which literal block string a lit lamp or an open door actually is.
+ * Lamp and door transitions stay semantic booleans. The host decides the
+ * actual block id for a lit lamp or open door.
  *
- * Two gaps are carried over unchanged from the mc-compose source rather than
- * fixed here, because fixing either needs Port surface this repository does
- * not have yet and no host to verify a fix against:
- *   - `componentForBlock`'s `piston` case always reports `pistonFacing:
- *     'north'` and `pistonKind: 'sticky'`, regardless of the piston's actual
- *     placement — the source never tracked either.
- *   - `applyRedstoneHostEvents` drains but does not act on `'note-block'`
- *     trigger events or `'trapdoor'` powered-component transitions; no host
- *     operation for either existed in the source either.
+ * The former fixed piston facing/kind and dropped note-block/trapdoor events
+ * are handled here: lookup supplies the actual piston state, and every drained
+ * event category reaches the single C4/C7 request builder.
  *
- * `applyPistonTransitionEvent` commits `planPistonTransition`'s `'move'`
- * outcome directly, exactly as the mc-compose source did. An earlier version
- * of this file routed the commit through `domain/piston.ts`'s
- * `applyPistonPlan` (validate-then-commit) instead, on the theory that
- * defense-in-depth costs nothing. `pnpm test:coverage`'s 100% gate proved
- * that theory wrong: `validatePistonPlan` checks exactly the invariants
- * `planPistonTransition` already establishes by construction (fromState !==
- * toState, move directions matching `plan.facing`, no duplicate claims), so
- * the refusal branch was unreachable through this call path — DN-RS-11's
- * discipline (docs/testing.md §6-1) is what caught it.
+ * Piston planning remains in `domain/piston.ts`; the resulting plan is passed
+ * to the builder and committed with the other events. We do not duplicate
+ * `applyPistonPlan` validation because `planPistonTransition` establishes
+ * those invariants by construction (state changes, facing-consistent moves,
+ * and unique claims). The 100% `pnpm test:coverage` gate exposed that the
+ * separate refusal branch was unreachable through this host path, as recorded
+ * by DN-RS-11 and `docs/testing.md` §6-1.
  */
 import {
   type BlockCapabilityLookup,
   type PistonCellRead,
+  type PistonFacing,
   type PistonMovementPlan,
+  type PistonPosition,
   pistonPositionAt,
   planPistonTransition,
 } from '../domain/piston.js'
-import { type BlockRegistryResolutionFailure, blockIdOf, capabilityOfBlockId, isBlockType } from '@nerima-games/mc-kernel'
-import { Effect, Option, Result } from 'effect'
 import {
-  type HopperTransferEvent,
-  type LampTransition,
-  type PoweredComponentTransition,
+  BlockAxis,
+  type BlockAddress,
+  type BlockPosition,
+  type BlockType,
+  type BlockRegistryResolutionFailure,
+  BLOCK_TYPES,
+  blockIdOf,
+  capabilityOfBlockId,
+  isBlockType,
+} from '@nerima-games/mc-kernel'
+import type { WorldCommitCoordinatorApi, WorldCommitCoordinatorError, WorldCommitRequest } from '@nerima-games/mc-sim'
+import { Effect, Exit, Option, Result, Schema } from 'effect'
+import {
   type PoweredPistonTransition,
   type RedstoneComponentSnapshot,
-  type RedstonePosition,
-  type RedstoneTriggerEvent,
+  type RedstoneEventBatch,
   type RedstoneWorldRuntimeService,
   type RedstoneWorldSnapshot,
 } from './world-runtime.js'
 import type { ContainerSlot } from '../domain/comparator.js'
+
+type RedstoneDimensionId = BlockAddress['dimension']
 
 /** How far in front of a piston's base its head cell sits. */
 const PISTON_HEAD_DISTANCE = 1
@@ -99,10 +91,16 @@ export const kernelPistonCapabilities: BlockCapabilityLookup = {
   },
 }
 
-/** One block a host is offering for classification, at the position it occupies. */
+/** One decoded host block address and the block occupying it. */
+const REDSTONE_HOST_BLOCK_TYPES = [...BLOCK_TYPES, 'sticky_piston'] as const
+
+export type RedstoneHostBlockType = BlockType | 'sticky_piston'
+export const RedstoneHostBlockTypeSchema: Schema.Codec<RedstoneHostBlockType, RedstoneHostBlockType> =
+  Schema.Literals(REDSTONE_HOST_BLOCK_TYPES)
+
 export type RedstoneHostBlock = {
-  readonly block: string | null
-  readonly position: RedstonePosition
+  readonly address: BlockAddress
+  readonly block: RedstoneHostBlockType | null
 }
 
 /**
@@ -111,33 +109,39 @@ export type RedstoneHostBlock = {
  * repository cannot derive from the string alone.
  */
 export type RedstoneHostLookup = {
-  readonly isLeverActive: (position: RedstonePosition) => boolean
-  readonly isPoweredRailPowered: (position: RedstonePosition) => boolean
-  readonly readContainerSlots: (position: RedstonePosition) => ReadonlyArray<ContainerSlot> | undefined
-  readonly readPistonCell: (position: RedstonePosition) => PistonCellRead
+  readonly isLeverActive: (position: BlockPosition) => boolean
+  readonly isPoweredRailPowered: (position: BlockPosition) => boolean
+  readonly readContainerSlots: (position: BlockPosition) => ReadonlyArray<ContainerSlot> | undefined
+  readonly readPistonCell: (position: BlockPosition) => PistonCellRead
+  readonly readPistonFacing: (position: BlockPosition) => PistonFacing
 }
 
 /**
- * The writes this repository decides but does not itself perform
- * (docs/responsibility.md §1: レッドストーンは状態を持たない). Each method takes
- * the semantic outcome, never a block id — see the file header.
+ * The host supplies world context and builds the one request; this module
+ * stages semantic outcomes but does not choose block ids or write world state.
  */
-export type RedstoneHostWritePort = {
-  readonly applyDispenserTrigger: (position: RedstonePosition) => void
-  readonly applyDoorTransition: (position: RedstonePosition, open: boolean) => void
-  readonly applyDropperTrigger: (position: RedstonePosition) => void
-  readonly applyHopperTransfer: (position: RedstonePosition) => void
-  readonly applyLampTransition: (position: RedstonePosition, lit: boolean) => void
-  readonly applyPoweredRailTransition: (position: RedstonePosition, powered: boolean) => void
-  readonly commitPistonPlan: (plan: PistonMovementPlan) => void
+export type RedstoneHostWritePort<BuildError = never> = {
+  readonly buildCommitRequest: (
+    events: RedstoneEventBatch,
+    pistonPlans: ReadonlyArray<PistonMovementPlan>,
+  ) => Result.Result<WorldCommitRequest, BuildError>
+  readonly commit: WorldCommitCoordinatorApi['commit']
 }
 
-/** One dimension's worth of host boundary: how to read it, and how to write to it. */
+/** One dimension's worth of host reads, addressed by a decoded kernel id. */
 export type RedstoneHostRealm = {
-  readonly dimension: string
+  readonly dimension: RedstoneDimensionId
   readonly lookup: RedstoneHostLookup
-  readonly port: RedstoneHostWritePort
 }
+
+export type RedstoneHostEventFailure =
+  | Readonly<{ _tag: 'RedstoneHostMixedDimensions'; dimensions: ReadonlyArray<RedstoneDimensionId> }>
+  | Readonly<{ _tag: 'RedstoneHostRealmMissing'; dimension: RedstoneDimensionId }>
+
+export type RedstoneHostPositionFailure = Readonly<{
+  _tag: 'RedstoneHostPositionOutOfRange'
+  position: PistonPosition
+}>
 
 /** Includes `containerSlots` only when the host actually has a reading for this position. */
 const withContainerSlots = (
@@ -161,60 +165,70 @@ const pistonStateFromHead = (head: PistonCellRead): 'extended' | 'retracted' => 
   return 'retracted'
 }
 
+const blockPositionAt = (x: number, y: number, z: number): Result.Result<BlockPosition, RedstoneHostPositionFailure> => {
+  if (![x, y, z].every(Number.isSafeInteger)) {
+    return Result.fail({ _tag: 'RedstoneHostPositionOutOfRange', position: { x, y, z } })
+  }
+  return Result.succeed({ x: BlockAxis(x), y: BlockAxis(y), z: BlockAxis(z) })
+}
+
 const comparatorComponent = (
   lookup: RedstoneHostLookup,
-  position: RedstonePosition,
-): RedstoneComponentSnapshot => {
-  const inputFrom = { x: position.x, y: position.y, z: position.z + COMPARATOR_REAR_DISTANCE }
-  const outputTo = { x: position.x, y: position.y, z: position.z - COMPARATOR_REAR_DISTANCE }
-  const sideInputs = [
-    { x: position.x - COMPARATOR_SIDE_DISTANCE, y: position.y, z: position.z },
-    { x: position.x + COMPARATOR_SIDE_DISTANCE, y: position.y, z: position.z },
-  ]
-  return {
-    inputFrom,
-    kind: 'comparator',
-    mode: 'compare',
-    outputTo,
-    position,
-    sideInputs,
-    ...withContainerSlots(lookup.readContainerSlots(inputFrom)),
-  }
-}
+  position: BlockPosition,
+): Result.Result<RedstoneComponentSnapshot, RedstoneHostPositionFailure> =>
+  Result.gen(function* comparatorComponentGenerator() {
+    const inputFrom = yield* blockPositionAt(position.x, position.y, position.z + COMPARATOR_REAR_DISTANCE)
+    const outputTo = yield* blockPositionAt(position.x, position.y, position.z - COMPARATOR_REAR_DISTANCE)
+    const west = yield* blockPositionAt(position.x - COMPARATOR_SIDE_DISTANCE, position.y, position.z)
+    const east = yield* blockPositionAt(position.x + COMPARATOR_SIDE_DISTANCE, position.y, position.z)
+    return {
+      inputFrom,
+      kind: 'comparator',
+      mode: 'compare',
+      outputTo,
+      position,
+      sideInputs: [west, east],
+      ...withContainerSlots(lookup.readContainerSlots(inputFrom)),
+    }
+  })
 
 const pistonComponent = (
   lookup: RedstoneHostLookup,
-  position: RedstonePosition,
-): RedstoneComponentSnapshot => {
-  const head = lookup.readPistonCell(pistonPositionAt(position, 'north', PISTON_HEAD_DISTANCE))
-  return {
-    kind: 'piston',
-    pistonFacing: 'north',
-    pistonKind: 'sticky',
-    pistonState: pistonStateFromHead(head),
-    position,
-  }
+  position: BlockPosition,
+  block: RedstoneHostBlockType,
+): Result.Result<RedstoneComponentSnapshot, RedstoneHostPositionFailure> => {
+  const facing = lookup.readPistonFacing(position)
+  const headPosition = pistonPositionAt(position, facing, PISTON_HEAD_DISTANCE)
+  return Result.map(
+    blockPositionAt(headPosition.x, headPosition.y, headPosition.z),
+    (safeHeadPosition) => {
+      const head = lookup.readPistonCell(safeHeadPosition)
+      return {
+        kind: 'piston',
+        pistonFacing: facing,
+        pistonKind: block === 'sticky_piston' ? 'sticky' : 'normal',
+        pistonState: pistonStateFromHead(head),
+        position,
+      }
+    },
+  )
 }
 
-type ComponentBuilder = (lookup: RedstoneHostLookup, position: RedstonePosition) => RedstoneComponentSnapshot
+type ComponentBuilder = (
+  lookup: RedstoneHostLookup,
+  position: BlockPosition,
+  block: RedstoneHostBlockType,
+) => Result.Result<RedstoneComponentSnapshot, RedstoneHostPositionFailure>
 
 /** A builder for the block kinds whose component needs no host lookup at all. */
-const fixedKindComponent = (kind: RedstoneComponentSnapshot['kind']): ComponentBuilder => (_lookup, position) => ({
-  kind,
-  position,
-})
+const fixedKindComponent = (kind: RedstoneComponentSnapshot['kind']): ComponentBuilder => (_lookup, position) =>
+  Result.succeed({ kind, position })
 
-const poweredRailComponent: ComponentBuilder = (lookup, position) => ({
-  kind: 'powered-rail',
-  position,
-  powered: lookup.isPoweredRailPowered(position),
-})
+const poweredRailComponent: ComponentBuilder = (lookup, position) =>
+  Result.succeed({ kind: 'powered-rail', position, powered: lookup.isPoweredRailPowered(position) })
 
-const leverComponent: ComponentBuilder = (lookup, position) => ({
-  active: lookup.isLeverActive(position),
-  kind: 'lever',
-  position,
-})
+const leverComponent: ComponentBuilder = (lookup, position) =>
+  Result.succeed({ active: lookup.isLeverActive(position), kind: 'lever', position })
 
 /**
  * This repository's own component roster (docs/responsibility.md §2-1),
@@ -223,7 +237,7 @@ const leverComponent: ComponentBuilder = (lookup, position) => ({
  * block-name vocabulary tells this repository which STATE a lamp or door is
  * currently in, not that it should be classified any differently.
  */
-const COMPONENT_BUILDERS: Readonly<Record<string, ComponentBuilder>> = {
+const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, ComponentBuilder>>> = {
   comparator: comparatorComponent,
   dispenser: fixedKindComponent('dispenser'),
   door: fixedKindComponent('door'),
@@ -232,6 +246,7 @@ const COMPONENT_BUILDERS: Readonly<Record<string, ComponentBuilder>> = {
   hopper: fixedKindComponent('hopper'),
   lever: leverComponent,
   piston: pistonComponent,
+  sticky_piston: pistonComponent,
   powered_rail: poweredRailComponent,
   redstone_lamp: fixedKindComponent('lamp'),
   redstone_lamp_lit: fixedKindComponent('lamp'),
@@ -241,23 +256,22 @@ const COMPONENT_BUILDERS: Readonly<Record<string, ComponentBuilder>> = {
 
 /**
  * Classifies one host block into this repository's component roster, or
- * `undefined` when the block plays no redstone role. Ported from the
- * mc-compose source's `componentForBlock` — see the file header for the two
- * gaps carried over unchanged.
+ * `undefined` when the block plays no redstone role. Piston facing and kind
+ * come from host reads; see the file header for the event batch boundary.
  */
 export const componentForBlock = (
   lookup: RedstoneHostLookup,
-  block: string | null,
-  position: RedstonePosition,
-): RedstoneComponentSnapshot | undefined => {
+  block: RedstoneHostBlockType | null,
+  position: BlockPosition,
+): Result.Result<RedstoneComponentSnapshot | undefined, RedstoneHostPositionFailure> => {
   if (block === null) {
-    return
+    return Result.succeed(undefined)
   }
   const builder = COMPONENT_BUILDERS[block]
   if (typeof builder === 'undefined') {
-    return
+    return Result.succeed(undefined)
   }
-  return builder(lookup, position)
+  return builder(lookup, position, block)
 }
 
 /**
@@ -268,95 +282,55 @@ export const componentForBlock = (
 export const redstoneSnapshotFromRealm = (
   realm: RedstoneHostRealm,
   blocks: ReadonlyArray<RedstoneHostBlock>,
-): RedstoneWorldSnapshot => ({
-  components: blocks.flatMap(({ block, position }) => {
-    const component = componentForBlock(realm.lookup, block, position)
-    if (typeof component === 'undefined') {
-      return []
+): Result.Result<RedstoneWorldSnapshot, RedstoneHostPositionFailure> => {
+  return Result.gen(function* redstoneSnapshotFromRealmGenerator() {
+    const components: Array<RedstoneComponentSnapshot> = []
+    for (const { address, block } of blocks) {
+      const component = yield* componentForBlock(realm.lookup, block, address.position)
+      if (typeof component !== 'undefined') {
+        components.push(component)
+      }
     }
-    return [component]
-  }),
-  dimension: realm.dimension,
-})
-
-const applyHopperTransferEvent = (
-  realms: ReadonlyMap<string, RedstoneHostRealm>,
-  event: HopperTransferEvent,
-): void => {
-  realms.get(event.dimension)?.port.applyHopperTransfer(event.position)
+    return { components, dimension: realm.dimension }
+  })
 }
 
-/** `dispenser` and `dropper` are handled; `note-block` is drained and dropped — see the file header. */
-const applyTriggerEvent = (
-  realms: ReadonlyMap<string, RedstoneHostRealm>,
-  event: RedstoneTriggerEvent,
-): void => {
-  const realm = realms.get(event.dimension)
-  if (typeof realm === 'undefined') {
-    return
-  }
-  if (event.kind === 'dispenser') {
-    realm.port.applyDispenserTrigger(event.position)
-    return
-  }
-  if (event.kind === 'dropper') {
-    realm.port.applyDropperTrigger(event.position)
-  }
-}
-
-const applyLampTransitionEvent = (
-  realms: ReadonlyMap<string, RedstoneHostRealm>,
-  event: LampTransition,
-): void => {
-  realms.get(event.dimension)?.port.applyLampTransition(event.position, event.lit)
-}
-
-/** `door` and `powered-rail` are handled; `trapdoor` is drained and dropped — see the file header. */
-const applyPoweredComponentTransitionEvent = (
-  realms: ReadonlyMap<string, RedstoneHostRealm>,
-  event: PoweredComponentTransition,
-): void => {
-  const realm = realms.get(event.dimension)
-  if (typeof realm === 'undefined') {
-    return
-  }
-  if (event.kind === 'door') {
-    realm.port.applyDoorTransition(event.position, event.powered)
-    return
-  }
-  if (event.kind === 'powered-rail') {
-    realm.port.applyPoweredRailTransition(event.position, event.powered)
-  }
-}
-
-const applyPistonTransitionEvent = (
-  realms: ReadonlyMap<string, RedstoneHostRealm>,
+const planPistonTransitionEvent = (
+  realms: ReadonlyMap<RedstoneDimensionId, RedstoneHostRealm>,
   event: PoweredPistonTransition,
-): Effect.Effect<void, BlockRegistryResolutionFailure> => {
+): Effect.Effect<
+  PistonMovementPlan | undefined,
+  BlockRegistryResolutionFailure | RedstoneHostEventFailure | RedstoneHostPositionFailure
+> => {
   const realm = realms.get(event.dimension)
   if (typeof realm === 'undefined') {
-    return Effect.void
+    return Effect.succeed(undefined)
   }
-  const outcome = planPistonTransition(event, { read: realm.lookup.readPistonCell }, kernelPistonCapabilities)
+  let outOfRangeFailure: RedstoneHostPositionFailure | undefined
+  const outcome = planPistonTransition(event, {
+    read: (position) => {
+      const safePosition = blockPositionAt(position.x, position.y, position.z)
+      if (Result.isFailure(safePosition)) {
+        outOfRangeFailure = safePosition.failure
+        return { kind: 'out-of-world' }
+      }
+      return realm.lookup.readPistonCell(safePosition.success)
+    },
+  }, kernelPistonCapabilities)
+  if (typeof outOfRangeFailure !== 'undefined') {
+    return Effect.fail(outOfRangeFailure)
+  }
   if (outcome.kind === 'failed') {
     return Effect.fail(outcome.failure)
   }
   if (outcome.kind !== 'move') {
-    return Effect.void
+    return Effect.succeed(undefined)
   }
-  return Effect.sync(() => realm.port.commitPistonPlan(outcome.plan))
+  return Effect.succeed(outcome.plan)
 }
 
-type DrainedRedstoneEvents = {
-  readonly hopper: ReadonlyArray<HopperTransferEvent>
-  readonly lamp: ReadonlyArray<LampTransition>
-  readonly piston: ReadonlyArray<PoweredPistonTransition>
-  readonly powered: ReadonlyArray<PoweredComponentTransition>
-  readonly trigger: ReadonlyArray<RedstoneTriggerEvent>
-}
-
-/** One `Effect.all` for all five queues, so `applyRedstoneHostEvents` reads as drain-then-apply. */
-const drainRedstoneEvents = (runtime: RedstoneWorldRuntimeService): Effect.Effect<DrainedRedstoneEvents> =>
+/** Gathers all five queues, including note-block and trapdoor events, before preflight. */
+const drainRedstoneEvents = (runtime: RedstoneWorldRuntimeService): Effect.Effect<RedstoneEventBatch> =>
   Effect.gen(function* drainRedstoneEventsGenerator() {
     const [hopper, trigger, lamp, powered, piston] = yield* Effect.all([
       runtime.drainHopperTransferEvents,
@@ -368,42 +342,81 @@ const drainRedstoneEvents = (runtime: RedstoneWorldRuntimeService): Effect.Effec
     return { hopper, lamp, piston, powered, trigger }
   })
 
-/** The four event kinds a realm's `port` applies synchronously — every kind but the piston plan. */
-const applySynchronousEvents = (
-  byDimension: ReadonlyMap<string, RedstoneHostRealm>,
-  events: DrainedRedstoneEvents,
-): void => {
-  for (const event of events.hopper) {
-    applyHopperTransferEvent(byDimension, event)
-  }
-  for (const event of events.trigger) {
-    applyTriggerEvent(byDimension, event)
-  }
-  for (const event of events.lamp) {
-    applyLampTransitionEvent(byDimension, event)
-  }
-  for (const event of events.powered) {
-    applyPoweredComponentTransitionEvent(byDimension, event)
-  }
-}
+const eventDimensions = (events: RedstoneEventBatch): ReadonlyArray<RedstoneDimensionId> =>
+  [...new Set([
+    ...events.hopper.map((event) => event.dimension),
+    ...events.lamp.map((event) => event.dimension),
+    ...events.piston.map((event) => event.dimension),
+    ...events.powered.map((event) => event.dimension),
+    ...events.trigger.map((event) => event.dimension),
+  ])]
+
+const redstoneEventBatchIsEmpty = (events: RedstoneEventBatch): boolean =>
+  events.hopper.length + events.lamp.length + events.piston.length + events.powered.length + events.trigger.length === 0
+
+const commitRedstoneEvents = <BuildError>(
+  realms: ReadonlyArray<RedstoneHostRealm>,
+  events: RedstoneEventBatch,
+  port: RedstoneHostWritePort<BuildError>,
+): Effect.Effect<
+  void,
+  BlockRegistryResolutionFailure | RedstoneHostEventFailure | RedstoneHostPositionFailure | BuildError | WorldCommitCoordinatorError
+> =>
+  Effect.gen(function* commitRedstoneEventsGenerator() {
+    const dimensions = eventDimensions(events)
+    if (dimensions.length > 1) {
+      return yield* Effect.fail<RedstoneHostEventFailure>({ _tag: 'RedstoneHostMixedDimensions', dimensions })
+    }
+    const [dimension] = dimensions
+    if (typeof dimension === 'undefined') {
+      return
+    }
+    const realm = realms.find((candidate) => candidate.dimension === dimension)
+    if (typeof realm === 'undefined') {
+      return yield* Effect.fail<RedstoneHostEventFailure>({ _tag: 'RedstoneHostRealmMissing', dimension })
+    }
+    const byDimension = new Map([[realm.dimension, realm]])
+    const plannedPistons = yield* Effect.forEach(events.piston, (event) =>
+      planPistonTransitionEvent(byDimension, event),
+    )
+    const pistonPlans = plannedPistons.filter((plan): plan is PistonMovementPlan => typeof plan !== 'undefined')
+    const commitEvents: RedstoneEventBatch = {
+      ...events,
+      piston: events.piston.filter((_, index) => typeof plannedPistons[index] !== 'undefined'),
+    }
+    if (redstoneEventBatchIsEmpty(commitEvents)) {
+      return
+    }
+    const built = port.buildCommitRequest(commitEvents, pistonPlans)
+    if (Result.isFailure(built)) {
+      return yield* Effect.fail(built.failure)
+    }
+    yield* port.commit(built.success)
+  })
 
 /**
- * Drains every queue `RedstoneWorldRuntimeService` accumulated and applies
- * each event through the realm it named — the replacement for the
- * mc-compose source's per-tick drain-then-switch block. Call this after
- * running this repository's registered stages for the frame (`redstone:power`
- * then `redstone:effects`); `runtime.syncSnapshot` still runs first, via
- * `redstoneSnapshotFromRealm`.
+ * Drains every queue accumulated by `RedstoneWorldRuntime` and passes all
+ * event categories to one request builder and coordinator commit. Call this
+ * after the registered redstone stages (`redstone:power`, then
+ * `redstone:effects`); `runtime.syncSnapshot` runs first through
+ * `redstoneSnapshotFromRealm`. The batch is restored after a failed or
+ * interrupted preflight/build/commit.
  */
-export const applyRedstoneHostEvents = (
+export const applyRedstoneHostEvents = <BuildError>(
   runtime: RedstoneWorldRuntimeService,
   realms: ReadonlyArray<RedstoneHostRealm>,
-): Effect.Effect<void, BlockRegistryResolutionFailure> =>
-  Effect.gen(function* applyRedstoneHostEventsGenerator() {
-    const byDimension = new Map(realms.map((realm) => [realm.dimension, realm] as const))
-    const events = yield* drainRedstoneEvents(runtime)
-    applySynchronousEvents(byDimension, events)
-    yield* Effect.forEach(events.piston, (event) => applyPistonTransitionEvent(byDimension, event), {
-      discard: true,
-    })
-  })
+  port: RedstoneHostWritePort<BuildError>,
+): Effect.Effect<
+  void,
+  BlockRegistryResolutionFailure | RedstoneHostEventFailure | RedstoneHostPositionFailure | BuildError | WorldCommitCoordinatorError
+> =>
+  Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* applyRedstoneHostEventsGenerator() {
+      const events = yield* drainRedstoneEvents(runtime)
+      const result = yield* Effect.exit(restore(commitRedstoneEvents(realms, events, port)))
+      if (Exit.isFailure(result)) {
+        yield* runtime.restoreEvents(events)
+        return yield* Effect.failCause(result.cause)
+      }
+    }),
+  )

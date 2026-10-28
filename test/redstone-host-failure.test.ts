@@ -1,10 +1,13 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option, Result } from 'effect'
+import { Effect, Option, Result, Schema } from 'effect'
 import {
   AIR_BLOCK_ID,
+  BlockPositionSchema,
+  DimensionIdSchema,
   capabilityOfBlockId,
   blockIdOf,
   DeltaTimeSecs,
+  type BlockPosition,
   type BlockRegistryResolutionFailure,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
@@ -13,6 +16,7 @@ import {
   applyRedstoneHostEvents,
   kernelPistonCapabilities,
   type RedstoneHostRealm,
+  type RedstoneHostWritePort,
 } from '../src/application/redstone-host-port'
 import {
   RedstoneWorldRuntime,
@@ -37,6 +41,11 @@ const capabilityResolutionFailure: BlockRegistryResolutionFailure = {
   reason: 'unknown-key',
   message: 'The capability registry could not resolve pistonImmovable',
 }
+
+const dimensionId = (value: string): RedstoneHostRealm['dimension'] =>
+  Schema.decodeUnknownSync(DimensionIdSchema)(value)
+const blockPosition = (x: number, y: number, z: number): BlockPosition =>
+  Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
 
 const stageById = (stages: ReadonlyArray<StageRegistration>, id: string): StageRegistration => {
   const stage = stages.find((candidate) => candidate.id === id)
@@ -69,45 +78,50 @@ describe('kernel capability registry failures at the host boundary', () => {
 
       const runtime = yield* RedstoneWorldRuntime
       const stages = yield* makeRuntimeRedstoneStages
-      let committedPlans = 0
+      let buildCalls = 0
+      let commitCalls = 0
       const realm: RedstoneHostRealm = {
-        dimension: 'overworld',
+        dimension: dimensionId('overworld'),
         lookup: {
           isLeverActive: () => false,
           isPoweredRailPowered: () => false,
           readContainerSlots: () => undefined,
           readPistonCell: () => ({ kind: 'block', block: 'bedrock' }),
+          readPistonFacing: () => 'south',
         },
-        port: {
-          applyDispenserTrigger: () => undefined,
-          applyDoorTransition: () => undefined,
-          applyDropperTrigger: () => undefined,
-          applyHopperTransfer: () => undefined,
-          applyLampTransition: () => undefined,
-          applyPoweredRailTransition: () => undefined,
-          commitPistonPlan: () => { committedPlans += 1 },
+      }
+
+      const port: RedstoneHostWritePort<BlockRegistryResolutionFailure> = {
+        buildCommitRequest: () => {
+          buildCalls += 1
+          return Result.fail(capabilityResolutionFailure)
+        },
+        commit: () => {
+          commitCalls += 1
+          return Effect.never
         },
       }
 
       yield* runtime.syncSnapshot({
-        dimension: 'overworld',
+        dimension: dimensionId('overworld'),
         components: [
-          { active: true, kind: 'lever', position: { x: 0, y: 0, z: 0 } },
+          { active: true, kind: 'lever', position: blockPosition(0, 0, 0) },
           {
             kind: 'piston',
             pistonFacing: 'south',
             pistonKind: 'normal',
             pistonState: 'retracted',
-            position: { x: 0, y: 0, z: -1 },
+            position: blockPosition(0, 0, -1),
           },
         ],
       })
       yield* runFrame(stages)
 
-      const result = yield* Effect.result(applyRedstoneHostEvents(runtime, [realm]))
+      const result = yield* Effect.result(applyRedstoneHostEvents(runtime, [realm], port))
 
       expect(result).toStrictEqual(Result.fail(capabilityResolutionFailure))
-      expect(committedPlans).toBe(0)
+      expect(buildCalls).toBe(0)
+      expect(commitCalls).toBe(0)
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 })
