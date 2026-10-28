@@ -1,11 +1,11 @@
+import { Effect, Schema } from 'effect'
 import {
-  IntentQueue,
-  IntentSchema,
   type Intent,
+  IntentQueue,
   type IntentQueueFull,
+  IntentSchema,
   type IntentSequence,
 } from '@nerima-games/mc-sim'
-import { Effect, Schema } from 'effect'
 
 export type RedstoneTargetedPayload = Extract<
   Intent['payload'],
@@ -27,26 +27,27 @@ export type RedstoneIntentIngressFailure =
   | Schema.SchemaError
 
 const isTargetedIntent = (intent: Intent): intent is RedstoneTargetedIntent =>
-  intent.payload._tag === 'UseBlock' || intent.payload._tag === 'UseItemOnBlock'
+  intent.payload['_tag'] === 'UseBlock' || intent.payload['_tag'] === 'UseItemOnBlock'
 
 export const decodeRedstoneTargetedIntent = (
   input: unknown,
 ): Effect.Effect<RedstoneTargetedIntent, Schema.SchemaError | RedstoneIntentNotTargeted> =>
   Schema.decodeUnknownEffect(IntentSchema)(input).pipe(
-    Effect.flatMap((intent) =>
-      isTargetedIntent(intent)
-        ? Effect.succeed(intent)
-        : Effect.fail<RedstoneIntentNotTargeted>({
-            _tag: 'RedstoneIntentNotTargeted',
-            intentTag: intent.payload._tag,
-          }),
-    ),
+    Effect.flatMap((intent) => {
+      if (isTargetedIntent(intent)) {
+        return Effect.succeed(intent)
+      }
+      return Effect.fail<RedstoneIntentNotTargeted>({
+        _tag: 'RedstoneIntentNotTargeted',
+        intentTag: intent.payload['_tag'],
+      })
+    }),
   )
 
 export const enqueueRedstoneIntent = (
   input: unknown,
 ): Effect.Effect<IntentSequence, RedstoneIntentIngressFailure, IntentQueue> =>
-  Effect.gen(function* () {
+  Effect.gen(function* enqueueRedstoneIntentGenerator() {
     const intent = yield* decodeRedstoneTargetedIntent(input)
     const queue = yield* IntentQueue
 
