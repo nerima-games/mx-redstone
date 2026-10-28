@@ -57,20 +57,20 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm test"
   },
   "dependencies": {
-    "@nerima-games/mc-kernel": "0.8.0",
-    "@nerima-games/mc-sim": "0.5.0",
-    "@nerima-games/mc-worldgen": "0.5.0",
-    "effect": "3.22.1"
+    "@nerima-games/mc-kernel": "0.11.0",
+    "@nerima-games/mc-sim": "0.6.0",
+    "@nerima-games/mc-worldgen": "0.7.0",
+    "effect": "4.0.5"
   },
   "devDependencies": {
     "@changesets/changelog-github": "1.0.1",
     "@changesets/cli": "3.0.3",
-    "@effect/vitest": "0.30.0",
+    "@effect/vitest": "4.0.5",
     "@types/node": "26.6.5",
-    "@vitest/coverage-v8": "4.1.11",
+    "@vitest/coverage-v8": "5.0.5",
     "knip": "6.42.1",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vitest": "4.1.11"
+    "vitest": "5.0.5"
   }
 }
