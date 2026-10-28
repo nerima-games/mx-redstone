@@ -98,10 +98,10 @@ mx-redstone は最後から 4 番目のグループにいる。前段の公開�
 
 | 本来 | 現在 |
 | --- | --- |
-| `import type { StageRegistration } from '@nerima-games/mc-kernel'` | mc-kernel 0.11.0 の正本を直接利用 |
+| `import type { StageRegistration } from '@nerima-games/mc-kernel'` | mc-kernel 0.14.0 の正本を直接利用 |
 | 3D world position / key | circuit graph は 2D four-neighbour grid のため `domain/position-key.ts` の文字列 key を維持 |
 | kernel capability lookup | domain の `BlockCapabilityLookup` を維持し、host adapter が block 名を `BlockId` に解決して kernel accessor を呼ぶ |
-| mc-sim / mc-worldgen | 0.6.0 / 0.7.0 を pin。`HopperService` と C7 batch contract は公開済みだが、redstone callback はまだ接続していない |
+| mc-sim / mc-worldgen | 0.7.1 / 0.7.0 を pin。`HopperService` と C7 batch contract は公開済みだが、redstone callback はまだ接続していない |
 
 npm 公開・バージョン bump 運用は**界面が実際に上位階層(mc-compose)に消費され、動作確認が完了するまで開始しない**。
 1.0.0 への昇格を含め、日数計測ベースの自動フリーズゲート(旧「API ロック 4 週間無変更」)は採用せず、
@@ -168,7 +168,7 @@ PATCH で済む世界の差は、本リポジトリの実装期間を通じて�
 
 ## 6. kernel 連携と維持する domain seam
 
-mx-redstone は `@nerima-games/mc-kernel@0.11.0` を pin する。stage contract は kernel から直接 import し、
+mx-redstone は `@nerima-games/mc-kernel@0.14.0` を pin する。stage contract は kernel から直接 import し、
 mx-redstone が所有しない語彙として root barrel からは再 export しない。
 
 次の 2 型は役割が異なるため、mx-redstone に残す。

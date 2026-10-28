@@ -115,9 +115,10 @@ const PISTON_HEAD_ADDRESS: BlockAddress = Schema.decodeUnknownSync(BlockAddressS
 })
 const VANILLA_HOPPER_CADENCE_FIXTURE = {
   edition: 'Java Edition',
+  version: '26.3',
   source: 'https://minecraft.wiki/w/Hopper',
   cooldownGameTicks: 8,
-  poweredPauseGameTicks: 20,
+  poweredGameTicksAfterOneRemaining: 20,
   unpoweredTicksToCoolingDown: 7,
   finalUnpoweredTicks: 1,
 } as const
@@ -400,10 +401,11 @@ const makeHopperTransferScenario = (
   })
 
 describe('HopperService transfer properties', () => {
-  it.effect('matches the Java Edition hopper cooldown while powered ticks pause it', () =>
+  it.effect('matches the Java Edition hopper cooldown while powered ticks reduce it without transferring', () =>
     Effect.sync(() => {
       expect(VANILLA_HOPPER_CADENCE_FIXTURE).toMatchObject({
         edition: 'Java Edition',
+        version: '26.3',
         source: 'https://minecraft.wiki/w/Hopper',
         cooldownGameTicks: 8,
       })
@@ -437,22 +439,26 @@ describe('HopperService transfer properties', () => {
           Effect.runSync(scenario.coordinator.commit(cooldownRequest))
 
           const oneTickRemaining = Effect.runSync(scenario.makeTransferTickPlanSnapshot())
-          const poweredPause = Effect.runSync(
+          const poweredCooldownAdvance = Effect.runSync(
             scenario.hopper.planTransferTick(
               oneTickRemaining,
               Schema.decodeUnknownSync(HopperElapsedTicksSchema, strictDecode)(
-                VANILLA_HOPPER_CADENCE_FIXTURE.poweredPauseGameTicks,
+                VANILLA_HOPPER_CADENCE_FIXTURE.poweredGameTicksAfterOneRemaining,
               ),
               true,
             ),
           )
-          expect(poweredPause.result).toStrictEqual({ _tag: 'Disabled' })
-          expect(poweredPause.changes).toStrictEqual([])
-          expect(Effect.runSync(scenario.snapshotHopper()).hoppers[0]?.cooldownTicks).toBe(1)
+          expect(poweredCooldownAdvance.result).toStrictEqual({ _tag: 'Disabled' })
+          expect(poweredCooldownAdvance.changes).not.toStrictEqual([])
+          const poweredCooldownRequest = Effect.runSync(
+            Effect.fromResult(mergeWorldCommitPlans([poweredCooldownAdvance])),
+          )
+          Effect.runSync(scenario.coordinator.commit(poweredCooldownRequest))
+          expect(Effect.runSync(scenario.snapshotHopper()).hoppers[0]?.cooldownTicks).toBe(0)
 
           const finalUnpoweredTick = Effect.runSync(
             scenario.hopper.planTransferTick(
-              oneTickRemaining,
+              Effect.runSync(scenario.makeTransferTickPlanSnapshot()),
               Schema.decodeUnknownSync(HopperElapsedTicksSchema, strictDecode)(
                 VANILLA_HOPPER_CADENCE_FIXTURE.finalUnpoweredTicks,
               ),
@@ -470,6 +476,45 @@ describe('HopperService transfer properties', () => {
         }),
         { numRuns: PROPERTY_RUN_COUNT },
       )
+    }),
+  )
+
+  it.effect('reduces a powered hopper cooldown from three game ticks to two', () =>
+    Effect.sync(() => {
+      const scenario = Effect.runSync(makeHopperTransferScenario(8))
+      const firstTransfer = Effect.runSync(
+        scenario.hopper.transfer(scenario.makeRequest(scenario.blockWrite)),
+      )
+      expect(firstTransfer._tag).toBe('Committed')
+
+      const threeTicksRemaining = Effect.runSync(
+        scenario.hopper.planTransferTick(
+          Effect.runSync(scenario.makeTransferTickPlanSnapshot()),
+          Schema.decodeUnknownSync(HopperElapsedTicksSchema, strictDecode)(5),
+          false,
+        ),
+      )
+      expect(threeTicksRemaining.result).toMatchObject({ _tag: 'CoolingDown', ticks: 3 })
+      const cooldownRequest = Effect.runSync(
+        Effect.fromResult(mergeWorldCommitPlans([threeTicksRemaining])),
+      )
+      Effect.runSync(scenario.coordinator.commit(cooldownRequest))
+
+      const storageBeforePoweredTick = Effect.runSync(scenario.snapshotStorage())
+      const poweredTick = Effect.runSync(
+        scenario.hopper.planTransferTick(
+          Effect.runSync(scenario.makeTransferTickPlanSnapshot()),
+          Schema.decodeUnknownSync(HopperElapsedTicksSchema, strictDecode)(1),
+          true,
+        ),
+      )
+      const poweredTickRequest = Effect.runSync(
+        Effect.fromResult(mergeWorldCommitPlans([poweredTick])),
+      )
+      Effect.runSync(scenario.coordinator.commit(poweredTickRequest))
+
+      expect(Effect.runSync(scenario.snapshotHopper()).hoppers[0]?.cooldownTicks).toBe(2)
+      expect(Effect.runSync(scenario.snapshotStorage())).toStrictEqual(storageBeforePoweredTick)
     }),
   )
 
