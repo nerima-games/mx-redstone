@@ -18,7 +18,7 @@
  * the two beside it (the SIDES). What it does with them depends on a mode the
  * player toggles by right-clicking it:
  *
- *   - `compare`  — pass the rear through, but only while it beats every side.
+ *   - `compare`  — pass the rear through when it is at least as strong as every side.
  *   - `subtract` — pass rear minus the strongest side, floored at zero.
  *
  * Reference: `packages/entity/domain/redstone/redstone-simulation.ts:319-323`

@@ -26,7 +26,7 @@ import { MAX_POWER_LEVEL } from '../src/domain/signal-level'
 const LEVELS = Array.from({ length: MAX_POWER_LEVEL + 1 }, (_, level) => level)
 
 describe('comparator arithmetic', () => {
-  it.effect('compare mode passes the rear through exactly when no side beats it', () =>
+  it.effect('compare mode passes the rear through when it is at least as strong as every side', () =>
     Effect.sync(() => {
       // The whole 16 x 16 space, both directions of the comparison, asserted
       // against the rule rather than against a table — a table would be the same
