@@ -375,8 +375,8 @@ describe('redstoneSnapshotFromRealm', () => {
 
   it.effect('returns the typed range failure instead of omitting a comparator at an unrepresentable neighbor', () =>
     Effect.sync(() => {
-      const realm: RedstoneHostRealm = { dimension: dimensionId('overworld'), lookup: missingLookup }
-      expect(redstoneSnapshotFromRealm(realm, [block('comparator', Number.MAX_SAFE_INTEGER)])).toStrictEqual(
+      const testRealm: RedstoneHostRealm = { dimension: dimensionId('overworld'), lookup: missingLookup }
+      expect(redstoneSnapshotFromRealm(testRealm, [block('comparator', Number.MAX_SAFE_INTEGER)])).toStrictEqual(
         Result.fail({
           _tag: 'RedstoneHostPositionOutOfRange',
           position: { x: Number.MAX_SAFE_INTEGER + 1, y: 0, z: 0 },

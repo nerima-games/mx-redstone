@@ -15,7 +15,6 @@ import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from 
 import { MAX_POWER_LEVEL, powerAt, type CircuitBoard, type Component } from '../src/domain/power-graph'
 import {
   makeRedstoneFrameState,
-  makeRuntimeRedstoneStages,
   makeRedstoneStages,
   MAX_TICKS_PER_FRAME,
   redstoneModule,
@@ -376,16 +375,18 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
-  it.effect('its frameStages IS the registration Effect this file already exported', () =>
+  it.effect('builds the declared frame stages through the GameModule and remains re-entrant', () =>
     Effect.gen(function* () {
-      expect(redstoneModule.frameStages).toBe(makeRuntimeRedstoneStages)
       expect(redstoneModule.layers).toBe(RedstoneWorldRuntimeLayer)
 
       // ...and it is re-entrant: two builds share no state, which is why it was
       // an Effect in the first place (plan.md §3.8 on app-scope singletons).
       const first = yield* redstoneModule.frameStages.pipe(Effect.provide(redstoneModule.layers))
       const second = yield* redstoneModule.frameStages.pipe(Effect.provide(redstoneModule.layers))
+      const expectedStageIds = [REDSTONE_STAGE_IDS.power, REDSTONE_STAGE_IDS.effects]
       expect(first).not.toBe(second)
+      expect(first.map((stage) => stage.id)).toStrictEqual(expectedStageIds)
+      expect(second.map((stage) => stage.id)).toStrictEqual(expectedStageIds)
     }),
   )
 
