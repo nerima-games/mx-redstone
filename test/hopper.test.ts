@@ -48,6 +48,7 @@ import {
   HOPPER_TRANSFER_COOLDOWN_GAME_TICKS,
   HOPPER_TRANSFER_ITEMS,
   HOPPER_TRANSFER_PERIOD_TICKS,
+  HopperTransferDueRequestSchema,
   HopperTransferSelectionRequestSchema,
   HopperTransferSelectionOutcomeSchema,
   hopperTransferDue,
@@ -245,6 +246,22 @@ describe('hopper timing', () => {
         }
       }
       expect(transferLocalTicks).toStrictEqual([0, 4, 8, 12])
+    }),
+  )
+
+  it.effect('rejects invalid compatibility tick counts through its request schema', () =>
+    Effect.sync(() => {
+      for (const ticksSinceTransfer of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const input = { powered: false, ticksSinceTransfer }
+        expect(
+          Result.isFailure(
+            Schema.decodeUnknownResult(HopperTransferDueRequestSchema, {
+              onExcessProperty: 'error',
+            })(input),
+          ),
+        ).toBe(true)
+        expect(hopperTransferDue(input)).toBe(false)
+      }
     }),
   )
 

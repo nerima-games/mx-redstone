@@ -37,7 +37,11 @@
  * that ignores its lock is not a slow hopper; it is a hopper that cannot be used
  * as a filter, and every sorting machine in the game is a filter.
  */
-import { type BlockAddress, BlockAddressSchema } from '@nerima-games/mc-kernel'
+import {
+  type BlockAddress,
+  BlockAddressSchema,
+  NonNegativeTickCount,
+} from '@nerima-games/mc-kernel'
 import {
   type ContainerKind,
   HOPPER_TRANSFER_COOLDOWN_TICKS,
@@ -111,12 +115,42 @@ export const isHopperLocked = (powered: boolean): boolean => powered
  * This helper does not own or advance cooldown state; the runtime must use
  * HopperService state when it completes the migration.
  */
-export const hopperTransferDue = (options: {
-  readonly powered: boolean
-  readonly ticksSinceTransfer: number
-}): boolean =>
-  !isHopperLocked(options.powered) &&
-  options.ticksSinceTransfer >= HOPPER_TRANSFER_PERIOD_TICKS
+const NonNegativeTickCountSchema: schema.Codec<NonNegativeTickCount, number> = schema.fromBrand(
+  'NonNegativeTickCount',
+  NonNegativeTickCount,
+)(schema.Number)
+
+export type HopperTransferDueRequest = Readonly<{
+  powered: boolean
+  ticksSinceTransfer: NonNegativeTickCount
+}>
+
+export type HopperTransferDueRequestInput = Readonly<{
+  powered: boolean
+  ticksSinceTransfer: schema.Codec.Encoded<typeof NonNegativeTickCountSchema>
+}>
+
+export const HopperTransferDueRequestSchema: schema.Codec<
+  HopperTransferDueRequest,
+  HopperTransferDueRequestInput
+> = schemaStruct({
+  powered: schema.Boolean,
+  ticksSinceTransfer: NonNegativeTickCountSchema,
+})
+
+export const hopperTransferDue = (options: HopperTransferDueRequestInput): boolean => {
+  const decoded = schema.decodeUnknownResult(HopperTransferDueRequestSchema, {
+    onExcessProperty: 'error',
+  })(options)
+  if (Result.isFailure(decoded)) {
+    return false
+  }
+
+  return (
+    !isHopperLocked(decoded.success.powered) &&
+    decoded.success.ticksSinceTransfer >= HOPPER_TRANSFER_PERIOD_TICKS
+  )
+}
 
 export type HopperAdjacentContainer = Readonly<{
   address: BlockAddress
