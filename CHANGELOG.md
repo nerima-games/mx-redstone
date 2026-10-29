@@ -1,5 +1,11 @@
 # @nerima-games/mx-redstone
 
+## 0.6.0
+
+### Minor Changes
+
+- Pin `@nerima-games/mc-sim` to `0.9.0` and `@nerima-games/mc-worldgen` to `0.8.0`.
+
 ## 0.5.0
 
 ### Minor Changes
