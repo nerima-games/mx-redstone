@@ -184,8 +184,8 @@ importers:
         specifier: 0.8.0
         version: 0.8.0
       effect:
-        specifier: 4.0.5
-        version: 4.0.5
+        specifier: 4.0.6
+        version: 4.0.6
     devDependencies:
       '@changesets/changelog-github':
         specifier: 1.0.1
@@ -195,7 +195,7 @@ importers:
         version: 3.0.3
       '@effect/vitest':
         specifier: 4.0.5
-        version: 4.0.5(effect@4.0.5)(vitest@5.0.5)
+        version: 4.0.5(effect@4.0.6)(vitest@5.0.5)
       '@types/node':
         specifier: 26.6.5
         version: 26.6.5
@@ -1102,6 +1102,9 @@ packages:
   effect@4.0.5:
     resolution: {integrity: sha512-BY4/28NlpOd99yzmV741xbVGmp+1U7tks4oB7F/Png64bTa5tm5eCA6W0RiXsnuLDDoJpjfVSo4Dnq4BZb/89Q==}
 
+  effect@4.0.6:
+    resolution: {integrity: sha512-Tc3mkzuLR6t6P9dhLt0D2GrxYtmU5td4XEJEiXCmILz53IRIfJyHsKZWjTA3xEjiwpNTtXBgI4iqYPxMztBDrw==}
+
   es-module-lexer@2.3.2:
     resolution: {integrity: sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw==}
 
@@ -1549,9 +1552,9 @@ snapshots:
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
 
-  '@effect/vitest@4.0.5(effect@4.0.5)(vitest@5.0.5)':
+  '@effect/vitest@4.0.5(effect@4.0.6)(vitest@5.0.5)':
     dependencies:
-      effect: 4.0.5
+      effect: 4.0.6
       vitest: 5.0.5(@types/node@26.6.5)(@vitest/coverage-v8@5.0.5)(vite@7.3.7(@types/node@26.6.5)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
 
   '@emnapi/core@1.11.2':
@@ -2033,6 +2036,8 @@ snapshots:
   dataloader@2.2.3: {}
 
   effect@4.0.5: {}
+
+  effect@4.0.6: {}
 
   es-module-lexer@2.3.2: {}
 
