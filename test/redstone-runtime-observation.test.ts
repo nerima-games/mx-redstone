@@ -9,7 +9,7 @@ import {
   type FrameServices,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
-import { Effect, Ref, Schema } from 'effect'
+import { Effect, Exit, Ref, Schema } from 'effect'
 import * as powerGraph from '../src/domain/power-graph.js'
 import { ContainerSlotSchema } from '../src/domain/comparator.js'
 import {
@@ -415,9 +415,11 @@ describe('runtime tick observation', () => {
       Effect.gen(function* () {
         // BUG: a detached state object bypasses the runtime-owned geometry factory registry.
         const state = yield* redstoneWorldStateFor(runtime)
-        expect(() => redstonePowerTickContextFactoryFor({ ...state })).toThrow(
-          'Redstone power context factory is missing for this world state',
-        )
+        const detachedState = { ...state }
+        const factoryResult = yield* Effect.exit(redstonePowerTickContextFactoryFor(detachedState))
+        expect(Exit.isFailure(factoryResult)).toBe(true)
+        const result = yield* Effect.exit(redstonePowerTickContextFor(detachedState, new Map()))
+        expect(Exit.isFailure(result)).toBe(true)
       }),
     ),
   )

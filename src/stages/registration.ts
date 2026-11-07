@@ -360,7 +360,7 @@ const advancePower = (input: Readonly<{
   seed: Readonly<{ timed: TimedCircuitState; pressedButtons: ReadonlySet<PositionKey> }>
 }>): Effect.Effect<AdvancedPowerFrame> => Effect.gen(function* advancePowerGenerator() {
   const previousBlockPower = yield* Ref.get(input.state.blockPower)
-  const contextForTick = redstonePowerTickContextFactoryFor(input.state)
+  const contextForTick = yield* redstonePowerTickContextFactoryFor(input.state)
   const firstContext = contextForTick(previousBlockPower)
   if (isTimedOnlyContext(firstContext, previousBlockPower)) {
     return advanceTimedOnlyTicks(input)

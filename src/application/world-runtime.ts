@@ -972,20 +972,21 @@ const makeRedstonePowerTickContextFactory = (
 
 export const redstonePowerTickContextFactoryFor = (
   state: RedstoneWorldState,
-): RedstonePowerTickContextFactory => {
+): Effect.Effect<RedstonePowerTickContextFactory> => {
   const contextFactory = redstonePowerTickContextFactories.get(state)
   if (contextFactory) {
-    return contextFactory
+    return Effect.succeed(contextFactory)
   }
-  throw new Error('Redstone power context factory is missing for this world state')
+  return Effect.die(new Error('Redstone power context factory is missing for this world state'))
 }
 
 export const redstonePowerTickContextFor = (
   state: RedstoneWorldState,
   previousBlockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>,
-): Effect.Effect<RedstonePowerTickContextBundle> => Effect.sync(() =>
-  redstonePowerTickContextFactoryFor(state)(previousBlockPower),
-)
+): Effect.Effect<RedstonePowerTickContextBundle> =>
+  Effect.flatMap(redstonePowerTickContextFactoryFor(state), (contextFactory) =>
+    Effect.sync(() => contextFactory(previousBlockPower)),
+  )
 
 const circuitReadoutFor = (state: RedstoneWorldState): Effect.Effect<CircuitReadout> => Effect.gen(
   function* circuitReadoutForGenerator() {
