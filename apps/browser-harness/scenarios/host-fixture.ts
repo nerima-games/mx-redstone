@@ -496,7 +496,9 @@ const runStages = (stages: ReadonlyArray<StageRegistration>): Effect.Effect<void
   })
 
 /** Builds the fixture with the production host builders and records the real apply path. */
-export const buildHostFixture = (input: HostFixtureInput): Promise<HostFixtureResult> => {
+export const buildHostFixture = (
+  input: HostFixtureInput,
+): Effect.Effect<HostFixtureResult, unknown> => {
   const requests: Array<HostFixtureRequest> = []
   const failures: Array<HostFixtureFailure> = []
   const pistonPlanResults: Array<PistonMovementOutcome> = []
@@ -507,7 +509,7 @@ export const buildHostFixture = (input: HostFixtureInput): Promise<HostFixtureRe
   const rawBlocks = rawBlocksFromInput(input)
   const hostSnapshot = redstoneSnapshotFromRealm(realm, rawBlocks)
   if (Result.isFailure(hostSnapshot)) {
-    return Promise.reject(new Error('The host fixture contains an invalid block position'))
+    return Effect.fail(new Error('The host fixture contains an invalid block position'))
   }
 
   let applyReached = false
@@ -553,5 +555,5 @@ export const buildHostFixture = (input: HostFixtureInput): Promise<HostFixtureRe
     }
   }).pipe(Effect.provide(RedstoneWorldRuntimeLayer))
 
-  return Effect.runPromise(program)
+  return program
 }

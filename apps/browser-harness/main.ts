@@ -605,7 +605,7 @@ const loadScenario = async (
     selectedHostInput = input
     hostFailureSelect.value = input.failureCase ?? HOST_FAILURE_CASES[ZERO_TICK]?.value ?? ''
     try {
-      hostFixtureResult = await buildHostFixture(input)
+      hostFixtureResult = await Effect.runPromise(buildHostFixture(input))
     } catch (error) {
       if (selectionVersion !== version) {
         return

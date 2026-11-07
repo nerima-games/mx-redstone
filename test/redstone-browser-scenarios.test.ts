@@ -65,8 +65,8 @@ describe('browser scenario registry', () => {
       // Catches every host scenario silently degrading into an empty apply trace.
       expect(hostScenarios.some(({ fixture }) => fixture.expectedRequests.length > 0)).toBe(true)
       for (const { scenario, fixture } of hostScenarios) {
-        const first = yield* Effect.promise(() => buildHostFixture(fixture.input))
-        const second = yield* Effect.promise(() => buildHostFixture(fixture.input))
+        const first = yield* buildHostFixture(fixture.input)
+        const second = yield* buildHostFixture(fixture.input)
         // Catches skipped host application and reordered or misplaced requests for this scenario.
         expect(first.applyReached, scenario.id).toBe(true)
         expect(first.failures, scenario.id).toStrictEqual([])
@@ -93,8 +93,8 @@ describe('browser scenario registry', () => {
       expect(HOST_FAILURE_CASES.length).toBeGreaterThan(0)
       for (const failureCase of HOST_FAILURE_CASES) {
         const input = { ...fixture.input, failureCase: failureCase.value }
-        const first = yield* Effect.promise(() => buildHostFixture(input))
-        const second = yield* Effect.promise(() => buildHostFixture(input))
+        const first = yield* buildHostFixture(input)
+        const second = yield* buildHostFixture(input)
 
         // Expected failures still prove the host apply call ran; they are not successful request traces.
         expect(first.applyReached, failureCase.value).toBe(true)
