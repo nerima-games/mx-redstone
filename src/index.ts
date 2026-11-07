@@ -18,8 +18,8 @@
  * `domain/power-graph.ts` and `domain/piston.ts` are re-exported below because
  * this repository's tests and circuit-board preview import their symbols by name.
  * W5 also uses selected piston operations from the root entry point. The exact
- * contract names are listed in docs/public-api.md; remaining domain exports stay
- * visible for internal use.
+ * contract names are listed in docs/public-api.md; the tick context and
+ * intermediate block-power traversal stay out of this barrel.
  *
  * It knows nothing of mx-gameplay, mx-ui or mx-multiplayer. A piston that shoves
  * a player is a write to mc-sim's entity state, observed later by whichever rule
@@ -61,8 +61,40 @@ export * from './domain/dispenser.js'
 export * from './domain/hopper.js'
 export * from './domain/observer.js'
 export * from './domain/piston.js'
-export * from './domain/power-graph.js'
-export * from './domain/power-timing.js'
+export {
+  MAX_POWER_LEVEL,
+  emptyPowerMap,
+  powerAt,
+  componentEntriesForKinds,
+  sourcesOf,
+  propagateTick,
+  propagateTickWithProvenance,
+  settleTickLimitFor,
+  settle,
+  drivenPowerAt,
+  isLit,
+  isPowered,
+  type PowerLevel,
+  type ComponentKind,
+  type Component,
+  type CircuitBoard,
+  type PowerMap,
+  type PowerProvenanceCandidate,
+  type PowerTickWithProvenance,
+  type SettleResult,
+} from './domain/power-graph.js'
+export {
+  DEFAULT_BUTTON_PULSE_TICKS,
+  TORCH_BURNOUT_TOGGLE_LIMIT,
+  TORCH_BURNOUT_WINDOW_TICKS,
+  TORCH_BURNOUT_COOLDOWN_TICKS,
+  emptyTimedCircuitState,
+  advanceTimedCircuit,
+  type RepeaterTimer,
+  type ButtonTimer,
+  type TorchTimer,
+  type TimedCircuitState,
+} from './domain/power-timing.js'
 export * from './domain/pressure-plate.js'
 export * from './domain/target-block.js'
 export * from './stages/registration.js'
