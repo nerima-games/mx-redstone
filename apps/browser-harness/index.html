@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mx-redstone browser board</title>
+    <link rel="stylesheet" href="/board.css" />
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #101720; color: #e4ecf4; }
+      body { margin: 0; }
+      #app { max-width: 76rem; margin: 0 auto; padding: 1.25rem; }
+      .harness-shell { display: grid; gap: 1rem; }
+      .harness-shell h1, .harness-shell h2 { margin: 0; }
+      [aria-label="Board controls"] { display: flex; flex-wrap: wrap; gap: 0.55rem; align-items: center; }
+      [aria-label="Board controls"] button, [aria-label="Board controls"] select { min-height: 2.25rem; border: 1px solid #405163; border-radius: 0.35rem; background: #17212d; color: inherit; padding: 0.35rem 0.65rem; font: inherit; }
+      [data-state="mock"] { color: #f5c76d; }
+      [data-state="blocked"], [data-state="error"] { color: #ff9f91; }
+      [data-testid="host-realm-state"], [data-testid="host-requests"] { overflow: auto; border: 1px solid #263545; border-radius: 0.4rem; padding: 0.75rem; background: #151f2a; }
+    </style>
+  </head>
+  <body>
+    <main id="app"></main>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

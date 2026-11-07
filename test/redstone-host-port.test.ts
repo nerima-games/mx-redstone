@@ -42,10 +42,12 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   applyRedstoneHostEvents,
+  applyRedstoneHostEventsObserved,
   componentForBlock,
   kernelPistonCapabilities,
   redstoneSnapshotFromRealm,
   RedstoneHostBlockTypeSchema,
+  type PistonRefusalObservation,
   type RedstoneHostBlock,
   type RedstoneHostBlockType,
   type RedstoneHostLookup,
@@ -112,7 +114,13 @@ const componentValue = (
   lookup: RedstoneHostLookup,
   name: RedstoneHostBlockType | null,
   position: BlockPosition,
-) => successValue(componentForBlock(lookup, name, position))
+  strongPowerTo?: BlockPosition,
+): RedstoneComponentSnapshot | undefined => {
+  if (strongPowerTo) {
+    return successValue(componentForBlock(lookup, name, { position, strongPowerTo }))
+  }
+  return successValue(componentForBlock(lookup, name, position))
+}
 
 const snapshotValue = (realm: RedstoneHostRealm, blocks: ReadonlyArray<RedstoneHostBlock>) =>
   successValue(redstoneSnapshotFromRealm(realm, blocks))
@@ -136,9 +144,17 @@ const missingLookup: RedstoneHostLookup = {
   readPistonFacing: () => 'north',
 }
 
-const block = (name: RedstoneHostBlockType | null, x = 0, y = 0, z = 0): RedstoneHostBlock => ({
-  address: blockAddress('overworld', x, y, z),
+const block = (
+  name: RedstoneHostBlockType | null,
+  x = 0,
+  y = 0,
+  z = 0,
+  strongPowerTo?: BlockPosition,
+  dimension = 'overworld',
+): RedstoneHostBlock => ({
+  address: blockAddress(dimension, x, y, z),
   block: name,
+  ...(strongPowerTo === undefined ? {} : { strongPowerTo }),
 })
 
 type RecordedCall =
@@ -390,6 +406,78 @@ describe('componentForBlock', () => {
         active: false,
         kind: 'lever',
       })
+    }),
+  )
+
+  it.effect('keeps a lever attachment target supplied by host placement data', () =>
+    Effect.sync(() => {
+      // Fails if host placement metadata is discarded before a lever can strongly power its support block.
+      const position = blockPosition(3, 4, 5)
+      const strongPowerTo = blockPosition(3, 3, 5)
+      const snapshot = snapshotValue(
+        { dimension: dimensionId('overworld'), lookup: missingLookup },
+        [block('lever', position.x, position.y, position.z, strongPowerTo)],
+      )
+
+      expect(snapshot.components).toStrictEqual([{
+        active: false,
+        kind: 'lever',
+        position,
+        strongPowerTo,
+      }])
+    }),
+  )
+
+  it.effect('maps stone buttons with optional active and attachment state', () =>
+    Effect.sync(() => {
+      // Fails if a placed button is dropped or loses its host-provided support target.
+      const position = blockPosition(3, 4, 5)
+      const strongPowerTo = blockPosition(3, 3, 5)
+      const inactive = componentValue(missingLookup, 'stone_button', position, strongPowerTo)
+      const activeLookup: RedstoneHostLookup = { ...missingLookup, isButtonActive: () => true }
+      const active = componentValue(activeLookup, 'stone_button', position, strongPowerTo)
+
+      expect(inactive).toStrictEqual({ active: false, kind: 'button', position, strongPowerTo })
+      expect(active).toStrictEqual({ active: true, kind: 'button', position, strongPowerTo })
+    }),
+  )
+
+  it.effect('keeps conductivity lookup position-based and outside snapshot enumeration', () =>
+    Effect.sync(() => {
+      // Fails if snapshot construction enumerates host occupancy instead of leaving local reads to powered ticks.
+      const observed: Array<Readonly<{ dimension: RedstoneDimensionId; position: BlockPosition }>> = []
+      const overworld = dimensionId('overworld')
+      const nether = dimensionId('nether')
+      const lookupFor = (dimension: RedstoneDimensionId): RedstoneHostLookup => ({
+        ...missingLookup,
+        isRedstoneConductiveAt: (position) => {
+          observed.push({ dimension, position })
+          return dimension === nether && position.x === 8 && position.y === 12 && position.z === -4
+        },
+      })
+      const overworldRealm = { dimension: overworld, lookup: lookupFor(overworld) }
+      const netherRealm = { dimension: nether, lookup: lookupFor(nether) }
+      const blocksFor = (dimension: RedstoneDimensionId) => [
+        block('stone', 8, 12, -4, undefined, String(dimension)),
+        block('air', 9, 12, -4, undefined, String(dimension)),
+        block('dirt', 10, 12, -4, undefined, String(dimension)),
+      ]
+
+      expect(snapshotValue(overworldRealm, blocksFor(overworld)).dimension).toBe(overworld)
+      expect(snapshotValue(netherRealm, blocksFor(nether)).dimension).toBe(nether)
+      expect(observed).toStrictEqual([])
+      expect(overworldRealm.lookup.isRedstoneConductiveAt?.(blockPosition(8, 12, -4))).toBe(false)
+      expect(netherRealm.lookup.isRedstoneConductiveAt?.(blockPosition(8, 12, -4))).toBe(true)
+      expect(netherRealm.lookup.isRedstoneConductiveAt?.(blockPosition(9, 12, -4))).toBe(false)
+      expect(netherRealm.lookup.isRedstoneConductiveAt?.(blockPosition(10, 12, -4))).toBe(false)
+      expect(netherRealm.lookup.isRedstoneConductiveAt?.(blockPosition(11, 12, -4))).toBe(false)
+      expect(observed).toStrictEqual([
+        { dimension: overworld, position: blockPosition(8, 12, -4) },
+        { dimension: nether, position: blockPosition(8, 12, -4) },
+        { dimension: nether, position: blockPosition(9, 12, -4) },
+        { dimension: nether, position: blockPosition(10, 12, -4) },
+        { dimension: nether, position: blockPosition(11, 12, -4) },
+      ])
     }),
   )
 
@@ -1573,9 +1661,11 @@ describe('applyRedstoneHostEvents', () => {
     Effect.gen(function* () {
       const runtime = yield* RedstoneWorldRuntime
       const stages = yield* makeRuntimeRedstoneStages
+      const pistonRefusals: Array<PistonRefusalObservation> = []
       // `readPistonCell` reports every cell missing, which makes
       // `planPistonTransition`'s extension scan refuse immediately (`outcome.kind`
       // is `'refused'`, never `'move'`) — `commitPistonPlan` must never fire.
+      // BUG: A refusal must remain observable with the transition and domain reason.
       const { calls, port, realm } = recordingRealm(dimensionId('overworld'), missingLookup)
 
       yield* runtime.syncSnapshot({
@@ -1592,10 +1682,29 @@ describe('applyRedstoneHostEvents', () => {
         dimension: dimensionId('overworld'),
       })
       yield* runFrame(stages)
-      yield* applyRedstoneHostEvents(runtime, [realm], port)
+      yield* applyRedstoneHostEventsObserved({
+        runtime,
+        realms: [realm],
+        port,
+        observer: { onPistonRefusal: (observation) => pistonRefusals.push(observation) },
+      })
 
       expect(buildCallsOf(calls)).toStrictEqual([])
       expect(commitCallsOf(calls)).toStrictEqual([])
+      expect(pistonRefusals).toStrictEqual([{
+        event: {
+          dimension: dimensionId('overworld'),
+          piston: blockPosition(1, 0, 0),
+          facing: 'east',
+          kind: 'normal',
+          state: 'retracted',
+          powered: true,
+        },
+        outcome: {
+          kind: 'refused',
+          refusal: { position: blockPosition(2, 0, 0), reason: 'missing' },
+        },
+      }])
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 

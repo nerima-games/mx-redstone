@@ -17,6 +17,6 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["apps/**/*.ts", "src/**/*.ts"],
+  "include": ["apps/preview-circuit-board/**/*.ts", "src/**/*.ts"],
   "exclude": ["node_modules", "coverage", "dist"]
 }

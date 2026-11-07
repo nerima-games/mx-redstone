@@ -5,7 +5,7 @@
 - **現在のバージョンは `package.json` の `version` を正とする。**
 - **自動 publish パイプラインがある。** `tsconfig.release.json` による
   `tsc` emit へ切り替え、`package.json` の `exports` は `dist/` を指すようになった。`.github/workflows/release.yaml`
-  が `main` への push を検知して `pnpm verify && pnpm package:verify` の再検証後に GitHub Packages へ publish し、
+  は `main` への push で package version の変更を検出し、`pnpm verify && pnpm package:verify` の再検証後に GitHub Packages へ publish し、
   publish 後に `v<version>` タグを打つ。changesets（`.changeset/config.json`）でバージョン運用する。
 - **実行時依存は `effect` と公開済みの `mc-kernel` / `mc-sim` / `mc-worldgen`。**
   GitHub Packages に公開されたバージョンを pin する。
@@ -44,6 +44,11 @@ plan.md §8 のリスク表も同じことを別角度から書いている。
 **GitHub Packages**（`https://npm.pkg.github.com`、`access: public`）。
 `package.json` の `publishConfig` に設定済みで、`.github/workflows/release.yaml` が検証済みビルド成果物を
 `main` への push（または `workflow_dispatch` での手動再実行）を契機に自動 publish する。
+
+0.x の version 更新では変更ごとに changeset を追加し、`pnpm changeset status` で対象 package と bump を確認する。
+`pnpm changeset version` は changeset を `package.json` と `CHANGELOG.md` に反映する。生成された version/changelog の差分を確認して PR に含める。
+version が変わった commit が `main` に push されると release workflow は検証、publish、`v<version>` tag の順に実行する。
+version 更新後の自動 publish が失敗した場合は、workflow の `workflow_dispatch` を再実行する。手動実行は現在の `package.json` の version を publish 対象にする。
 
 ```json
 "publishConfig": {
@@ -101,9 +106,9 @@ mx-redstone は最後から 4 番目のグループにいる。前段の公開�
 | `import type { StageRegistration } from '@nerima-games/mc-kernel'` | mc-kernel 0.14.0 の正本を直接利用 |
 | 3D world position / key | circuit graph は 2D four-neighbour grid のため `domain/position-key.ts` の文字列 key を維持 |
 | kernel capability lookup | domain の `BlockCapabilityLookup` を維持し、host adapter が block 名を `BlockId` に解決して kernel accessor を呼ぶ |
-| mc-sim / mc-worldgen | 0.7.1 / 0.7.0 を pin。`HopperService` と C7 batch contract は公開済みだが、redstone callback はまだ接続していない |
+| mc-sim / mc-worldgen | 0.9.0 / 0.8.0 を pin。mx-redstone の host adapter は `HopperService` と C7 batch contract を使う。mc-compose の実 world 接続は未実施 |
 
-npm 公開・バージョン bump 運用は**界面が実際に上位階層(mc-compose)に消費され、動作確認が完了するまで開始しない**。
+`1.0.0` への昇格は、界面が実際に上位階層(mc-compose)に消費され、動作確認が完了するまで行わない。0.x の公開と version bump は changesets で運用する。
 1.0.0 への昇格を含め、日数計測ベースの自動フリーズゲート(旧「API ロック 4 週間無変更」)は採用せず、
 maintainer(take)による裁量判断のみで行う(RELEASE_STANDARD.md §4.2)。
 それまでは `mc-dev-meta` の `workspace:*` 解決で開発する。
@@ -158,6 +163,7 @@ PATCH で済む世界の差は、本リポジトリの実装期間を通じて�
 | 変更 | 分類（`1.0.0` 到達後の bump。`0.x` では上記の読み替え） |
 | --- | --- |
 | 新しい stage の追加（既存 `StageId` は不変） | MINOR |
+| 既存の runtime / host contract への optional 引数・field の追加 | MINOR |
 | `after` 制約の**追加** | MINOR（compose 側で解決不能になれば話は別。その場合は要相談） |
 | 内部実装（電力グラフ / ピストン計画 / 部品集合） | PATCH |
 | `StageId` の文字列の改名 | **MAJOR** |

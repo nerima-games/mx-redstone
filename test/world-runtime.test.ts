@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Ref, Schema } from 'effect'
+import { Effect, Ref, Result, Schema } from 'effect'
 import {
   RedstoneEventBatchSchema,
   RedstoneWorldRuntime,
@@ -10,6 +10,7 @@ import {
   type RedstoneComponentSnapshot,
   type RedstoneEventBatch,
   type RedstoneWorldRuntimeService,
+  type RedstoneWorldSnapshotDuplicatePositionError,
   type RedstoneWorldRuntimeStateError,
   type RedstoneWorldSnapshot,
 } from '../src/application/world-runtime'
@@ -29,7 +30,10 @@ import { ContainerSlotSchema } from '../src/domain/comparator'
 import { FrameServicesLayer } from './frame-services'
 
 type DimensionId = Schema.Schema.Type<typeof DimensionIdSchema>
-type RuntimeError = RedstoneWorldRuntimeStateError | Schema.SchemaError
+type RuntimeError =
+  | RedstoneWorldRuntimeStateError
+  | RedstoneWorldSnapshotDuplicatePositionError
+  | Schema.SchemaError
 
 const dimensionId = (value: string): DimensionId =>
   Schema.decodeUnknownSync(DimensionIdSchema)(value)
@@ -205,6 +209,35 @@ describe('RedstoneWorldRuntime', () => {
         expect(board.adjacency.get(lever)).not.toContain(diagonal)
         expect(board.adjacency.get(lever)).not.toContain(nether)
         expect(board.components.get(nether)?.kind).toBe('comparator')
+      }),
+    ),
+  )
+
+  it.effect('rejects duplicate snapshot positions without changing runtime state', () =>
+    runtimeProgram((runtime) =>
+      Effect.gen(function* () {
+        const state = yield* redstoneWorldStateFor(runtime)
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'lever', true),
+          component(1, 'lamp'),
+        ]))
+        const dimensionsBefore = yield* Ref.get(state.dimensions)
+        const boardBefore = yield* Ref.get(state.board)
+
+        const result = yield* Effect.result(runtime.syncSnapshot(snapshot('overworld', [
+          component(2, 'lever', true),
+          component(2, 'lamp'),
+        ])))
+
+        expect(result).toStrictEqual(
+          Result.fail({
+            _tag: 'DuplicateRedstoneWorldSnapshotPosition',
+            dimension: dimensionId('overworld'),
+            position: blockPosition(2, 0, 0),
+          }),
+        )
+        expect(yield* Ref.get(state.dimensions)).toBe(dimensionsBefore)
+        expect(yield* Ref.get(state.board)).toBe(boardBefore)
       }),
     ),
   )

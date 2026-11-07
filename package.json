@@ -1,6 +1,6 @@
 {
   "name": "@nerima-games/mx-redstone",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "type": "module",
   "description": "Experience module for the nerima-games Minecraft-clone rebuild: the redstone mechanism — wire power propagation, torches, levers, buttons, repeaters and piston pushing.",
   "homepage": "https://github.com/nerima-games/mx-redstone#readme",
@@ -50,15 +50,17 @@
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.release.json --pretty false",
-    "lint": "oxlint --deny-warnings src scripts test apps && ast-grep scan",
+    "lint": "oxlint --deny-warnings src scripts test apps test-browser && oxlint --deny-warnings --no-ignore apps/browser-harness/vite.config.ts playwright.config.ts && ast-grep scan",
     "lint:fix": "oxlint --fix src scripts test apps",
     "package:verify": "pnpm build && node scripts/verify-package.mjs",
     "prepublishOnly": "pnpm verify && pnpm package:verify",
     "preview": "tsx apps/preview-circuit-board/main.ts",
+    "preview:browser": "vite --config apps/browser-harness/vite.config.ts",
     "test": "vitest run",
+    "test:browser": "playwright test",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.build.json --pretty false && tsc -p tsconfig.test.json --pretty false && tsc -p tsconfig.preview.json --pretty false",
+    "typecheck": "tsc -p tsconfig.build.json --pretty false && tsc -p tsconfig.test.json --pretty false && tsc -p tsconfig.preview.json --pretty false && tsc -p apps/browser-harness/tsconfig.json --pretty false",
     "verify": "pnpm typecheck && pnpm lint && pnpm test"
   },
   "dependencies": {
@@ -71,12 +73,14 @@
     "@changesets/changelog-github": "1.0.1",
     "@changesets/cli": "3.0.3",
     "@effect/vitest": "4.0.5",
+    "@playwright/test": "1.64.1",
     "@types/node": "26.6.5",
     "@vitest/coverage-v8": "5.0.5",
     "fast-check": "4.10.2",
     "knip": "6.42.1",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
+    "vite": "8.3.5",
     "vitest": "5.0.5"
   }
 }

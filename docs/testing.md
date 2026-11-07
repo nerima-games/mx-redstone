@@ -14,6 +14,7 @@
 | stage 契約の回帰テスト | 実装済み（`test/stage-registration.test.ts`） |
 | 依存境界ゲート | `package.json` の direct dependencies と lint 設定で検証 |
 | **回路盤サンドボックスプレビュー** | **実装済み**（`apps/preview-circuit-board/`、§4-1） |
+| ブラウザデバッグ UI | 実装済み（`pnpm preview:browser`、[redstone-debugging.md](./redstone-debugging.md)） |
 
 **両方が揃ったので、plan.md §6 Step 2 の完了条件のうち「テスト green + プレビュー操作可能」の 2 つは満たしている**
 （機能面の残りは §4 の表のとおり）。
@@ -30,9 +31,15 @@ $ pnpm package:verify # build && node scripts/verify-package.mjs — 配布物�
 $ pnpm audit           # 依存の既知脆弱性
 ```
 
+ブラウザテストでは Chromium を使います。
+Chromium をまだインストールしていない場合は `pnpm exec playwright install chromium` を実行してください。
+テストファイルを1つだけ実行する場合は、`pnpm test:browser test-browser/redstone-board.spec.ts` のように `pnpm test:browser` の後にファイルパスを指定してください。
+`--` は付けません。
+ブラウザデバッグ UI は `pnpm preview:browser` で起動します。操作方法とパネルの内容は [redstone-debugging.md](./redstone-debugging.md) を参照してください。
+
 | ゲート | 何を捕まえるか |
 | --- | --- |
-| `pnpm typecheck` | `tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` の 3 プロジェクトで型エラー |
+| `pnpm typecheck` | `tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` / `apps/browser-harness/tsconfig.json` の 4 プロジェクトで型エラー |
 | `pnpm lint` | oxlint（`--deny-warnings`）+ `ast-grep scan`。**このリポジトリ唯一の lint / format 設定**（prettier も biome も `.editorconfig` も置かない）。`no-restricted-imports` が Tier3 の依存境界を、`.ast-grep/rules/no-wall-clock-read.yml` が壁時計直読み禁止を機械的に強制する |
 | `pnpm test` | vitest |
 | `pnpm test:coverage` | カバレッジ計測 + **100% ゲート**（4 指標すべて、`src/**/*.ts` 全体が対象）。**`verify` には含まれない**ので別に走らせる（§6） |
@@ -46,37 +53,56 @@ CI（`.github/workflows/ci.yaml`）は `pnpm verify` の後、`Changeset status`
 
 ## 3. 現在のテストスイート
 
-14 ファイル / 216 実行テスト。各ファイルの件数は `vitest run --reporter=dot` の出力から転記している。
-ソース上の `it.effect` 宣言は208件だが、fixture ループの展開を含む実行数は216件である。実行環境は `environment: 'node'`。
+34 ファイル / 441 実行テスト。各ファイルの件数は `pnpm verify` の Vitest 出力から転記しており、fixture ループなどで生成される実行ケースを含む。実行環境は `environment: 'node'`。Playwright のブラウザテストは `test-browser/` で別に実行する。
 
 | ファイル | テスト数 | 対象 |
 | --- | ---: | --- |
 | `test/power-graph.test.ts` | 64 | 回路シナリオ（ワイヤ減衰 / トーチ反転 / リピーター / コンパレータ / オブザーバ / 感圧板 / 収束と発振 / `sourcesOf` / ボタン） |
 | `test/stage-registration.test.ts` | 20 | 固定レート tick、stage 挙動、kernel stage contract の回帰 |
-| `test/world-runtime.test.ts` | 18 | runtime snapshot と transition drain |
-| `test/redstone-host-port.test.ts` | 25 | host lookup と event application（17宣言、ループ展開を含む） |
+| `test/world-runtime.test.ts` | 24 | runtime snapshot と transition drain |
+| `test/redstone-host-port.test.ts` | 60 | host lookup と event application |
 | `test/comparator.test.ts` | 13 | コンパレータの算術を**全数**（16 x 16 x 2）＋コンテナ充填率の写像 |
-| `test/piston.test.ts` | 18 | 能力フラグ、方向付き押し出し、sticky pull、atomic apply |
+| `test/piston.test.ts` | 20 | 能力フラグ、方向付き押し出し、sticky pull、atomic apply |
 | `test/observer.test.ts` | 9 | 変化検出、armed 規則、記憶が値であること（DN-RS-15） |
-| `test/dispenser.test.ts` | 7 | 立ち上がりエッジ、オブザーバとの非対称（DN-RS-15） |
+| `test/dispenser.test.ts` | 13 | 立ち上がりエッジ、オブザーバとの非対称（DN-RS-15）、action planning |
 | `test/pressure-plate.test.ts` | 7 | スイッチ板と重量板の写像（DN-RS-17） |
-| `test/public-api.test.ts` | 7 | バレル（`index.ts`）の再エクスポートを名前で固定。契約と内部の区別を台帳化 |
-| `test/hopper.test.ts` | 6 | ロックの反転と搬送周期（DN-RS-16 §16-1） |
+| `test/public-api.test.ts` | 9 | バレル（`index.ts`）の再エクスポートを名前で固定。契約と内部の区別を台帳化 |
+| `test/hopper.test.ts` | 8 | ロックの反転、搬送周期、搬送候補（DN-RS-16 §16-1） |
 | `test/indexed-power-graph.test.ts` | 4 | インデックス化した power graph |
 | `test/target-block.test.ts` | 4 | target block signal |
-| `test/power-timing.test.ts` | 14 | button、repeater、torch timing |
+| `test/power-timing.test.ts` | 17 | button、repeater、torch timing |
+| `test/intent-ingress.test.ts` | 4 | redstone intent ingress |
+| `test/hopper-transfer-properties.test.ts` | 6 | HopperService の搬送周期と item 数境界 |
+| `test/redstone-3d-circuits.test.ts` | 22 | 3D 回路の伝播と vertical strong power |
+| `test/redstone-block-power.test.ts` | 24 | solid block の strong / weak power channel と伝播 |
+| `test/redstone-boundaries.test.ts` | 7 | position、signal、component 入力の境界値 |
+| `test/redstone-browser-scenarios.test.ts` | 8 | browser scenario registry と fixture |
+| `test/redstone-component-determinism.test.ts` | 4 | component の順序に対する決定性 |
+| `test/redstone-component-properties.test.ts` | 18 | component の property と edge case |
+| `test/redstone-event-order.test.ts` | 2 | runtime event の順序 |
+| `test/redstone-finite-state.test.ts` | 12 | redstone component の有限状態検査 |
+| `test/redstone-host-failure.test.ts` | 2 | host boundary の kernel capability 解決失敗 |
+| `test/redstone-host-runtime-path.test.ts` | 4 | raw host block から runtime と host request までの経路 |
+| `test/redstone-observation.test.ts` | 12 | frame observation、pending button、invariant checker |
+| `test/redstone-observer-countdown.test.ts` | 1 | observer pulse timing |
+| `test/redstone-placement-items.test.ts` | 1 | redstone placement QA items |
+| `test/redstone-power-provenance.test.ts` | 11 | power propagation provenance |
+| `test/redstone-properties.test.ts` | 3 | redstone property boundaries |
+| `test/redstone-runtime-observation.test.ts` | 18 | runtime tick observation と履歴 |
+| `test/redstone-tick-timing.test.ts` | 6 | tick ごとの component timing |
+| `test/redstone-verification-matrix.test.ts` | 4 | verification matrix と test title の対応 |
 
 ### 3-00. コンパレータだけ全数テストである理由
 
-他の全部品は fixture 回路で検証している。`comparatorOutput` は数を 3 つ取って 1 つ返す関数で、
-入力空間は 16 x 16 x 16 x 2 しかない。ここでの off-by-one は「回路が動かない」ではなく
+他の部品は fixture 回路、property test、有限状態検査で検証している。`comparatorOutput` は rear の power、side power の配列、mode を受け取る純関数である。
+単一 side の算術は rear 16 値 x side 16 値 x 2 mode を全数検査し、複数 side と空 side は別のケースで検査する。ここでの off-by-one は「回路が動かない」ではなく
 **「fixture が使う入力ではすべて正しく、プレイヤーのソーターが座る境界だけ間違っている」**であり、
 `>=` を `>` と書いた版は**側面を配線していない全テストを通る**。
 数えられる入力空間は数えるほうが安い。
 
-**プレビュー（`apps/`）にテストは無い。** 意図的である——プレビューは検査対象ではなく検査**手段**であり、
+**端末プレビュー（`apps/preview-circuit-board/`）には専用テストは無い。** 意図的である——このプレビューは検査対象ではなく検査**手段**であり、
 そこで見つかったことは `test/power-graph.test.ts` に assertion として降ろすのが正しい置き場所である
-（§4-1）。mc-worldgen の先例も同じ扱いをしている。
+（§4-1）。ブラウザデバッグ UI は別アプリであり、`test-browser/` の Playwright テストが操作と表示を検証する。
 
 ### 3-0. `test/public-api.test.ts` がバレルを固定する理由
 
@@ -157,10 +183,10 @@ plan.md §6 Step 2 の完了条件は 2 つある。
 | --- | --- | --- |
 | 1 | `pnpm verify` が green | ✅ |
 | 2 | ワイヤ / トーチ / レバー / ボタン / リピーター / ピストンのシナリオテスト | ✅（部品の一部は未実装、[responsibility.md](./responsibility.md) §1） |
-| 3 | ディスペンサ / ホッパー / オブザーバ / 感圧板 / コンパレータ | **コンパレータ・オブザーバ ✅／ホッパー・ディスペンサ・感圧板はレッドストーンの規則だけ ✅、残りは境界（§4-2、[design-notes.md](./design-notes.md) DN-RS-17）** |
+| 3 | ディスペンサ / ホッパー / オブザーバ / 感圧板 / コンパレータ | **コンパレータ・オブザーバ ✅／ホッパーは host adapter と `HopperService` を接続済み／ディスペンサ・感圧板はレッドストーン規則を実装済み。実 world の lookup や entity 入力は host の責務（§4-2、[design-notes.md](./design-notes.md) DN-RS-17）** |
 | 4 | 参照実装のテスト資産（**2,658 行**）をオラクルとして移植 | **一巡した。4 本を移植し、残りは理由つきで見送った**（§4-3、[porting.md](./porting.md) §3-1） |
 | 5 | **回路盤サンドボックスプレビューが操作可能** | ✅（§4-1） |
-| 6 | スティッキーピストン / 引き寄せ | ❌（意図的にスコープ外、DN-RS-10） |
+| 6 | スティッキーピストン / 引き寄せ | ✅（軸上 1 ブロック。スライム／ハチミツによる隣接連結は対象外、DN-RS-10） |
 | 7 | 100% カバレッジゲートが有効 | ✅（branches/functions/lines/statements、`vitest.config.ts`） |
 
 ### 4-3. 完成条件 #4 — 移植して分かった 2 つのこと
@@ -183,7 +209,7 @@ porting.md §3-0 に旧値と新値の両方を残した——**§2-1 が plan.m
   そこは丸ごと §4-2 の「残り」の側だからである。ホッパーに至っては参照実装がロックも搬送周期も
   持っておらず（`redstone-hopper-world-effects.ts:11-14` が自分でそう書いている）、
   `test/hopper.test.ts` の期待値はバニラ由来であって参照由来ではない。
-- 残りは幾何・インベントリ・エンティティについての主張で、そのどれもここには無い（DN-RS-17）。
+- 残りは実 world の幾何・インベントリ・エンティティ情報の取得である。runtime adapter は値を受け取る port を定義するが、実 world の query は host が用意する（DN-RS-17）。
 
 移植した 4 本は `test/power-graph.test.ts` の `ported oracles` 節にあり、
 **4 本とも production を壊して赤くなることを確認してある**。3 本は他のどのテストも巻き込まずに単独で落ちる。
@@ -208,37 +234,27 @@ porting.md §3-0 に旧値と新値の両方を残した——**§2-1 が plan.m
 
 **これが「主張を移植する」と「テストを移植する」の差である。**
 
-#### 移植が露出させた production の穴（残り 1 つ）
+#### 移植が露出させた production の穴（解決済み）
 
 ボタンのパルス長は `advanceTimedCircuit` と `RedstoneWorldRuntime.pressButton` に実装し、
 `test/power-timing.test.ts` と `test/world-runtime.test.ts` で停止と再押下まで固定した。
-未解決なのは次の 1 点である。
+この課題は runtime と host port で解決している。`collectPistonTransitions` は通電状態の変化を
+`drainPistonTransitions` に一度だけ記録し、`domain/piston.ts` が伸縮を純粋に計画する。
+`applyRedstoneHostEvents` は計画した遷移を host request にまとめ、coordinator に渡す。
+`test/world-runtime.test.ts` の `emits one powered piston transition per power edge` は、
+同じ状態が続く間に遷移を繰り返さないことも確認する。
 
-1. **ピストンがエッジ駆動であること。** 参照実装の
-   `redstone-piston-world-effects.test.ts:165-181`（`does not push again while a piston remains extended`）と
-   `redstone-simulation.test.ts:193-240`（`updatePistons`）は、ピストンが**通電レベルではなく
-   立ち上がりエッジで**伸び、伸びたまま押し続けないことを主張している。
-   `piston` component の state edge は runtime が `drainPistonTransitions` に一度だけ記録し、
-   `domain/piston.ts` が伸縮を純粋に計画する。
-   **規則そのものは既にこのリポジトリにある**——`domain/dispenser.ts` の `dispenserEdges` が
-   まさに「レベルではなくエッジ」であり、DN-RS-16 がディスペンサについて書いていることは
-   ピストンにもそのまま当てはまる（どちらも受電も導通もしないアクチュエータである）。
-   足りないのは規則ではなく、ピストンの伸縮という**状態の持ち主**で、
-   それは DN-RS-17 の表に載っている 6 つの欠落と同じ性質のものである。
-   `dispenserEdges` を流用してテストだけ書くことはできるが、
-   それは**ディスペンサの関数でピストンの主張を固定する**ことになり、由来が嘘になるのでやらない。
-
-### 4-2. 完成条件 #3 の 5 部品——2 つは全部、3 つは半分
+### 4-2. 完成条件 #3 の 5 部品——実装と host 境界
 
 **この分割そのものが成果物である。**「あとで」ではなく「何が無いか」で書いてある。
 
 | 部品 | ここにあるもの | 残り |
 | --- | --- | --- |
-| コンパレータ | 全部。2 モード、側面、コンテナ読み取りの写像、可変強度ソースとしてのグラフ統合 | コンテナの中身（DN-RS-17 の 1 行目） |
+| コンパレータ | 2 モード、側面、host が渡す `containerSlots` の写像、可変強度ソースとしてのグラフ統合 | host が各 slot の個数と stack 上限を読み、`readContainerSlots` に渡す（DN-RS-17） |
 | オブザーバ | 全部。変化検出、armed 規則、パルス長、ダイオードとしてのグラフ統合 | 無し（サンプリングの根拠は DN-RS-15 §15-2） |
-| ホッパー | ロックの反転（通電で**止まる**唯一の部品）と搬送周期 | アイテムの移動 = `inventoryAt` + `ItemType` |
-| ディスペンサ | 立ち上がりエッジ検出（記憶は値。参照実装はモジュール変数） | 中身の取り出し、ドロップの spawn、発射体 |
-| 感圧板 | 占有数 → 信号強度（スイッチ板と重量板）、ソースとしてのグラフ統合 | 「誰が乗っているか」= 幾何 + entity の寸法 + 空間クエリ |
+| ホッパー | ロックの反転、搬送周期と候補選択。host adapter は `HopperService` の transfer plan を batch commit に含める | host が隣接 container、hopper block ID、block write builder を渡す |
+| ディスペンサ | 立ち上がりエッジ検出と trigger event（記憶は値。参照実装はモジュール変数） | アイテムの取り出しと drop / projectile の生成は host / gameplay 層 |
+| 感圧板 | 占有数 → 信号強度（スイッチ板と重量板）、ソースとしてのグラフ統合 | production builder / lookup は未接続。host が entity の位置と寸法から占有数を渡す（幾何 + 空間クエリ） |
 
 **コンパレータは、本リポジトリの信号モデルの穴を実際に露出させた。**
 穴は「表現できない」ではなく「既に記録済みの乖離のコストが、この部品でだけ質的に違う」であり、
