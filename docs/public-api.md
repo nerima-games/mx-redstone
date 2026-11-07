@@ -1,34 +1,25 @@
 # 公開 API
 
-## 1. 公開 API は stage 登録、runtime、host port、W5 の piston planning である
+## 1. 公開 API は stage 登録、runtime、host port、piston planning である
 
-公開 API は Effect stage registration、world runtime、host adapter、W5 が使う piston planning で構成する。各 export の契約区分は §5 の台帳に記録する。
+公開 API は Effect stage registration、world runtime、host adapter、mc-compose が使う piston planning で構成する。各 export の契約区分は §5 の一覧に記載する。
 
-mc-compose の W5 host は root から `pistonPositionAt`、`planPistonTransition`、`validatePistonPlan`、`applyPistonPlan` を import する。これらの関数と計画に必要な型も package の contract である。
+mc-compose の host は root から `pistonPositionAt`、`planPistonTransition`、`validatePistonPlan`、`applyPistonPlan` を import する。これらの関数と計画に必要な型も package の contract である。
 
 `src/index.ts` は `domain/power-graph.ts` と `domain/piston.ts` を root から再 export する。power graph と piston module の残りの名前は、テストやプレビューのために見える内部 exports であり、外部 contract ではない。`CircuitBoard`、`PowerMap`、`planPush` は引き続き内部である。可視と公開の区別を §5 に記録する。
 
-`test/public-api.test.ts` は選択した runtime export を名前で確認し、利用する型 export を compile-time import で検査する。root export 全件を検査するものではない。公開 contract と内部 export の一覧は §5 に記録する。
+`test/public-api.test.ts` は選択した runtime export を名前で確認し、利用する型 export を compile-time import で検査する。root export 全件を検査するものではない。公開 contract と内部 export の一覧は §5 に記載する。
 
 ## 2. なぜ電力グラフは内部でなければならないのか
 
-現在の `CircuitBoard` は `ReadonlyMap<PositionKey, Component>` と隣接リストの素朴な組であり、
+現在の `CircuitBoard` は `ReadonlyMap<PositionKey, Component>` と隣接リストの組であり、
 `propagateTick` は毎 tick 全部品を走査する（`domain/power-graph.ts:106-148`）。
-回路が大きくなればこれは持たない。想定される変更:
-
-- チャンク単位のインデックス（回路は局所的なので、全走査は無駄）
-- dirty set（参照実装は既にこれを持っている: `computeNeedsPropagation`, `redstone-simulation.ts:411`）
-- 電力レベル 0–15 のビットパック（`PowerMap` を `Uint8Array` に置き換える）
-- `Component` の optional フィールド群を discriminated union へ（`domain/power-graph.ts:56-63` が
-  「部品集合の増加が止まったら再検討」と保留している）
 
 **他リポジトリが `CircuitBoard` を名指しできる状態でこれをやると、全部が破壊的変更になる。**
 kernel ほどではないにせよ、`mc-compose` はこのリポジトリをピン留めして消費するので、
 その 1 つ 1 つが協調リリースを要求する。内部に閉じておけば、同じ変更が PATCH で済む。
 
-これは [versioning.md](./versioning.md) §5 で「このリポジトリで破壊的変更とは何か」として再度扱う。
-
-## 3. 契約そのもの（plan.md §4.1）
+## 3. 契約そのもの
 
 ```typescript
 interface StageRegistration {
@@ -38,10 +29,7 @@ interface StageRegistration {
 }
 ```
 
-`@nerima-games/mc-kernel` が plan.md の contract の正本であり、mx-redstone はそれを import する。
-oxlint は `@typescript-eslint/consistent-type-definitions: ["warn", "type"]` を設定しているが、
-この 1 箇所だけ `interface` のままなのは意図的で、`.oxlintrc.json` のコメントに免除理由が書いてある
-——**仕様とコードが同じ字面であることのほうが、ローカルなスタイル統一より価値が高い**。
+`StageRegistration` contract は `@nerima-games/mc-kernel` が所有し、mx-redstone はそこから import する。
 
 ### 3-1. `after` は制約であって位置ではない
 
@@ -51,18 +39,14 @@ oxlint は `@typescript-eslint/consistent-type-definitions: ["warn", "type"]` �
 2. 名指しした stage の実装への依存ではない（`StageId` は文字列であり import を作らない）。
 3. 順序中の絶対位置の要求ではない。
 
-**全順序は mc-compose だけが解決する**（plan.md §2.3-3）。
+**全順序は mc-compose だけが解決する。**
 モジュールが自分の絶対位置を宣言しようとすれば、それは「他のモジュールを見ずに正しく決められない判断」を
 下そうとしていることになる。
 
-`test/stage-registration.test.ts` の
-`REGRESSION: a registration carries constraints and nothing else — no priority, no index`
-が、登録オブジェクトのキーが `['after', 'id', 'run']` の 3 つだけであることを固定している。
-`priority: 10` のようなフィールドが後から生えてくるのを止めるためのテストである。
 
 ## 4. 標準 stage 骨格の中でのこのリポジトリ
 
-plan.md §4.2 が定める骨格:
+標準 stage 構成を示す。
 
 ```
 input
@@ -76,15 +60,14 @@ input
 
 | スロット | 埋める人 |
 | --- | --- |
-| `input` | `mc-render`（実行時入力サービスの所有者、plan.md §2.3-2） |
+| `input` | `mc-render`（実行時入力サービスの所有者） |
 | `physics` | `mc-sim`（`mc-physics` を内部で使う） |
 | `interactions` / `entities` / `fluids` / `time/weather` | `mx-gameplay` |
 | **`redstone`** | **`mx-redstone`**（`redstone:power` と `redstone:effects` の 2 stage） |
 | `camera-mirror` / `chunk-sync` / `render` / `post-fx` | `mc-render` |
 | `hud-sync` | `mx-ui` |
 
-**そして、この骨格自体を宣言する者は誰もいない。** 骨格は mc-compose の資産であり、
-各モジュールは辺を出すだけである。
+骨格は mc-compose が定め、各モジュールは順序制約を宣言する。
 
 ### 4-1. `after: [gameplay:fluids]` を宣言しない理由
 
@@ -92,7 +75,7 @@ input
 `fluids` も `time/weather` も mx-gameplay の stage である。
 名指しすれば import は増えないが、**mx-redstone のフレーム位置が別の体験モジュールの存在に依存する**。
 mx-gameplay を外した構成（回路盤プレビュー、あるいは将来のミニマル合成）で
-mx-redstone の順序制約が意味を失う、あるいは黙って無視される。
+mx-redstone の順序制約が意味を失う、あるいは実行時の順序に反映されなくなる。
 骨格を述べるのは mc-compose の仕事であり、mx-redstone が述べてよいのは
 **自分の正しさが要求する制約だけ**である（`stages/stage-ids.ts:22-27`）。
 
@@ -104,8 +87,6 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 | `redstone:effects` | `redstone:power` | 電力が確定してからでないと世界を書き換えられない。自リポジトリ内の辺 |
 
 `sim:physics` は基盤リポジトリの stage であり、体験モジュールの stage ではない。
-この区別を `test/stage-registration.test.ts` の
-`REGRESSION: every declared upstream stage belongs to a foundation repository` が固定している。
 
 ### 4-2. stage が 2 つある理由
 
@@ -120,6 +101,8 @@ mx-redstone の順序制約が意味を失う、あるいは黙って無視さ�
 host は stage 実行後に `applyRedstoneHostEvents` を呼び、5 つの queue をまとめて drain する。対象は lamp transition、piston transition、trigger、hopper transfer、powered-component transition である。
 adapter は同じ world revision と dimension revision から plan を作り、lamp・piston・hopper の fragment を統合して coordinator の `commit` を 1 回だけ呼ぶ。成功した移送の fragment には item owner、hopper cooldown、hopper block edit が含まれる。
 
+For events generated during one redstone tick, each drained event queue orders entries by dimension ID in deterministic string code-point order, then by numeric position in ascending `x`, `y`, and `z` order. This guarantee applies within each queue, does not define an order between queues, and does not depend on snapshot component enumeration or dimension sync order. The runtime's `restoreEvents` method requeues caller-supplied events in the order provided; restored events are outside this ordering guarantee. A snapshot containing multiple components at the same position is rejected with `RedstoneWorldSnapshotDuplicatePositionError` before runtime state changes.
+
 hopper event は経過 redstone tick と powered を持つ。host は経過 tick を game tick に換算して `HopperService` に渡す。候補 endpoint と slot は `selectHopperTransferCandidates` が選び、cooldown と移送可否は HopperService が判定する。候補がない hopper の cooldown は `planAdvanceCooldown` で進める。Java Edition の通常の container 移送後 cooldown は 8 game ticks である。
 
 plan、merge、commit が失敗または中断した場合、古い fragment を再利用せず、drain した batch 全体を runtime queue に戻す。成功した batch の event は commit 完了後に公開する。runtime は経過 redstone tick と powered を渡し、cooldown の独自カウンタを持たない。
@@ -131,14 +114,11 @@ plan、merge、commit が失敗または中断した場合、古い fragment を
 
 **契約** = 他リポジトリが依存してよい。**内部（可視）** = root から見えるが、他リポジトリが依存する約束ではない。
 
-> **`test/public-api.test.ts` は選択した root export を検査する。全 export の台帳は本節に記載する。**
+> **`test/public-api.test.ts` は選択した root export を検査する。全 export の一覧は本節に記載する。**
 > そのうち stage internals と domain internals は export が見えていても契約ではない。
-> W5 が使う piston planning names は下表で契約として明示する。どの名前が契約かは本表が定める。
->
-> `REGRESSION: does not republish mc-kernel’s vocabulary as its own` は
-> `StageId` と `DeltaTimeSecs` がバレルに現れないことも検査する。
+> mc-compose が使う piston planning names は下表で契約として明示する。
 
-### mc-kernel stage contract — **バレルには載せない**
+### mc-kernel stage contract（バレルには載せない）
 
 `StageId`、`DeltaTimeSecs`、`FrameServices`、`StageRegistration` は `@nerima-games/mc-kernel` から利用し、
 `index.ts` から再エクスポートしない。
@@ -148,15 +128,12 @@ plan、merge、commit が失敗または中断した場合、古い fragment を
 | `StageId`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | kernel から直接 import し、再 export しない |
 | `DeltaTimeSecs`（型 + `Brand.refined`） | **非公開**（所有者は kernel） | 同上 |
 | `FrameServices` | **非公開**（所有者は kernel） | runtime service context は kernel が所有 |
-| `StageRegistration` | **非公開**（所有者は kernel） | plan.md §4.1 の字面どおり。`makeRedstoneStages` の**戻り値の形**としてだけ観測される |
-
-これらは「mx-redstone の契約」ではなく mc-kernel が所有する契約である。
+| `StageRegistration` | **非公開**（所有者は kernel） | `makeRedstoneStages` の**戻り値の形**としてだけ観測される |
 
 **だから re-export しない。** バレルに載せると `StageId` / `DeltaTimeSecs` / `StageRegistration` が
 **所有していないパッケージの公開 API** になる。
 消費者はこの語彙を kernel から取る。型は構造的に同一なので、
 kernel から import した消費者は `makeRedstoneStages` の戻り値に対してそのまま型検査を通る。
-mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしており、mx-gameplay / mx-ui も同じである。
 
 ### `stages/registration.ts`
 
@@ -182,6 +159,10 @@ mc-sim / mc-render / mc-playground-kit のバレルが同じ判断をしてお�
 | `RedstoneWorldSnapshot` / `RedstoneComponentSnapshot` / `RedstonePosition` | **契約** | compose/gameplay 型に依存しない意味型 |
 | `LampTransition` / `PoweredComponentKind` / `PoweredComponentTransition` / `PoweredPistonTransition` / `TriggeredComponentKind` / `HopperTransferEvent` / `RedstoneTriggerEvent` | **契約** | host が world write や action に変換する runtime event。`HopperTransferEvent`は`elapsedRedstoneTicks`と`powered`を持つ |
 
+`RedstoneWorldRuntimeService.syncSnapshot`にはオプションの第2引数 `{ readonly isRedstoneConductiveAt?: (position: RedstonePosition) => boolean }` を渡せる。runtimeは給電中のノードに隣接する候補位置の導電性を照会し、各結果をそのtick中に再利用する。callbackを省略すると、すべての位置を非導体として扱う。
+
+`RedstoneComponentSnapshot.strongPowerTo`はソースが強く給電する位置を表す。固体ブロック経由の給電には、hostが導電性callbackを`syncSnapshot`に渡し、対象ソースのsnapshotに`strongPowerTo`を指定する。どちらかを省略した場合は、従来どおりの結果になる。
+
 snapshot から `CircuitBoard` を構築する関数、内部 state、node ID はバレルへ公開しない。
 
 ### `application/redstone-host-port.ts`
@@ -192,12 +173,16 @@ host port は host block を `RedstoneComponentSnapshot` に分類し、runtime 
 | --- | --- | --- |
 | `redstoneSnapshotFromRealm` | **契約** | ホストの生ブロック列から 1 dimension 分の `RedstoneWorldSnapshot` を組む |
 | `applyRedstoneHostEvents` | **契約** | 5つのqueueをdrainし、lamp、piston、hopperのplan fragmentを1つにmergeしてcoordinatorのcommitを1回呼ぶ。commit成功後にだけ`postCommitEvents`を`eventBus.publish`へ渡す。event busが無い場合はcommit前に失敗してbatch全体をruntimeへ戻し、publish失敗後はcommit済みbatchを再queueしない |
-| `RedstoneHostBlock` / `RedstoneHostLookup` / `RedstoneHostWritePort` / `RedstoneHostRealm` | **契約** | host block は `BlockAddress` と typed block を持つ。lookup は hopper block と transfer context も読む。write port はevent requestとhopper block writeを組み立て、coordinatorと`HopperService`を使う |
+| `RedstoneHostBlock` / `RedstoneHostLookup` / `RedstoneHostWritePort` / `RedstoneHostRealm` | **契約** | host block は `BlockAddress`、typed block、任意の`strongPowerTo`配置情報を持つ。lookup はhopper情報、任意のredstone導電性、ボタン状態を読む。ボタン状態を省略すると非アクティブとして扱う。write port はevent requestとhopper block writeを組み立て、coordinatorと`HopperService`を使う |
 | `componentForBlock` | 内部（可視） | ブロック文字列 1 つの分類。テストとホストの直接検証のために可視 |
 | `kernelPistonCapabilities` | 内部（可視） | mc-kernel の `pistonImmovable` 能力テーブルを読む `BlockCapabilityLookup` |
 
 `RedstoneHostLookup`からpiston facingとkindを読み取る。
 event batchにはnote-block triggerとtrapdoor transitionも含めてrequestへ渡す。
+
+`RedstoneHostBlock.strongPowerTo`はレバーやボタンの配置先を表し、対応するcomponent snapshotへ渡す。配置先を強く給電するソースでは、この値を指定する。`RedstoneHostLookup.isButtonActive`はボタンの状態を読み取る任意の関数で、省略時はボタンを非アクティブとして扱う。
+
+`RedstoneHostLookup.isRedstoneConductiveAt`は、そのrealmのdimension内にある位置のredstone導電性を返す。固体ブロック経由の給電には、hostがこのcallbackを`syncSnapshot`に渡し、対象の`RedstoneHostBlock`に`strongPowerTo`を指定する。どちらかを省略した場合は、従来どおりの結果になる。
 
 ### `stages/stage-ids.ts`
 
@@ -207,27 +192,28 @@ event batchにはnote-block triggerとtrapdoor transitionも含めてrequestへ�
 | `UPSTREAM_STAGE_IDS` | 内部（可視） | 宣言した上流。テストの検査対象 |
 | `EXPERIENCE_MODULE_STAGE_PREFIXES` / `OWN_STAGE_PREFIX` | 内部（可視） | §2.3-1 検査のための定数 |
 
-### `domain/power-graph.ts` — すべて内部（可視）
+### `domain/power-graph.ts`（すべて内部で可視）
 
 `MAX_POWER_LEVEL` / `PowerLevel` / `ComponentKind` / `Component` / `CircuitBoard` / `PowerMap` /
-`emptyPowerMap` / `powerAt` / `sourcesOf` / `propagateTick` / `settleTickLimitFor` / `SettleResult` /
-`settle` / `isLit`
+`PowerProvenanceCandidate` / `PowerTickWithProvenance` / `emptyPowerMap` / `powerAt` /
+`componentEntriesForKinds` / `sourcesOf` / `propagateTick` / `propagateTickWithProvenance` /
+`settleTickLimitFor` / `SettleResult` / `settle` / `drivenPowerAt` / `isLit` / `isPowered`
 
 1 つも契約ではない（§2）。
 
-### `domain/power-timing.ts` — すべて内部（可視）
+### `domain/power-timing.ts`（すべて内部で可視）
 
 `DEFAULT_BUTTON_PULSE_TICKS` / `TORCH_BURNOUT_TOGGLE_LIMIT` / `TORCH_BURNOUT_WINDOW_TICKS` /
 `TORCH_BURNOUT_COOLDOWN_TICKS` / `RepeaterTimer` / `ButtonTimer` / `TorchTimer` / `TimedCircuitState` /
 `emptyTimedCircuitState` / `advanceTimedCircuit`
 
-### `domain/target-block.ts` — すべて内部（可視）
+### `domain/target-block.ts`（すべて内部で可視）
 
 `TargetHit` / `targetSignal`
 
 ### `domain/piston.ts`
 
-mc-compose の W5 browser host は `pistonPositionAt`、`planPistonTransition`、`applyPistonPlan`、`PistonMovementPlan` を使う。server host は `pistonPositionAt`、`planPistonTransition`、`validatePistonPlan`、`PistonCellRead`、`PistonMovementPlan` を使う。これらと関数の入出力に必要な `BlockRef`、`BlockCapabilityLookup`、`PistonFacing`、`PistonKind`、`PistonState`、`PistonPosition`、`PistonCell`、`PistonWorldView`、`PistonMove`、`PistonPlanRefusal`、`PistonMovementOutcome`、`PistonTransitionRequest`、`PistonApplyPort` を契約とする。
+mc-compose の browser host は `pistonPositionAt`、`planPistonTransition`、`applyPistonPlan`、`PistonMovementPlan` を使う。server host は `pistonPositionAt`、`planPistonTransition`、`validatePistonPlan`、`PistonCellRead`、`PistonMovementPlan` を使う。これらと関数の入出力に必要な `BlockRef`、`BlockCapabilityLookup`、`PistonFacing`、`PistonKind`、`PistonState`、`PistonPosition`、`PistonCell`、`PistonWorldView`、`PistonMove`、`PistonPlanRefusal`、`PistonMovementOutcome`、`PistonTransitionRequest`、`PistonApplyPort` を契約とする。
 
 `PistonPosition`はmc-kernelの`BlockPosition`のaliasであり、`PistonPositionSchema`はkernelの`BlockPositionSchema`を使う。
 planner、world read、world writeは同じbrand付き座標を使う。
@@ -241,7 +227,7 @@ planner、world read、world writeは同じbrand付き座標を使う。
 移動列は遠い側から順に並ぶ。スティッキー収縮は先端から 2 マス先の可動ブロック 1 個だけを
 1 マス先へ引き戻す。欠損セル、範囲外、移動不能ブロック、不正な移動列は拒否し、
 `applyPistonPlan` は検証済み plan を `PistonApplyPort.commit` の 1 回の atomic commit で適用する。
-runtime の powered transition は node ID 順で、観測した給電エッジごとに冪等である。
+runtime は、powered component の観測済み給電状態が変化したときだけ transition を出力する。
 
 スライム／ハチミツによる隣接ブロック連結は mc-kernel に対応する語彙・能力が無いため扱わない。
 ブロックに押されるエンティティの移動と衝突解決は mc-sim / mc-physics の責務である。
@@ -250,17 +236,14 @@ runtime の powered transition は node ID 順で、観測した給電エッジ�
 host adapter は登録済み block 名を kernel の `BlockId` に解決して `capabilityOfBlockId` を呼び、
 その `Result` を planner まで伝える（[design-notes.md](./design-notes.md) DN-RS-1、[versioning.md](./versioning.md) §6）。
 
-### `domain/position-key.ts` — **バレルには載せない**
+### `domain/position-key.ts`（バレルには載せない）
 
-`PositionKey`（= `string`）。ブランドを**付けていない**のは意図的で、
-ブランドを付けると本リポジトリが座標概念の所有者を騙ることになるためである（`domain/position-key.ts:11-15`）。
-kernel 所有の座標語彙であり、`index.ts` から re-export していない
-——座標語彙も所有していないものだからである。
+`PositionKey`（= `string`）は内部用の位置キーであり、`index.ts`から再エクスポートしない。
 
-### 5-1. 機械的な root export 台帳
+### 5-1. root export の一覧
 
-以下は `src/index.ts` の明示 export と barrel export を、生成済み declaration の名前に展開した全件台帳である。
-各行は root export を1件だけ記載する。契約区分は本書の境界定義に従う。W5 が使う piston planning surface は契約とし、ほかの domain rules は内部（可視）とする。
+以下は `src/index.ts` の明示 export と barrel export を、生成済み declaration の名前に展開した一覧である。
+各行は root export を1件記載する。契約区分は本書の境界定義に従う。mc-compose が使う piston planning surface は契約とし、ほかの domain rules は内部（可視）とする。
 
 | export | source | 区分 |
 | --- | --- | --- |
@@ -397,11 +380,9 @@ kernel 所有の座標語彙であり、`index.ts` から re-export していな
 | `EXPERIENCE_MODULE_STAGE_PREFIXES` | `stages/stage-ids.ts` | 内部（可視） |
 | `OWN_STAGE_PREFIX` | `stages/stage-ids.ts` | 内部（可視） |
 
-この表の source は `src/index.ts` の export 元、名前は `dist/**/*.d.ts` の宣言から更新する。
-
 ## 6. `GameModule` を実装した（`redstoneModule`）
 
-plan.md §4.1 の `GameModule` 契約は次の形である。
+`GameModule` contract は次の形である。
 
 ```typescript
 interface GameModule<ROut, E, RIn, RRegister = never> {

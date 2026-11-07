@@ -99,13 +99,15 @@ $ npm install --global pnpm@12.14.0
 
 | コマンド | 内容 |
 | --- | --- |
-| `pnpm typecheck` | `tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` を型検査 |
+| `pnpm typecheck` | `tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` / `apps/browser-harness/tsconfig.json` を型検査 |
 | `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | `pnpm lint:fix` | oxlint の自動修正 |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:watch` | vitest watch |
-| `pnpm test:coverage` | カバレッジ計測（閾値は未設定。[docs/testing.md](./docs/testing.md) §6） |
+| `pnpm test:coverage` | カバレッジ計測（4 指標すべて 100% のゲート。[docs/testing.md](./docs/testing.md) §6） |
 | `pnpm preview` | 回路盤サンドボックス（[apps/preview-circuit-board/](./apps/preview-circuit-board/README.md)）。**`pnpm verify` には入れていない** |
+| `pnpm preview:browser` | ブラウザデバッグ UI（[docs/redstone-debugging.md](./docs/redstone-debugging.md)） |
+| `pnpm test:browser` | Chromium によるブラウザ UI テスト（`test-browser/`） |
 | `pnpm verify` | `typecheck && lint && test` |
 
 ## 現状
@@ -124,20 +126,21 @@ $ npm install --global pnpm@12.14.0
   以外では世界を変更しない。
   ボタン入力は `pressButton(dimension, position)` でキューへ積み、次の redstone tick から
   `pulseTicks`（既定 10 tick）だけ通電する。再入力は残り時間を設定値へ戻す。
-  ピストン伸縮・ディスペンサ発射・ホッパー移送・オブザーバのパルスは、すべて mc-sim / mc-worldgen
-  への書き込みであり、書き込み先がまだ存在しない。**判断のほうは全部書いてある**——どの
-  オブザーバが発火したか、どのディスペンサが立ち上がりを見たか、どのホッパーがロックされているか、
-  コンテナの読みがいくつか——ので、足りないのは書き込み口だけである。
-- **部品は 12 種**（wire / torch / lever / button / repeater / comparator / observer /
-  pressure-plate / target / hopper / dispenser / lamp）。ただし**完全なのはコンパレータ、オブザーバ、
-  ターゲットの信号規則だけ**である。
-  ホッパー・ディスペンサ・感圧板は**レッドストーンの規則**（ロックの反転、搬送周期、
-  立ち上がりエッジ、占有数 → 信号強度）だけがここにあり、ターゲットは命中面上の位置から
-  1–15 の信号強度を決定する純粋規則までを所有する。
+  ピストン遷移、部品の trigger / powered 遷移、ホッパー移送は runtime event として蓄積する。
+  `applyRedstoneHostEvents` はホストが渡す `RedstoneHostWritePort` と coordinator を通じて適用し、
+  ホッパー移送では mc-sim の `HopperService` が作る plan も同じ commit に含める。
+  この package は block ID や世界状態を所有せず、具体的な lookup と write builder はホストが提供する。
+- **部品は 18 種**（wire / torch / lever / button / repeater / lamp / comparator / observer /
+  pressure-plate / target / piston / hopper / dispenser / dropper / note-block / powered-rail / door / trapdoor）。
+  コンパレータ、オブザーバ、ターゲットは信号規則まで実装している。
+  ホッパーはロックと搬送候補選択を持ち、mc-sim の `HopperService` と host port が移送を計画する。
+  ディスペンサと感圧板はレッドストーンの規則を持つ一方、アイテムと entity の具体的な読み書きは
+  ホストとゲームプレイ層の境界にある。ターゲットは命中面上の位置から 1–15 の信号強度を決める。
   アイテムと entity に触る部分は境界の向こうにある。
   **境界は「あとで」ではなく名指ししてある**——[docs/design-notes.md](./docs/design-notes.md)
-  DN-RS-17 に、足りない型とクエリが「どのファイルの何行目に無いか」まで表になっている。
-  そのうち 3 つは `InventoryServiceApi.inventoryAt(position)` 1 つで同時にほどける。
+  DN-RS-17 は mc-sim / mc-kernel 側に足りない型とクエリを記録する。
+  現在の `RedstoneHostLookup` は container slot と hopper context の read callback を受け取るが、
+  実 world から値を得る実装はホストが提供する。
 - **ソース出力は隣接ワイヤへ同じ強度で入る。**
   レバー・トーチ・リピーターの 15 と、コンパレータ・重み付き感圧板の可変出力は、
   最初のワイヤでは減衰しない。ワイヤが次のセルへ渡すときだけ 1 減る（DN-RS-13）。
@@ -172,6 +175,8 @@ $ npm install --global pnpm@12.14.0
   **4 件を修正し、残る 3 件は現在の挙動を名指しするテストを置いた。**
   `--stats` の行は pin ではない（測るだけで期待値を記録しないので、直すと finding は静かに消える）。
   pin は `test/power-graph.test.ts` の側にある。
+- **ブラウザデバッグ UI は `pnpm preview:browser` で起動する。** scenario ごとの runtime 観測と診断パネルは
+  [docs/redstone-debugging.md](./docs/redstone-debugging.md) を参照する。端末プレビューとは別の dev アプリで、公開 package には含まれない。
 - **`dist` は `pnpm build` で生成し、`pnpm package:verify` で配布境界を検査する。**
 - **カバレッジは 4 指標すべて 100% をゲートとする。** `pnpm test:coverage` は `verify` とは別に実行する。
 
@@ -190,6 +195,7 @@ $ npm install --global pnpm@12.14.0
 | [docs/design-notes.md](./docs/design-notes.md) | 設計注意 DN-RS-1〜11。参照実装の `path:line` と回帰テスト名つき |
 | [docs/porting.md](./docs/porting.md) | 移植元の**実測 LOC**、plan.md との差異、移植順序 |
 | [docs/testing.md](./docs/testing.md) | 検証ゲート、fixture 回路テスト、完成条件、100% カバレッジゲート |
+| [docs/redstone-debugging.md](./docs/redstone-debugging.md) | ブラウザデバッグ UI、scenario、runtime 観測と限界 |
 | [docs/versioning.md](./docs/versioning.md) | 0.x → 1.0.0 方針、GitHub Packages、**このリポジトリで破壊的変更とは何か** |
 
 能力フラグの権威は `mc-kernel/docs/capability-flag-audit.md` である。
