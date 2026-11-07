@@ -35,21 +35,33 @@ import {
 import { Effect, Option, Ref, Schema } from 'effect'
 import { REDSTONE_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
 import {
+  type RedstoneObservationTickContext,
+  type RedstonePowerTickContextBundle,
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
   type RedstoneWorldRuntimeStateError,
   type RedstoneWorldState,
+  captureObservedTick,
   collectHopperTransferEvents,
   collectLampTransitions,
   collectPistonTransitions,
   collectPoweredComponentTransitions,
   collectTriggerEvents,
   makeRedstoneWorldState,
+  redstonePowerTickContextFactoryFor,
   redstoneWorldStateFor,
 } from '../application/world-runtime.js'
-import { type TimedCircuitState, advanceTimedCircuit } from '../domain/power-timing.js'
-import type { CircuitBoard } from '../domain/power-graph.js'
-import type { PositionKey } from '../domain/position-key.js'
+import {
+  type TimedCircuitState,
+  type TimedCircuitWithBlockPower,
+  advanceTimedCircuit,
+  advanceTimedCircuitWithContext,
+  advanceTimedCircuitWithProvenanceContext,
+} from '../domain/power-timing.js'
+
+type CircuitBoard = import('../domain/power-graph.js').CircuitBoard
+type PowerTickWithProvenance = import('../domain/power-graph.js').PowerTickWithProvenance
+type PositionKey = import('../domain/position-key.js').PositionKey
 
 const ZERO_TICK_COUNT = 0
 const REDSTONE_TICK_SECONDS = 0.1
@@ -157,30 +169,222 @@ const ONE_TICK = nonNegativeTickCountFromNumber(TICK_STEP)
  * each intermediate state so hopper events use the power from their own tick.
  * The frame's pressed buttons enter only the first tick.
  */
-const advancePower = (
-  board: CircuitBoard,
-  ticks: NonNegativeTickCount,
-  seed: { readonly timed: TimedCircuitState; readonly pressedButtons: ReadonlySet<PositionKey> },
-): ReadonlyArray<TimedCircuitState> => {
-  const buttonsForTick = (tick: number): ReadonlySet<PositionKey> => {
-    if (tick === FIRST_TICK_INDEX) {
-      return seed.pressedButtons
+type AdvancedPowerTick =
+  | {
+      readonly timedCircuit: TimedCircuitState
+      readonly blockPower: TimedCircuitWithBlockPower['blockPower']
+      readonly context: RedstoneObservationTickContext
+      readonly observation: PowerTickWithProvenance
     }
-    return new Set()
-  }
+  | {
+      readonly timedCircuit: TimedCircuitState
+      readonly blockPower: TimedCircuitWithBlockPower['blockPower']
+      readonly context: Extract<RedstonePowerTickContextBundle, { readonly captureProvenance: false }>
+      readonly observation?: never
+    }
 
-  const states: Array<TimedCircuitState> = []
-  let next = seed.timed
+type AdvancedPowerFrame =
+  | { readonly mode: 'timed-only'; readonly states: ReadonlyArray<TimedCircuitState> }
+  | { readonly mode: 'block-power'; readonly states: ReadonlyArray<AdvancedPowerTick> }
+
+const timedCircuitWithoutBlockPower = (timedCircuit: TimedCircuitWithBlockPower): TimedCircuitState => ({
+  buttons: timedCircuit.buttons,
+  power: timedCircuit.power,
+  repeaters: timedCircuit.repeaters,
+  torches: timedCircuit.torches,
+})
+
+const pressedButtonsForTick = (
+  tick: number,
+  pressedButtons: ReadonlySet<PositionKey>,
+): ReadonlySet<PositionKey> => {
+  if (tick === FIRST_TICK_INDEX) {
+    return pressedButtons
+  }
+  return new Set()
+}
+
+const advancePowerTick = (input: Readonly<{
+  state: RedstoneFrameState
+  board: CircuitBoard
+  timedCircuit: TimedCircuitState
+  pressedButtons: ReadonlySet<PositionKey>
+}>, context: RedstonePowerTickContextBundle): AdvancedPowerTick => {
+  if (context.captureProvenance) {
+    const advanced = advanceTimedCircuitWithProvenanceContext({
+      board: input.board,
+      context: context.context,
+      pressedButtons: input.pressedButtons,
+      previous: input.timedCircuit,
+    })
+    return {
+      blockPower: advanced.blockPower,
+      context,
+      observation: advanced,
+      timedCircuit: timedCircuitWithoutBlockPower(advanced),
+    }
+  }
+  const advanced = advanceTimedCircuitWithContext({
+    board: input.board,
+    context: context.context,
+    pressedButtons: input.pressedButtons,
+    previous: input.timedCircuit,
+  })
+  return {
+    blockPower: advanced.blockPower,
+    context,
+    timedCircuit: timedCircuitWithoutBlockPower(advanced),
+  }
+}
+
+type MutablePowerTickState = {
+  blockPower: TimedCircuitWithBlockPower['blockPower']
+  timedCircuit: TimedCircuitState
+}
+
+const contextForPowerTick = (input: Readonly<{
+  tick: number
+  firstContext: RedstonePowerTickContextBundle
+  contextForTick: (previousBlockPower: TimedCircuitWithBlockPower['blockPower']) => RedstonePowerTickContextBundle
+  previousBlockPower: TimedCircuitWithBlockPower['blockPower']
+}>): RedstonePowerTickContextBundle => {
+  if (input.tick === FIRST_TICK_INDEX) {
+    return input.firstContext
+  }
+  return input.contextForTick(input.previousBlockPower)
+}
+
+const advanceAndCollectPowerTick = (input: Readonly<{
+  board: CircuitBoard
+  state: RedstoneFrameState
+  tickState: MutablePowerTickState
+  pressedButtons: ReadonlySet<PositionKey>
+  states: Array<AdvancedPowerTick>
+  tick: number
+  firstContext: RedstonePowerTickContextBundle
+  contextForTick: (previousBlockPower: TimedCircuitWithBlockPower['blockPower']) => RedstonePowerTickContextBundle
+}>): void => {
+  const { board, contextForTick, firstContext, pressedButtons, state, states, tick, tickState } = input
+  const context = contextForPowerTick({
+    contextForTick,
+    firstContext,
+    previousBlockPower: tickState.blockPower,
+    tick,
+  })
+  const advanced = advancePowerTick({
+    board,
+    pressedButtons,
+    state,
+    timedCircuit: tickState.timedCircuit,
+  }, context)
+  states.push(advanced)
+  tickState.blockPower = advanced.blockPower
+  tickState.timedCircuit = advanced.timedCircuit
+}
+
+const advancePowerTicks = (input: Readonly<{
+  state: RedstoneFrameState
+  board: CircuitBoard
+  ticks: NonNegativeTickCount
+  seed: Readonly<{ timed: TimedCircuitState; pressedButtons: ReadonlySet<PositionKey> }>
+  contextForTick: (previousBlockPower: TimedCircuitWithBlockPower['blockPower']) => RedstonePowerTickContextBundle
+  firstContext: RedstonePowerTickContextBundle
+  previousBlockPower: TimedCircuitWithBlockPower['blockPower']
+}>): ReadonlyArray<AdvancedPowerTick> => {
+  const {
+    board,
+    contextForTick,
+    firstContext,
+    previousBlockPower,
+    seed,
+    state: worldState,
+    ticks,
+  } = input
+  const tickState = { blockPower: previousBlockPower, timedCircuit: seed.timed }
+  const states: Array<AdvancedPowerTick> = []
   for (let tick = FIRST_TICK_INDEX; tick < ticks; tick += TICK_STEP) {
-    next = advanceTimedCircuit(board, next, buttonsForTick(tick))
-    states.push(next)
+    advanceAndCollectPowerTick({
+      board,
+      contextForTick,
+      firstContext,
+      pressedButtons: pressedButtonsForTick(tick, seed.pressedButtons),
+      state: worldState,
+      states,
+      tick,
+      tickState,
+    })
   }
   return states
 }
 
+const NO_BLOCK_POWER_ENTRIES = 0
+
+const isTimedOnlyContext = (
+  context: RedstonePowerTickContextBundle,
+  previousBlockPower: TimedCircuitWithBlockPower['blockPower'],
+): boolean => !context.captureProvenance &&
+  typeof context.context.isRedstoneConductiveAt !== 'function' &&
+  previousBlockPower.size === NO_BLOCK_POWER_ENTRIES
+
+const advanceTimedOnlyTicks = (input: Readonly<{
+  board: CircuitBoard
+  ticks: NonNegativeTickCount
+  seed: Readonly<{ timed: TimedCircuitState; pressedButtons: ReadonlySet<PositionKey> }>
+}>): AdvancedPowerFrame => {
+  const states: Array<TimedCircuitState> = []
+  let next = input.seed.timed
+  for (let tick = FIRST_TICK_INDEX; tick < input.ticks; tick += TICK_STEP) {
+    next = advanceTimedCircuit(input.board, next, pressedButtonsForTick(tick, input.seed.pressedButtons))
+    states.push(next)
+  }
+  return { mode: 'timed-only', states }
+}
+
+const advanceBlockPowerTicks = (input: Readonly<{
+  state: RedstoneFrameState
+  board: CircuitBoard
+  ticks: NonNegativeTickCount
+  seed: Readonly<{ timed: TimedCircuitState; pressedButtons: ReadonlySet<PositionKey> }>
+  previousBlockPower: TimedCircuitWithBlockPower['blockPower']
+  contextForTick: (previousBlockPower: TimedCircuitWithBlockPower['blockPower']) => RedstonePowerTickContextBundle
+  firstContext: RedstonePowerTickContextBundle
+}>): AdvancedPowerFrame => ({
+  mode: 'block-power',
+  states: advancePowerTicks(input),
+})
+
+const advancePower = (input: Readonly<{
+  state: RedstoneFrameState
+  board: CircuitBoard
+  ticks: NonNegativeTickCount
+  seed: Readonly<{ timed: TimedCircuitState; pressedButtons: ReadonlySet<PositionKey> }>
+}>): Effect.Effect<AdvancedPowerFrame> => Effect.gen(function* advancePowerGenerator() {
+  const previousBlockPower = yield* Ref.get(input.state.blockPower)
+  const contextForTick = redstonePowerTickContextFactoryFor(input.state)
+  const firstContext = contextForTick(previousBlockPower)
+  if (isTimedOnlyContext(firstContext, previousBlockPower)) {
+    return advanceTimedOnlyTicks(input)
+  }
+  return advanceBlockPowerTicks({ ...input, contextForTick, firstContext, previousBlockPower })
+})
+
 /** Commits every simulated tick and records hopper power for the same tick. */
-const commitPowerTicks = (state: RedstoneFrameState, states: ReadonlyArray<TimedCircuitState>) =>
+const commitPowerTicks = (state: RedstoneFrameState, states: ReadonlyArray<AdvancedPowerTick>) =>
   Effect.gen(function* commitPowerTicksEffect() {
+    for (const next of states) {
+      yield* Ref.set(state.timedCircuit, next.timedCircuit)
+      yield* Ref.set(state.power, next.timedCircuit.power)
+      yield* Ref.set(state.blockPower, next.blockPower)
+      if (next.observation) {
+        yield* captureObservedTick(state, next.context, next.observation)
+      }
+      yield* collectHopperTransferEvents(state, ONE_TICK)
+      yield* Ref.update(state.tickCount, (count) => nonNegativeTickCountFromNumber(count + ONE_TICK))
+    }
+  })
+
+const commitTimedCircuitTicks = (state: RedstoneFrameState, states: ReadonlyArray<TimedCircuitState>) =>
+  Effect.gen(function* commitTimedCircuitTicksEffect() {
     for (const next of states) {
       yield* Ref.set(state.timedCircuit, next)
       yield* Ref.set(state.power, next.power)
@@ -188,6 +392,13 @@ const commitPowerTicks = (state: RedstoneFrameState, states: ReadonlyArray<Timed
       yield* Ref.update(state.tickCount, (count) => nonNegativeTickCountFromNumber(count + ONE_TICK))
     }
   })
+
+const commitAdvancedPowerFrame = (state: RedstoneFrameState, frame: AdvancedPowerFrame) => {
+  if (frame.mode === 'timed-only') {
+    return commitTimedCircuitTicks(state, frame.states)
+  }
+  return commitPowerTicks(state, frame.states)
+}
 
 /**
  * The two stages mx-redstone registers.
@@ -216,8 +427,8 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
         // `domain/power-graph.ts`.
         const pressedButtons = yield* Ref.getAndSet(state.pendingButtonPresses, new Set())
         const timed = yield* Ref.get(state.timedCircuit)
-        const nexts = advancePower(board, ticks, { pressedButtons, timed })
-        yield* commitPowerTicks(state, nexts)
+        const advanced = yield* advancePower({ board, seed: { pressedButtons, timed }, state, ticks })
+        yield* commitAdvancedPowerFrame(state, advanced)
       }),
   },
   {

@@ -13,6 +13,11 @@ import {
   type ComponentKind,
   type PowerLevel,
   type PowerMap,
+  type PowerProvenanceCandidate,
+  type PowerReadContext,
+  type PowerTickBlockLevels,
+  type PowerTickContext,
+  type PowerTickWithProvenance,
   emptyPowerMap,
   isLit,
   isPowered,
@@ -40,6 +45,22 @@ import {
 import type { PositionKey } from '../domain/position-key.js'
 
 type DimensionId = BlockAddress['dimension']
+const NO_LOOKUPS = 0
+const NO_ITEMS = 0
+const BLOCK_POWER_READERS: ReadonlySet<ComponentKind> = new Set([
+  'comparator',
+  'dispenser',
+  'door',
+  'dropper',
+  'hopper',
+  'lamp',
+  'note-block',
+  'piston',
+  'powered-rail',
+  'repeater',
+  'torch',
+  'trapdoor',
+])
 
 export type RedstonePosition = BlockPosition
 
@@ -57,6 +78,7 @@ export type RedstoneComponentSnapshot = {
   readonly containerSlots?: ReadonlyArray<ContainerSlot>
   readonly containerSignal?: PowerLevel
   readonly outputTo?: RedstonePosition
+  readonly strongPowerTo?: RedstonePosition
   readonly pistonFacing?: PistonFacing
   readonly pistonKind?: PistonKind
   readonly pistonState?: PistonState
@@ -67,6 +89,12 @@ export type RedstoneComponentSnapshot = {
 export type RedstoneWorldSnapshot = {
   readonly dimension: DimensionId
   readonly components: ReadonlyArray<RedstoneComponentSnapshot>
+}
+
+export type RedstoneWorldSnapshotDuplicatePositionError = {
+  readonly _tag: 'DuplicateRedstoneWorldSnapshotPosition'
+  readonly dimension: DimensionId
+  readonly position: RedstonePosition
 }
 
 export type LampTransition = {
@@ -104,13 +132,33 @@ export type PoweredComponentTransition = {
 }
 
 type DimensionSnapshot = ReadonlyMap<PositionKey, RedstoneComponentSnapshot>
+type RedstoneSnapshotSyncOptions = {
+  readonly isRedstoneConductiveAt?: (position: RedstonePosition) => boolean
+}
+
+export type RedstoneTickObservation = {
+  readonly tick: NonNegativeTickCount
+  readonly dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>
+  readonly power: PowerMap
+  readonly blockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>
+  readonly provenance: ReadonlyMap<PositionKey, ReadonlyArray<PowerProvenanceCandidate>>
+  readonly conductivityAnswers: ReadonlyMap<PositionKey, boolean>
+  readonly timedCircuit: TimedCircuitState
+}
+
+type ObservationRecorder = {
+  enabled: boolean
+  ticks: Array<RedstoneTickObservation>
+}
 
 type ObservedLamp = LampTransition
 
 export type RedstoneWorldState = {
   readonly dimensions: Ref.Ref<ReadonlyMap<DimensionId, DimensionSnapshot>>
+  readonly conductivityLookups: Ref.Ref<ReadonlyMap<DimensionId, (position: RedstonePosition) => boolean>>
   readonly board: Ref.Ref<CircuitBoard>
   readonly power: Ref.Ref<PowerMap>
+  readonly blockPower: Ref.Ref<ReadonlyMap<PositionKey, PowerTickBlockLevels>>
   readonly timedCircuit: Ref.Ref<TimedCircuitState>
   readonly pendingButtonPresses: Ref.Ref<ReadonlySet<PositionKey>>
   readonly observedLamps: Ref.Ref<ReadonlyMap<PositionKey, ObservedLamp>>
@@ -136,6 +184,7 @@ export type RedstoneEventBatch = {
 
 const ZERO_DURATION_SECS = 0
 const ZERO_TICK_COUNT = 0
+const ONE_TICK = 1
 const fixedDurationSecsSchema = Schema.Number.pipe(Schema.fromBrand('FixedDurationSecs', FixedDurationSecs))
 const nonNegativeTickCountSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(ZERO_TICK_COUNT))
   .pipe(Schema.fromBrand('NonNegativeTickCount', NonNegativeTickCount))
@@ -168,6 +217,7 @@ export const RedstoneComponentSnapshotSchema: Schema.Codec<RedstoneComponentSnap
   powered: Schema.optionalKey(Schema.Boolean),
   pulseTicks: Schema.optionalKey(nonNegativeTickCountSchema),
   sideInputs: Schema.optionalKey(arraySchema(BlockPositionSchema)),
+  strongPowerTo: Schema.optionalKey(BlockPositionSchema),
 })
 
 export const RedstoneWorldSnapshotSchema: Schema.Codec<RedstoneWorldSnapshot, unknown> = structSchema({
@@ -217,7 +267,10 @@ export const RedstoneEventBatchSchema: Schema.Codec<RedstoneEventBatch, unknown>
 
 export type RedstoneWorldRuntimeService = {
   /** Replaces only the named dimension; snapshots of other dimensions remain installed. */
-  readonly syncSnapshot: (snapshot: RedstoneWorldSnapshot) => Effect.Effect<void, Schema.SchemaError>
+  readonly syncSnapshot: (snapshot: RedstoneWorldSnapshot, options?: RedstoneSnapshotSyncOptions) => Effect.Effect<
+    void,
+    Schema.SchemaError | RedstoneWorldSnapshotDuplicatePositionError
+  >
   /** Starts or restarts this button's configured pulse on the next redstone tick. */
   readonly pressButton: (dimension: DimensionId, position: RedstonePosition) => Effect.Effect<void>
   /** Restores a previously drained event batch after its host commit fails. */
@@ -252,6 +305,13 @@ export class RedstoneWorldRuntime extends RedstoneWorldRuntimeBase {}
 
 const copyPosition = ({ x, y, z }: RedstonePosition): RedstonePosition => ({ x, y, z })
 
+// Relational comparison stays locale-independent and returns zero for equal IDs.
+const compareDimensionIds = (left: DimensionId, right: DimensionId): number =>
+  Number(left > right) - Number(left < right)
+
+const comparePositionCoordinates = (left: RedstonePosition, right: RedstonePosition): number =>
+  left.x - right.x || left.y - right.y || left.z - right.z
+
 /** Stable and collision-safe across dimensions. */
 export const redstoneNodeId = (dimension: DimensionId, position: RedstonePosition): PositionKey =>
   JSON.stringify([dimension, position.x, position.y, position.z])
@@ -285,6 +345,70 @@ const withOptionalMapped = <Key extends string, Value, Projected>(
   return result
 }
 
+const copyComponentSnapshot = (component: RedstoneComponentSnapshot): RedstoneComponentSnapshot => ({
+  ...withOptional('active', component.active),
+  ...withOptional('containerSignal', component.containerSignal),
+  ...withOptionalMapped('containerSlots', component.containerSlots, (slots) => slots.map((slot) => ({ ...slot }))),
+  ...withOptional('delayTicks', component.delayTicks),
+  ...withOptional('emits', component.emits),
+  ...withOptionalMapped('inputFrom', component.inputFrom, copyPosition),
+  kind: component.kind,
+  ...withOptionalMapped('invertedBy', component.invertedBy, copyPosition),
+  ...withOptional('mode', component.mode),
+  ...withOptionalMapped('outputTo', component.outputTo, copyPosition),
+  ...withOptionalMapped('strongPowerTo', component.strongPowerTo, copyPosition),
+  ...withOptional('pistonFacing', component.pistonFacing),
+  ...withOptional('pistonKind', component.pistonKind),
+  ...withOptional('pistonState', component.pistonState),
+  position: copyPosition(component.position),
+  ...withOptional('powered', component.powered),
+  ...withOptional('pulseTicks', component.pulseTicks),
+  ...withOptionalMapped('sideInputs', component.sideInputs, (positions) => positions.map(copyPosition)),
+})
+
+const copyDimensions = (
+  dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>,
+): ReadonlyMap<DimensionId, DimensionSnapshot> => new Map(
+  [...dimensions].map(([dimension, snapshots]) => [
+    dimension,
+    new Map([...snapshots].map(([key, component]) => [key, copyComponentSnapshot(component)])),
+  ]),
+)
+
+const copyTimedCircuit = (timedCircuit: TimedCircuitState): TimedCircuitState => ({
+  buttons: new Map([...timedCircuit.buttons].map(([key, timer]) => [key, { ...timer }])),
+  power: new Map(timedCircuit.power),
+  repeaters: new Map([...timedCircuit.repeaters].map(([key, timer]) => [key, { ...timer }])),
+  ...withOptionalMapped('torches', timedCircuit.torches, (torches) => new Map(
+    [...torches].map(([key, timer]) => [key, { ...timer, recentOffTicks: [...timer.recentOffTicks] }]),
+  )),
+})
+
+const copyProvenance = (
+  provenance: ReadonlyMap<PositionKey, ReadonlyArray<PowerProvenanceCandidate>>,
+): ReadonlyMap<PositionKey, ReadonlyArray<PowerProvenanceCandidate>> => new Map(
+  [...provenance].map(([key, candidates]) => [key, candidates.map((candidate) => ({ ...candidate }))]),
+)
+
+const copyBlockPower = (
+  blockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>,
+): ReadonlyMap<PositionKey, PowerTickBlockLevels> => new Map(
+  [...blockPower].map(([key, levels]) => [key, { ...levels }]),
+)
+
+const copyTickObservation = (tick: RedstoneTickObservation): RedstoneTickObservation => ({
+  blockPower: copyBlockPower(tick.blockPower),
+  conductivityAnswers: new Map(tick.conductivityAnswers),
+  dimensions: copyDimensions(tick.dimensions),
+  power: new Map(tick.power),
+  provenance: copyProvenance(tick.provenance),
+  tick: tick.tick,
+  timedCircuit: copyTimedCircuit(tick.timedCircuit),
+})
+
+const observationRecorders = new WeakMap<RedstoneWorldState, ObservationRecorder>()
+export const REDSTONE_OBSERVATION_HISTORY_LIMIT = 120
+
 /** An explicit `containerSignal` wins; otherwise it is derived from `containerSlots` when any
  * are present. Split out because it is the one optional field with a fallback source. */
 const withOptionalContainerSignal = (
@@ -296,11 +420,35 @@ const withOptionalContainerSignal = (
   return withOptionalMapped('containerSignal', component.containerSlots, containerSignalStrength)
 }
 
+const positionAtOffset = (
+  position: RedstonePosition,
+  offset: RedstonePosition,
+): Option.Option<RedstonePosition> => {
+  const x = position.x + offset.x
+  const y = position.y + offset.y
+  const z = position.z + offset.z
+  if (![x, y, z].every(Number.isSafeInteger)) {
+    return Option.none()
+  }
+  return Option.some({ x: blockAxis(x), y: blockAxis(y), z: blockAxis(z) })
+}
+
+const torchStrongPowerTarget = (position: RedstonePosition): RedstonePosition | undefined =>
+  Option.getOrUndefined(positionAtOffset(position, { x: ZERO_AXIS, y: POSITIVE_ONE_AXIS, z: ZERO_AXIS }))
+
+const strongPowerTargetFor = (component: RedstoneComponentSnapshot): RedstonePosition | undefined => {
+  if (component.kind === 'torch') {
+    return torchStrongPowerTarget(component.position)
+  }
+  return component.strongPowerTo
+}
+
 const componentAt = (
   dimension: DimensionId,
   component: RedstoneComponentSnapshot,
 ): Component => {
   const positionToNodeId = (position: RedstonePosition): PositionKey => redstoneNodeId(dimension, position)
+  const strongPowerTo = strongPowerTargetFor(component)
   return {
     kind: component.kind,
     ...withOptional('active', component.active),
@@ -313,6 +461,7 @@ const componentAt = (
     ...withOptional('mode', component.mode),
     ...withOptionalContainerSignal(component),
     ...withOptionalMapped('outputTo', component.outputTo, positionToNodeId),
+    ...withOptionalMapped('strongPowerTo', strongPowerTo, positionToNodeId),
   }
 }
 
@@ -333,15 +482,50 @@ type SnapshotEntry = {
   readonly nodeId: PositionKey
 }
 
+type NonEmptyReadonlyArray<Item> = readonly [Item, ...ReadonlyArray<Item>]
+
+const isNonEmptyReadonlyArray = <Item>(
+  values: ReadonlyArray<Item>,
+): values is NonEmptyReadonlyArray<Item> =>
+  values.length > NO_ITEMS
+
+/** Snapshot installation replaces this map, so its identity bounds the cached entries. */
+const flattenedSnapshotEntries = new WeakMap<
+  ReadonlyMap<DimensionId, DimensionSnapshot>,
+  ReadonlyArray<SnapshotEntry>
+>()
+
 const flattenSnapshotEntries = (
   dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>,
 ): ReadonlyArray<SnapshotEntry> => {
+  const cached = flattenedSnapshotEntries.get(dimensions)
+  if (cached) {
+    return cached
+  }
   const entries: Array<SnapshotEntry> = []
   for (const [dimension, snapshot] of dimensions) {
     for (const [nodeId, component] of snapshot) {
       entries.push({ component, dimension, nodeId })
     }
   }
+  flattenedSnapshotEntries.set(dimensions, entries)
+  return entries
+}
+
+const hopperEntriesBySnapshot = new WeakMap<
+  ReadonlyMap<DimensionId, DimensionSnapshot>,
+  ReadonlyArray<SnapshotEntry>
+>()
+
+const hopperEntriesFromSnapshots = (
+  dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>,
+): ReadonlyArray<SnapshotEntry> => {
+  const cached = hopperEntriesBySnapshot.get(dimensions)
+  if (cached) {
+    return cached
+  }
+  const entries = flattenSnapshotEntries(dimensions).filter(({ component }) => component.kind === 'hopper')
+  hopperEntriesBySnapshot.set(dimensions, entries)
   return entries
 }
 
@@ -350,6 +534,7 @@ const flattenSnapshotEntries = (
 type CircuitReadout = {
   readonly board: CircuitBoard
   readonly power: PowerMap
+  readonly powerReadContext: PowerReadContext
 }
 
 type CircuitBoardAccumulator = {
@@ -431,7 +616,393 @@ export const circuitBoardFromSnapshots = (
   return accumulator
 }
 
-const NO_ITEMS = 0
+export type RedstonePowerTickContextBundle =
+  | {
+      readonly captureProvenance: true
+      readonly conductivityAnswers: ReadonlyMap<PositionKey, boolean>
+      readonly context: PowerTickContext
+    }
+  | {
+      readonly captureProvenance: false
+      readonly context: PowerTickContext
+    }
+
+export type RedstoneObservationTickContext = Extract<
+  RedstonePowerTickContextBundle,
+  { readonly captureProvenance: true }
+>
+
+type RedstonePowerTickContextFactory = (
+  previousBlockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>,
+) => RedstonePowerTickContextBundle
+
+const redstonePowerTickContextFactories = new WeakMap<RedstoneWorldState, RedstonePowerTickContextFactory>()
+const EMPTY_DIMENSIONS: ReadonlyMap<DimensionId, DimensionSnapshot> = new Map()
+const EMPTY_CONDUCTIVITY_LOOKUPS: ReadonlyMap<DimensionId, (position: RedstonePosition) => boolean> = new Map()
+const EMPTY_BLOCK_POWER_MAP: ReadonlyMap<PositionKey, PowerTickBlockLevels> = new Map()
+
+type SnapshotPosition = {
+  readonly dimension: DimensionId
+  readonly kind?: ComponentKind
+  readonly position: RedstonePosition
+  faceBlockNeighbours: ReadonlyArray<PositionKey> | null
+  faceComponentNeighbours: ReadonlyArray<PositionKey> | null
+  faceWireNeighbours: ReadonlyArray<PositionKey> | null
+  faceLampNeighbours: ReadonlyArray<PositionKey> | null
+  faceNeighbours: ReadonlyArray<PositionKey> | null
+  faceSupportBlockNeighbour: PositionKey | null
+}
+
+const NO_FACE_NEIGHBOURS: ReadonlyArray<PositionKey> = []
+const SUPPORT_BLOCK_OFFSET: RedstonePosition = {
+  x: ZERO_AXIS,
+  y: NEGATIVE_ONE_AXIS,
+  z: ZERO_AXIS,
+}
+
+const snapshotPositionFor = (
+  dimension: DimensionId,
+  position: RedstonePosition,
+  kind?: ComponentKind,
+): SnapshotPosition => {
+  if (typeof kind === 'undefined') {
+    return {
+      dimension,
+      faceBlockNeighbours: null,
+      faceComponentNeighbours: null,
+      faceLampNeighbours: null,
+      faceNeighbours: null,
+      faceSupportBlockNeighbour: null,
+      faceWireNeighbours: null,
+      position,
+    }
+  }
+  return {
+    dimension,
+    faceBlockNeighbours: null,
+    faceComponentNeighbours: null,
+    faceLampNeighbours: null,
+    faceNeighbours: null,
+    faceSupportBlockNeighbour: null,
+    faceWireNeighbours: null,
+    kind,
+    position,
+  }
+}
+
+const positionsFromSnapshots = (
+  dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>,
+): Map<PositionKey, SnapshotPosition> => {
+  const positions = new Map<PositionKey, SnapshotPosition>()
+  for (const entry of flattenSnapshotEntries(dimensions)) {
+    positions.set(entry.nodeId, snapshotPositionFor(
+      entry.dimension,
+      entry.component.position,
+      entry.component.kind,
+    ))
+  }
+  return positions
+}
+
+const appendFaceNeighbour = (params: {
+  readonly location: SnapshotPosition
+  readonly offset: RedstonePosition
+  readonly positions: Map<PositionKey, SnapshotPosition>
+  readonly neighbours: Array<PositionKey>
+}): void => {
+  const { location, offset, positions, neighbours } = params
+  const position = positionAtOffset(location.position, offset)
+  if (Option.isSome(position)) {
+    const neighbourPosition = position.value
+    const neighbour = redstoneNodeId(location.dimension, neighbourPosition)
+    if (!positions.has(neighbour)) {
+      positions.set(neighbour, snapshotPositionFor(location.dimension, neighbourPosition))
+    }
+    neighbours.push(neighbour)
+  }
+}
+
+const faceNeighboursFor = (
+  positions: Map<PositionKey, SnapshotPosition>,
+  key: PositionKey,
+): ReadonlyArray<PositionKey> => {
+  const location = positions.get(key)
+  if (!location) {
+    return NO_FACE_NEIGHBOURS
+  }
+  if (location.faceNeighbours !== null) {
+    return location.faceNeighbours
+  }
+  const neighbours: Array<PositionKey> = []
+  for (const offset of FACE_OFFSETS) {
+    appendFaceNeighbour({ location, neighbours, offset, positions })
+  }
+  location.faceNeighbours = neighbours
+  return neighbours
+}
+
+const faceBlockNeighboursFor = (
+  positions: Map<PositionKey, SnapshotPosition>,
+  componentPositions: ReadonlySet<PositionKey>,
+  key: PositionKey,
+): ReadonlyArray<PositionKey> => {
+  const location = positions.get(key)
+  if (!location) {
+    return NO_FACE_NEIGHBOURS
+  }
+  if (location.faceBlockNeighbours !== null) {
+    return location.faceBlockNeighbours
+  }
+  const neighbours = faceNeighboursFor(positions, key)
+    .filter((neighbour) => !componentPositions.has(neighbour))
+  location.faceBlockNeighbours = neighbours
+  return neighbours
+}
+
+const supportBlockNeighbourForLocation = (input: {
+  readonly componentPositions: ReadonlySet<PositionKey>
+  readonly location: SnapshotPosition
+  readonly positions: Map<PositionKey, SnapshotPosition>
+}): PositionKey | null => {
+  const { componentPositions, location, positions } = input
+  const supportPosition = positionAtOffset(location.position, SUPPORT_BLOCK_OFFSET)
+  if (Option.isNone(supportPosition)) {
+    return null
+  }
+  const neighbourPosition = supportPosition.value
+  const neighbour = redstoneNodeId(location.dimension, neighbourPosition)
+  if (componentPositions.has(neighbour)) {
+    return null
+  }
+  positions.set(neighbour, snapshotPositionFor(location.dimension, neighbourPosition))
+  return neighbour
+}
+
+const cacheSupportBlockNeighbours = (
+  positions: Map<PositionKey, SnapshotPosition>,
+  componentPositions: ReadonlySet<PositionKey>,
+): void => {
+  for (const [key, location] of positions) {
+    if (componentPositions.has(key)) {
+      const support = supportBlockNeighbourForLocation({ componentPositions, location, positions })
+      if (support !== null) {
+        location.faceSupportBlockNeighbour = support
+      }
+    }
+  }
+}
+
+const faceSupportBlockNeighbourFor = (
+  positions: Map<PositionKey, SnapshotPosition>,
+  key: PositionKey,
+): PositionKey | null => {
+  const location = positions.get(key)
+  if (!location) {
+    return null
+  }
+  return location.faceSupportBlockNeighbour
+}
+
+const faceComponentNeighboursFor = (
+  positions: Map<PositionKey, SnapshotPosition>,
+  componentPositions: ReadonlySet<PositionKey>,
+  key: PositionKey,
+): ReadonlyArray<PositionKey> => {
+  const location = positions.get(key)
+  if (!location) {
+    return NO_FACE_NEIGHBOURS
+  }
+  if (location.faceComponentNeighbours !== null) {
+    return location.faceComponentNeighbours
+  }
+  const neighbours = faceNeighboursFor(positions, key)
+    .filter((neighbour) => componentPositions.has(neighbour))
+  location.faceComponentNeighbours = neighbours
+  return neighbours
+}
+
+const cachedFaceReceiverNeighbours = (location: SnapshotPosition, kind: 'wire' | 'lamp'): ReadonlyArray<PositionKey> | null => {
+  if (kind === 'wire') {
+    return location.faceWireNeighbours
+  }
+  return location.faceLampNeighbours
+}
+
+const cacheFaceReceiverNeighbours = (
+  location: SnapshotPosition,
+  kind: 'wire' | 'lamp',
+  neighbours: ReadonlyArray<PositionKey>,
+): void => {
+  if (kind === 'wire') {
+    location.faceWireNeighbours = neighbours
+  } else {
+    location.faceLampNeighbours = neighbours
+  }
+}
+
+const faceReceiverNeighboursFor = (input: {
+  readonly positions: Map<PositionKey, SnapshotPosition>
+  readonly componentPositions: ReadonlySet<PositionKey>
+  readonly key: PositionKey
+  readonly kind: 'wire' | 'lamp'
+}): ReadonlyArray<PositionKey> => {
+  const { componentPositions, key, kind, positions } = input
+  const location = positions.get(key)
+  if (!location) {
+    return NO_FACE_NEIGHBOURS
+  }
+  const cached = cachedFaceReceiverNeighbours(location, kind)
+  if (cached !== null) {
+    return cached
+  }
+  const neighbours = faceComponentNeighboursFor(positions, componentPositions, key)
+    .filter((neighbour) => positions.get(neighbour)?.kind === kind)
+  cacheFaceReceiverNeighbours(location, kind, neighbours)
+  return neighbours
+}
+
+type TickPowerContextInput = {
+  readonly componentPositions: ReadonlySet<PositionKey>
+  readonly hasLampReceivers: boolean
+  readonly positions: Map<PositionKey, SnapshotPosition>
+  readonly lookups: ReadonlyMap<DimensionId, (position: RedstonePosition) => boolean>
+  readonly retainBlockPower: boolean
+  previousBlockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>
+  conductivityAnswers: Map<PositionKey, boolean> | null
+}
+
+const redstoneConductiveAt = (input: TickPowerContextInput, key: PositionKey): boolean => {
+  const location = input.positions.get(key)
+  if (!location) {
+    return false
+  }
+  const lookup = input.lookups.get(location.dimension)
+  if (!lookup) {
+    return false
+  }
+  const conductive = lookup(location.position)
+  input.conductivityAnswers?.set(key, conductive)
+  return conductive
+}
+
+const powerContextFor = (input: TickPowerContextInput): PowerTickContext => ({
+  faceBlockNeighboursOf: (key) => faceBlockNeighboursFor(input.positions, input.componentPositions, key),
+  faceComponentNeighboursOf: (key) => faceComponentNeighboursFor(input.positions, input.componentPositions, key),
+  faceLampNeighboursOf: (key) => faceReceiverNeighboursFor({
+    componentPositions: input.componentPositions,
+    key,
+    kind: 'lamp',
+    positions: input.positions,
+  }),
+  faceNeighboursOf: (key) => faceNeighboursFor(input.positions, key),
+  faceSupportBlockNeighbourOf: (key) => faceSupportBlockNeighbourFor(input.positions, key),
+  faceWireNeighboursOf: (key) => faceReceiverNeighboursFor({
+    componentPositions: input.componentPositions,
+    key,
+    kind: 'wire',
+    positions: input.positions,
+  }),
+  hasLampReceivers: input.hasLampReceivers,
+  isRedstoneConductiveAt: (key) => redstoneConductiveAt(input, key),
+  get previousBlockPower() { return input.previousBlockPower },
+  retainBlockPower: input.retainBlockPower,
+})
+
+const snapshotRetainsBlockPower = (dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>): boolean =>
+  flattenSnapshotEntries(dimensions).some(({ component }) => BLOCK_POWER_READERS.has(component.kind))
+
+const hasLampReceiver = (positions: ReadonlyMap<PositionKey, SnapshotPosition>): boolean =>
+  [...positions.values()].some(({ kind }) => kind === 'lamp')
+
+const makeNonConductiveContextFactory = (state: RedstoneWorldState): RedstonePowerTickContextFactory => {
+  let previousBlockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels> = EMPTY_BLOCK_POWER_MAP
+  const context: PowerTickContext = { get previousBlockPower() { return previousBlockPower } }
+  const bundle: RedstonePowerTickContextBundle = { captureProvenance: false, context }
+  return (nextBlockPower) => {
+    previousBlockPower = nextBlockPower
+    if (observationRecorders.get(state)?.enabled === true) {
+      return { captureProvenance: true, conductivityAnswers: new Map<PositionKey, boolean>(), context }
+    }
+    return bundle
+  }
+}
+
+const makeConductiveContextFactory = (
+  state: RedstoneWorldState,
+  dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>,
+  lookups: ReadonlyMap<DimensionId, (position: RedstonePosition) => boolean>,
+): RedstonePowerTickContextFactory => {
+  const positions = positionsFromSnapshots(dimensions)
+  const componentPositions = new Set(positions.keys())
+  cacheSupportBlockNeighbours(positions, componentPositions)
+  const input: TickPowerContextInput = {
+    componentPositions,
+    conductivityAnswers: null,
+    hasLampReceivers: hasLampReceiver(positions),
+    lookups,
+    positions,
+    previousBlockPower: EMPTY_BLOCK_POWER_MAP,
+    retainBlockPower: snapshotRetainsBlockPower(dimensions),
+  }
+  const context = powerContextFor(input)
+  const normalBundle: RedstonePowerTickContextBundle = { captureProvenance: false, context }
+  return (previousBlockPower) => {
+    input.previousBlockPower = previousBlockPower
+    if (observationRecorders.get(state)?.enabled === true) {
+      const conductivityAnswers = new Map<PositionKey, boolean>()
+      input.conductivityAnswers = conductivityAnswers
+      return { captureProvenance: true, conductivityAnswers, context }
+    }
+    input.conductivityAnswers = null
+    return normalBundle
+  }
+}
+
+/** Prepares stable snapshot geometry once, then supplies each tick's prior block power. */
+const makeRedstonePowerTickContextFactory = (
+  state: RedstoneWorldState,
+  dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>,
+  lookups: ReadonlyMap<DimensionId, (position: RedstonePosition) => boolean>,
+): RedstonePowerTickContextFactory => {
+  if (lookups.size === NO_LOOKUPS) {
+    return makeNonConductiveContextFactory(state)
+  }
+  return makeConductiveContextFactory(state, dimensions, lookups)
+}
+
+export const redstonePowerTickContextFactoryFor = (
+  state: RedstoneWorldState,
+): RedstonePowerTickContextFactory => {
+  const contextFactory = redstonePowerTickContextFactories.get(state)
+  if (contextFactory) {
+    return contextFactory
+  }
+  throw new Error('Redstone power context factory is missing for this world state')
+}
+
+export const redstonePowerTickContextFor = (
+  state: RedstoneWorldState,
+  previousBlockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>,
+): Effect.Effect<RedstonePowerTickContextBundle> => Effect.sync(() =>
+  redstonePowerTickContextFactoryFor(state)(previousBlockPower),
+)
+
+const circuitReadoutFor = (state: RedstoneWorldState): Effect.Effect<CircuitReadout> => Effect.gen(
+  function* circuitReadoutForGenerator() {
+    const [board, power, blockPower] = yield* Effect.all([
+      Ref.get(state.board),
+      Ref.get(state.power),
+      Ref.get(state.blockPower),
+    ], { concurrency: 1 })
+    const { context } = yield* redstonePowerTickContextFor(state, blockPower)
+    const powerReadContext: PowerReadContext = {
+      blockPower,
+      faceNeighboursOf: context.faceNeighboursOf ?? (() => []),
+    }
+    return { board, power, powerReadContext }
+  },
+)
+
 const INITIAL_TICK_ACCUMULATOR_SECS = Schema.decodeUnknownSync(fixedDurationSecsSchema)(ZERO_DURATION_SECS)
 const INITIAL_TICK_COUNT = Schema.decodeUnknownSync(nonNegativeTickCountSchema)(ZERO_TICK_COUNT)
 
@@ -439,8 +1010,10 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
   function* makeRedstoneWorldStateGenerator() {
     const [
       dimensions,
+      conductivityLookups,
       board,
       power,
+      blockPower,
       timedCircuit,
       pendingButtonPresses,
       observedLamps,
@@ -455,9 +1028,11 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       tickAccumulatorSecs,
       tickCount,
     ] = yield* Effect.all([
-      Ref.make<ReadonlyMap<DimensionId, DimensionSnapshot>>(new Map()),
+      Ref.make(EMPTY_DIMENSIONS),
+      Ref.make(EMPTY_CONDUCTIVITY_LOOKUPS),
       Ref.make<CircuitBoard>({ adjacency: new Map(), components: new Map() }),
       Ref.make<PowerMap>(emptyPowerMap),
+      Ref.make<ReadonlyMap<PositionKey, PowerTickBlockLevels>>(new Map()),
       Ref.make<TimedCircuitState>(emptyTimedCircuitState),
       Ref.make<ReadonlySet<PositionKey>>(new Set()),
       Ref.make<ReadonlyMap<PositionKey, ObservedLamp>>(new Map()),
@@ -472,8 +1047,10 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       Ref.make(INITIAL_TICK_ACCUMULATOR_SECS),
       Ref.make(INITIAL_TICK_COUNT),
     ])
-    return {
+    const state: RedstoneWorldState = {
+      blockPower,
       board,
+      conductivityLookups,
       dimensions,
       observedLamps,
       observedPistonStates,
@@ -490,29 +1067,110 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       tickCount,
       timedCircuit,
     }
+    redstonePowerTickContextFactories.set(
+      state,
+      makeRedstonePowerTickContextFactory(state, EMPTY_DIMENSIONS, EMPTY_CONDUCTIVITY_LOOKUPS),
+    )
+    return state
   },
 )
 
 const snapshotMap = (snapshot: RedstoneWorldSnapshot): DimensionSnapshot => {
   const components = new Map<PositionKey, RedstoneComponentSnapshot>()
-  for (const component of snapshot.components) {
-    const position = copyPosition(component.position)
-    components.set(redstoneNodeId(snapshot.dimension, position), { ...component, position })
+  const orderedComponents = [...snapshot.components]
+    .sort((left, right) => comparePositionCoordinates(left.position, right.position))
+  for (const component of orderedComponents) {
+    const copied = copyComponentSnapshot(component)
+    components.set(redstoneNodeId(snapshot.dimension, copied.position), copied)
   }
   return components
 }
 
+const findDuplicateSnapshotPosition = (
+  snapshot: RedstoneWorldSnapshot,
+): Option.Option<RedstonePosition> => {
+  const positions = new Set<PositionKey>()
+  for (const component of snapshot.components) {
+    const nodeId = redstoneNodeId(snapshot.dimension, component.position)
+    if (positions.has(nodeId)) {
+      return Option.some(component.position)
+    }
+    positions.add(nodeId)
+  }
+  return Option.none()
+}
+
+type NextSnapshotState = Readonly<{
+  dimensions: ReadonlyMap<DimensionId, DimensionSnapshot>
+  conductivityLookups: ReadonlyMap<DimensionId, (position: RedstonePosition) => boolean>
+}>
+
+const orderedSnapshotDimensions = (
+  current: ReadonlyMap<DimensionId, DimensionSnapshot>,
+  snapshot: RedstoneWorldSnapshot,
+): ReadonlyMap<DimensionId, DimensionSnapshot> => {
+  const next = new Map(current)
+  next.set(snapshot.dimension, snapshotMap(snapshot))
+  return new Map([...next].sort(([left], [right]) => compareDimensionIds(left, right)))
+}
+
+const snapshotConductivityLookups = (
+  current: ReadonlyMap<DimensionId, (position: RedstonePosition) => boolean>,
+  dimension: DimensionId,
+  options?: RedstoneSnapshotSyncOptions,
+): ReadonlyMap<DimensionId, (position: RedstonePosition) => boolean> => {
+  const next = new Map(current)
+  if (typeof options?.isRedstoneConductiveAt === 'function') {
+    next.set(dimension, options.isRedstoneConductiveAt)
+  } else {
+    next.delete(dimension)
+  }
+  return next
+}
+
+const nextSnapshotStateFor = (
+  state: RedstoneWorldState,
+  snapshot: RedstoneWorldSnapshot,
+  options?: RedstoneSnapshotSyncOptions,
+): Effect.Effect<NextSnapshotState> => Effect.gen(function* nextSnapshotStateGenerator() {
+  const [dimensions, conductivityLookups] = yield* Effect.all([
+    Ref.get(state.dimensions),
+    Ref.get(state.conductivityLookups),
+  ], { concurrency: 1 })
+  return {
+    conductivityLookups: snapshotConductivityLookups(conductivityLookups, snapshot.dimension, options),
+    dimensions: orderedSnapshotDimensions(dimensions, snapshot),
+  }
+})
+
+const installSnapshotState = (state: RedstoneWorldState, next: NextSnapshotState): Effect.Effect<void> =>
+  Effect.gen(function* installSnapshotStateGenerator() {
+    yield* Ref.set(state.dimensions, next.dimensions)
+    yield* Ref.set(state.conductivityLookups, next.conductivityLookups)
+    yield* Ref.set(state.board, circuitBoardFromSnapshots(next.dimensions))
+    redstonePowerTickContextFactories.set(
+      state,
+      makeRedstonePowerTickContextFactory(state, next.dimensions, next.conductivityLookups),
+    )
+  })
+
 export const syncRedstoneSnapshot = (
   state: RedstoneWorldState,
   snapshot: RedstoneWorldSnapshot,
-): Effect.Effect<void, Schema.SchemaError> =>
+  options?: RedstoneSnapshotSyncOptions,
+): Effect.Effect<void, Schema.SchemaError | RedstoneWorldSnapshotDuplicatePositionError> =>
   Effect.gen(function* syncRedstoneSnapshotGenerator() {
     const decoded = yield* Schema.decodeUnknownEffect(RedstoneWorldSnapshotSchema, { onExcessProperty: 'error' })(snapshot)
-    const current = yield* Ref.get(state.dimensions)
-    const next = new Map(current)
-    next.set(decoded.dimension, snapshotMap(decoded))
-    yield* Ref.set(state.dimensions, next)
-    yield* Ref.set(state.board, circuitBoardFromSnapshots(next))
+    const duplicatePosition = findDuplicateSnapshotPosition(decoded)
+    if (Option.isSome(duplicatePosition)) {
+      yield* Effect.fail({
+        _tag: 'DuplicateRedstoneWorldSnapshotPosition',
+        dimension: decoded.dimension,
+        position: copyPosition(duplicatePosition.value),
+      } satisfies RedstoneWorldSnapshotDuplicatePositionError)
+    }
+    const next = yield* nextSnapshotStateFor(state, decoded, options)
+    yield* installSnapshotState(state, next)
   })
 
 type LampTransitionResult = {
@@ -528,7 +1186,7 @@ const lampEntry = (
   const { component, dimension, nodeId } = entry
   const lamp: LampTransition = {
     dimension,
-    lit: isLit(circuit.board, circuit.power, nodeId),
+    lit: isLit(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId }),
     position: copyPosition(component.position),
   }
   const wasLit = previous.get(nodeId)?.lit ?? false
@@ -572,14 +1230,13 @@ const collectRemovedLampTransitions = (
 /** Computes changed lamps and records them for the host-facing drain. */
 export const collectLampTransitions = (state: RedstoneWorldState): Effect.Effect<void> =>
   Effect.gen(function* collectLampTransitionsGenerator() {
-    const [board, power, dimensions, previous] = yield* Effect.all([
-      Ref.get(state.board),
-      Ref.get(state.power),
+    const [circuit, dimensions, previous] = yield* Effect.all([
+      circuitReadoutFor(state),
       Ref.get(state.dimensions),
       Ref.get(state.observedLamps),
     ])
     const entries = flattenSnapshotEntries(dimensions)
-    const { changed, current } = collectLitLamps({ board, power }, entries, previous)
+    const { changed, current } = collectLitLamps(circuit, entries, previous)
     const allChanged = [...changed, ...collectRemovedLampTransitions(current, previous)]
     yield* Ref.set(state.observedLamps, current)
     if (allChanged.length > NO_ITEMS) {
@@ -607,7 +1264,7 @@ const pistonTransitionEntry = (
   previous: ReadonlyMap<PositionKey, PistonState>,
 ): { readonly desired: PistonState; readonly transitions: ReadonlyArray<readonly [PositionKey, PoweredPistonTransition]> } => {
   const { component, dimension, nodeId } = entry
-  const powered = isPowered(circuit.board, circuit.power, nodeId)
+  const powered = isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId })
   const desired = pistonStateFor(powered)
   const observed = previous.get(nodeId) ?? component.pistonState ?? 'retracted'
   const physicalState = component.pistonState ?? observed
@@ -647,20 +1304,18 @@ const computePistonTransitions = (
 /** Emits one request when a piston's desired powered state changes. */
 export const collectPistonTransitions = (state: RedstoneWorldState): Effect.Effect<void> =>
   Effect.gen(function* collectPistonTransitionsGenerator() {
-    const [board, power, dimensions, previous] = yield* Effect.all([
-      Ref.get(state.board),
-      Ref.get(state.power),
+    const [circuit, dimensions, previous] = yield* Effect.all([
+      circuitReadoutFor(state),
       Ref.get(state.dimensions),
       Ref.get(state.observedPistonStates),
     ])
     const entries = flattenSnapshotEntries(dimensions)
-    const { changed, current } = computePistonTransitions({ board, power }, entries, previous)
-    const sorted = [...changed].sort(([left], [right]) => left.localeCompare(right))
+    const { changed, current } = computePistonTransitions(circuit, entries, previous)
     yield* Ref.set(state.observedPistonStates, current)
-    if (sorted.length > NO_ITEMS) {
+    if (changed.length > NO_ITEMS) {
       yield* Ref.update(state.pendingPistonTransitions, (pending) => [
         ...pending,
-        ...sorted.map(([, transition]) => transition),
+        ...changed.map(([, transition]) => transition),
       ])
     }
   })
@@ -685,7 +1340,7 @@ const triggerEventEntry = (
   previous: ReadonlyMap<PositionKey, boolean>,
 ): { readonly events: ReadonlyArray<readonly [PositionKey, RedstoneTriggerEvent]>; readonly powered: boolean } => {
   const { component, dimension, nodeId } = entry
-  const powered = isPowered(circuit.board, circuit.power, nodeId)
+  const powered = isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId })
   const wasPowered = previous.get(nodeId) ?? false
   if (wasPowered || !powered || !isTriggeredComponentKind(component.kind)) {
     return { events: [], powered }
@@ -720,36 +1375,65 @@ const computeTriggerEvents = (
 /** Emits deterministic rising-edge actions for one-shot powered components. */
 export const collectTriggerEvents = (state: RedstoneWorldState): Effect.Effect<void> =>
   Effect.gen(function* collectTriggerEventsGenerator() {
-    const [board, power, dimensions, previous] = yield* Effect.all([
-      Ref.get(state.board),
-      Ref.get(state.power),
+    const [circuit, dimensions, previous] = yield* Effect.all([
+      circuitReadoutFor(state),
       Ref.get(state.dimensions),
       Ref.get(state.observedTriggerPower),
     ])
     const entries = flattenSnapshotEntries(dimensions)
-    const { current, triggered } = computeTriggerEvents({ board, power }, entries, previous)
-    const sorted = [...triggered].sort(([left], [right]) => left.localeCompare(right))
+    const { current, triggered } = computeTriggerEvents(circuit, entries, previous)
     yield* Ref.set(state.observedTriggerPower, current)
-    if (sorted.length > NO_ITEMS) {
+    if (triggered.length > NO_ITEMS) {
       yield* Ref.update(state.pendingTriggerEvents, (pending) => [
         ...pending,
-        ...sorted.map(([, event]) => event),
+        ...triggered.map(([, event]) => event),
       ])
     }
   })
 
 const computeHopperTransfers = (
   circuit: CircuitReadout,
-  entries: ReadonlyArray<SnapshotEntry>,
+  entries: NonEmptyReadonlyArray<SnapshotEntry>,
   elapsedRedstoneTicks: NonNegativeTickCount,
-): ReadonlyArray<readonly [PositionKey, HopperTransferEvent]> => entries
-  .filter((entry) => entry.component.kind === 'hopper')
-  .map(({ component, dimension, nodeId }) => [nodeId, {
+): NonEmptyReadonlyArray<readonly [PositionKey, HopperTransferEvent]> => {
+  const eventFor = ({ component, dimension, nodeId }: SnapshotEntry) => [nodeId, {
     dimension,
     elapsedRedstoneTicks,
     position: copyPosition(component.position),
-    powered: isPowered(circuit.board, circuit.power, nodeId),
-  }] as const)
+    powered: isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId }),
+  }] as const
+  const [first, ...rest] = entries
+  return [eventFor(first), ...rest.map(eventFor)]
+}
+
+export const captureObservedTick = (
+  state: RedstoneWorldState,
+  context: RedstoneObservationTickContext,
+  result: PowerTickWithProvenance,
+): Effect.Effect<void> => Effect.gen(function* captureObservedTickGenerator() {
+  const recorder = observationRecorders.get(state)
+  if (recorder?.enabled !== true) {
+    return
+  }
+  const [dimensions, timedCircuit, tickCount] = yield* Effect.all([
+    Ref.get(state.dimensions),
+    Ref.get(state.timedCircuit),
+    Ref.get(state.tickCount),
+  ], { concurrency: 1 })
+  const tick = Schema.decodeUnknownSync(nonNegativeTickCountSchema)(tickCount + ONE_TICK)
+  recorder.ticks.push({
+    blockPower: copyBlockPower(result.blockPower),
+    conductivityAnswers: new Map(context.conductivityAnswers),
+    dimensions: copyDimensions(dimensions),
+    power: new Map(result.power),
+    provenance: copyProvenance(result.provenance),
+    tick,
+    timedCircuit: copyTimedCircuit(timedCircuit),
+  })
+  if (recorder.ticks.length > REDSTONE_OBSERVATION_HISTORY_LIMIT) {
+    recorder.ticks.shift()
+  }
+})
 
 /** Emits each hopper's power state and the elapsed redstone ticks for host planning. */
 export const collectHopperTransferEvents = (
@@ -757,19 +1441,17 @@ export const collectHopperTransferEvents = (
   ticks: NonNegativeTickCount,
 ): Effect.Effect<void> =>
   Effect.gen(function* collectHopperTransferEventsGenerator() {
-    const [board, power, dimensions] = yield* Effect.all([
-      Ref.get(state.board),
-      Ref.get(state.power),
-      Ref.get(state.dimensions),
-    ])
-    const sorted = [...computeHopperTransfers({ board, power }, flattenSnapshotEntries(dimensions), ticks)]
-      .sort(([left], [right]) => left.localeCompare(right))
-    if (sorted.length > NO_ITEMS) {
-      yield* Ref.update(state.pendingHopperTransferEvents, (pending) => [
-        ...pending,
-        ...sorted.map(([, event]) => event),
-      ])
+    const dimensions = yield* Ref.get(state.dimensions)
+    const entries = hopperEntriesFromSnapshots(dimensions)
+    if (!isNonEmptyReadonlyArray(entries)) {
+      return
     }
+    const circuit = yield* circuitReadoutFor(state)
+    const transfers = computeHopperTransfers(circuit, entries, ticks)
+    yield* Ref.update(state.pendingHopperTransferEvents, (pending) => [
+      ...pending,
+      ...transfers.map(([, event]) => event),
+    ])
   })
 
 type PoweredComponentResult = {
@@ -783,7 +1465,7 @@ const poweredComponentEntry = (
   previous: ReadonlyMap<PositionKey, boolean>,
 ): { readonly powered: boolean; readonly transitions: ReadonlyArray<readonly [PositionKey, PoweredComponentTransition]> } => {
   const { component, dimension, nodeId } = entry
-  const powered = isPowered(circuit.board, circuit.power, nodeId)
+  const powered = isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId })
   const observed = previous.get(nodeId) ?? component.powered ?? false
   if (observed === powered || !isPoweredComponentKind(component.kind)) {
     return { powered, transitions: [] }
@@ -819,20 +1501,18 @@ const computePoweredComponentTransitions = (
 /** Emits deterministic state transitions for continuously powered components. */
 export const collectPoweredComponentTransitions = (state: RedstoneWorldState): Effect.Effect<void> =>
   Effect.gen(function* collectPoweredComponentTransitionsGenerator() {
-    const [board, power, dimensions, previous] = yield* Effect.all([
-      Ref.get(state.board),
-      Ref.get(state.power),
+    const [circuit, dimensions, previous] = yield* Effect.all([
+      circuitReadoutFor(state),
       Ref.get(state.dimensions),
       Ref.get(state.observedPoweredComponents),
     ])
     const entries = flattenSnapshotEntries(dimensions)
-    const { changed, current } = computePoweredComponentTransitions({ board, power }, entries, previous)
-    const sorted = [...changed].sort(([left], [right]) => left.localeCompare(right))
+    const { changed, current } = computePoweredComponentTransitions(circuit, entries, previous)
     yield* Ref.set(state.observedPoweredComponents, current)
-    if (sorted.length > NO_ITEMS) {
+    if (changed.length > NO_ITEMS) {
       yield* Ref.update(state.pendingPoweredComponentTransitions, (pending) => [
         ...pending,
-        ...sorted.map(([, transition]) => transition),
+        ...changed.map(([, transition]) => transition),
       ])
     }
   })
@@ -863,6 +1543,44 @@ export const redstoneWorldStateFor = (
   return Effect.succeed(state)
 }
 
+const enableObservationRecorder = (
+  state: RedstoneWorldState,
+  recorder: ObservationRecorder | undefined,
+): Effect.Effect<void> => Effect.sync(() => {
+  if (recorder) {
+    recorder.enabled = true
+    return
+  }
+  observationRecorders.set(state, { enabled: true, ticks: [] })
+})
+
+/** Enables or disables per-tick captures for internal observation consumers. */
+export const setRedstoneObservationEnabled = (
+  runtime: RedstoneWorldRuntimeService,
+  enabled: boolean,
+): Effect.Effect<void, RedstoneWorldRuntimeStateError> => Effect.gen(function* setRedstoneObservationEnabledGenerator() {
+  const state = yield* redstoneWorldStateFor(runtime)
+  const recorder = observationRecorders.get(state)
+  if (enabled) {
+    if (recorder?.enabled) {
+      return
+    }
+    yield* enableObservationRecorder(state, recorder)
+    return
+  }
+  if (recorder) {
+    recorder.enabled = false
+  }
+})
+
+/** Returns isolated copies of recorded ticks; reading history never changes the runtime. */
+export const redstoneTickObservationsFor = (
+  runtime: RedstoneWorldRuntimeService,
+): Effect.Effect<ReadonlyArray<RedstoneTickObservation>, RedstoneWorldRuntimeStateError> =>
+  Effect.map(redstoneWorldStateFor(runtime), (state) =>
+    (observationRecorders.get(state)?.ticks ?? []).map(copyTickObservation),
+  )
+
 export const makeRedstoneWorldRuntime: Effect.Effect<RedstoneWorldRuntimeService> = Effect.gen(
   function* makeRedstoneWorldRuntimeGenerator() {
     const state = yield* makeRedstoneWorldState
@@ -888,7 +1606,7 @@ export const makeRedstoneWorldRuntime: Effect.Effect<RedstoneWorldRuntimeService
             Ref.update(state.pendingTriggerEvents, (pending) => [...events.trigger, ...pending]),
           ], { concurrency: 1, discard: true }),
         ),
-      syncSnapshot: (snapshot) => syncRedstoneSnapshot(state, snapshot),
+      syncSnapshot: (snapshot, options) => syncRedstoneSnapshot(state, snapshot, options),
     }
     runtimeStates.set(runtime, state)
     return runtime

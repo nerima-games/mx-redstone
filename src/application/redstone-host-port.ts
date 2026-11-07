@@ -49,6 +49,7 @@ import {
   PistonBlockOffsetSchema,
   type PistonCellRead,
   type PistonFacing,
+  type PistonMovementOutcome,
   type PistonMovementPlan,
   type PistonPosition,
   planPistonTransition,
@@ -99,6 +100,26 @@ const schemaLiterals = Schema.Literals
 const NO_COMPONENT = Option.getOrUndefined(Option.none<RedstoneComponentSnapshot>())
 
 type RedstoneDimensionId = BlockAddress['dimension']
+
+type RefusedPistonOutcome = Extract<PistonMovementOutcome, { readonly kind: 'refused' }>
+
+export type PistonRefusalObservation = Readonly<{
+  readonly event: PoweredPistonTransition
+  readonly outcome: RefusedPistonOutcome
+}>
+
+export type RedstoneHostEventObserver = Readonly<{
+  readonly onPistonRefusal: (observation: PistonRefusalObservation) => void
+}>
+
+type RedstoneHostEventApplyInput<BuildError> = Readonly<{
+  readonly runtime: RedstoneWorldRuntimeService
+  readonly realms: ReadonlyArray<RedstoneHostRealm>
+  readonly port: RedstoneHostWritePort<BuildError>
+  readonly observer: Option.Option<RedstoneHostEventObserver>
+}>
+
+const NO_HOST_EVENT_OBSERVER = Option.none<RedstoneHostEventObserver>()
 
 /** How far in front of a piston's base its head cell sits. */
 const PISTON_HEAD_DISTANCE_BLOCKS = 1
@@ -154,6 +175,7 @@ export const RedstoneHostBlockTypeSchema: Schema.Codec<RedstoneHostBlockType, Re
 export type RedstoneHostBlock = {
   readonly address: BlockAddress
   readonly block: RedstoneHostBlockType | null
+  readonly strongPowerTo?: BlockPosition
 }
 
 /**
@@ -162,7 +184,9 @@ export type RedstoneHostBlock = {
  * repository cannot derive from the string alone.
  */
 export type RedstoneHostLookup = {
+  readonly isRedstoneConductiveAt?: (position: BlockPosition) => boolean
   readonly isLeverActive: (position: BlockPosition) => boolean
+  readonly isButtonActive?: (position: BlockPosition) => boolean
   readonly isPoweredRailPowered: (position: BlockPosition) => boolean
   readonly readContainerSlots: (position: BlockPosition) => ReadonlyArray<ContainerSlot> | undefined
   readonly readHopperBlockId: (position: BlockPosition) => BlockId | null
@@ -289,11 +313,18 @@ const safePistonPositionAt = (
   )
 }
 
+type ComponentBuilderInput = Readonly<{
+  block: RedstoneHostBlockType
+  lookup: RedstoneHostLookup
+  position: BlockPosition
+  strongPowerTo?: BlockPosition
+}>
+
 const comparatorComponent = (
-  lookup: RedstoneHostLookup,
-  position: BlockPosition,
+  input: ComponentBuilderInput,
 ): Result.Result<RedstoneComponentSnapshot, RedstoneHostPositionFailure> =>
   Result.gen(function* comparatorComponentGenerator() {
+    const { lookup, position } = input
     const inputFrom = yield* blockPositionAt(position.x, position.y, position.z + COMPARATOR_REAR_DISTANCE)
     const outputTo = yield* blockPositionAt(position.x, position.y, position.z - COMPARATOR_REAR_DISTANCE)
     const west = yield* blockPositionAt(position.x - COMPARATOR_SIDE_DISTANCE, position.y, position.z)
@@ -310,10 +341,9 @@ const comparatorComponent = (
   })
 
 const pistonComponent = (
-  lookup: RedstoneHostLookup,
-  position: BlockPosition,
-  block: RedstoneHostBlockType,
+  input: ComponentBuilderInput,
 ): Result.Result<RedstoneComponentSnapshot, RedstoneHostPositionFailure> => {
+  const { lookup, position, block } = input
   const facing = lookup.readPistonFacing(position)
   return Result.map(
     safePistonPositionAt(position, facing, PISTON_HEAD_DISTANCE),
@@ -330,21 +360,54 @@ const pistonComponent = (
   )
 }
 
-type ComponentBuilder = (
-  lookup: RedstoneHostLookup,
+type ComponentPlacement = BlockPosition | Readonly<{
+  position: BlockPosition
+  strongPowerTo?: BlockPosition
+}>
+
+const componentPlacement = (
   position: BlockPosition,
-  block: RedstoneHostBlockType,
+  strongPowerTo?: BlockPosition,
+): ComponentPlacement => {
+  if (strongPowerTo) {
+    return { position, strongPowerTo }
+  }
+  return position
+}
+
+type ComponentBuilder = (
+  input: ComponentBuilderInput,
 ) => Result.Result<RedstoneComponentSnapshot, RedstoneHostPositionFailure>
 
 /** A builder for the block kinds whose component needs no host lookup at all. */
-const fixedKindComponent = (kind: RedstoneComponentSnapshot['kind']): ComponentBuilder => (_lookup, position) =>
+const fixedKindComponent = (kind: RedstoneComponentSnapshot['kind']): ComponentBuilder => ({ position }) =>
   Result.succeed({ kind, position })
 
-const poweredRailComponent: ComponentBuilder = (lookup, position) =>
+const poweredRailComponent: ComponentBuilder = ({ lookup, position }) =>
   Result.succeed({ kind: 'powered-rail', position, powered: lookup.isPoweredRailPowered(position) })
 
-const leverComponent: ComponentBuilder = (lookup, position) =>
-  Result.succeed({ active: lookup.isLeverActive(position), kind: 'lever', position })
+const strongPowerTarget = (strongPowerTo: BlockPosition | undefined): Partial<Pick<RedstoneComponentSnapshot, 'strongPowerTo'>> => {
+  if (strongPowerTo) {
+    return { strongPowerTo }
+  }
+  return {}
+}
+
+const leverComponent: ComponentBuilder = ({ lookup, position, strongPowerTo }) =>
+  Result.succeed({
+    active: lookup.isLeverActive(position),
+    kind: 'lever',
+    position,
+    ...strongPowerTarget(strongPowerTo),
+  })
+
+const buttonComponent: ComponentBuilder = ({ lookup, position, strongPowerTo }) =>
+  Result.succeed({
+    active: lookup.isButtonActive?.(position) ?? false,
+    kind: 'button',
+    position,
+    ...strongPowerTarget(strongPowerTo),
+  })
 
 /**
  * This repository's own component roster (docs/responsibility.md §2-1),
@@ -369,6 +432,7 @@ const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, Compone
   redstone_torch: fixedKindComponent('torch'),
   redstone_wire: fixedKindComponent('wire'),
   sticky_piston: pistonComponent,
+  stone_button: buttonComponent,
   trapdoor: fixedKindComponent('trapdoor'),
 }
 
@@ -380,7 +444,7 @@ const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, Compone
 export const componentForBlock = (
   lookup: RedstoneHostLookup,
   block: RedstoneHostBlockType | null,
-  position: BlockPosition,
+  placement: ComponentPlacement,
 ): Result.Result<RedstoneComponentSnapshot | undefined, RedstoneHostPositionFailure> => {
   if (block === null) {
     return Result.succeed(NO_COMPONENT)
@@ -389,7 +453,10 @@ export const componentForBlock = (
   if (!builder) {
     return Result.succeed(NO_COMPONENT)
   }
-  return builder(lookup, position, block)
+  if ('position' in placement) {
+    return builder({ block, lookup, position: placement.position, ...strongPowerTarget(placement.strongPowerTo) })
+  }
+  return builder({ block, lookup, position: placement })
 }
 
 /**
@@ -402,8 +469,8 @@ export const redstoneSnapshotFromRealm = (
   blocks: ReadonlyArray<RedstoneHostBlock>,
 ): Result.Result<RedstoneWorldSnapshot, RedstoneHostPositionFailure> =>
   Result.gen(function* redstoneSnapshotFromRealmGenerator() {
-    const components = yield* Result.all(blocks.map(({ address, block }) =>
-      componentForBlock(realm.lookup, block, address.position),
+    const components = yield* Result.all(blocks.map(({ address, block, strongPowerTo }) =>
+      componentForBlock(realm.lookup, block, componentPlacement(address.position, strongPowerTo)),
     ))
     return {
       components: components.filter((component): component is RedstoneComponentSnapshot => Boolean(component)),
@@ -477,7 +544,9 @@ const readPistonPlanCell = (state: PistonPlanReadState, position: PistonPosition
 }
 
 const pistonPlanEffect = (
+  event: PoweredPistonTransition,
   outcome: ReturnType<typeof planPistonTransition>,
+  observer: Option.Option<RedstoneHostEventObserver>,
 ): Effect.Effect<Option.Option<PistonMovementPlan>, BlockRegistryResolutionFailure> => {
   if (outcome.kind === 'failed') {
     return Effect.fail(outcome.failure)
@@ -485,12 +554,16 @@ const pistonPlanEffect = (
   if (outcome.kind === 'move') {
     return Effect.succeed(Option.some(outcome.plan))
   }
+  if (outcome.kind === 'refused' && Option.isSome(observer)) {
+    observer.value.onPistonRefusal({ event, outcome })
+  }
   return Effect.succeed(Option.none())
 }
 
 const planPistonTransitionEvent = (
   realm: RedstoneHostRealm,
   event: PoweredPistonTransition,
+  observer: Option.Option<RedstoneHostEventObserver>,
 ): Effect.Effect<
   Option.Option<PistonMovementPlan>,
   BlockRegistryResolutionFailure | RedstoneHostPositionFailure
@@ -512,7 +585,7 @@ const planPistonTransitionEvent = (
     kernelPistonCapabilities,
   )
   return Option.match(readState.positionFailure, {
-    onNone: () => pistonPlanEffect(outcome),
+    onNone: () => pistonPlanEffect(event, outcome, observer),
     onSome: (failure) => Effect.fail(failure),
   })
 }
@@ -567,8 +640,9 @@ const realmForRedstoneEvents = (
 const planEventPistons = (
   realm: RedstoneHostRealm,
   events: RedstoneEventBatch,
+  observer: Option.Option<RedstoneHostEventObserver>,
 ) => Effect.forEach(events.piston, (event) =>
-    Effect.map(planPistonTransitionEvent(realm, event), (plan) => ({ event, plan })),
+  Effect.map(planPistonTransitionEvent(realm, event, observer), (plan) => ({ event, plan })),
   )
 
 type SelectedHopperEvent = Readonly<{
@@ -1167,6 +1241,7 @@ type RedstoneCommitContext<BuildError> = Readonly<{
   events: RedstoneEventBatch
   port: RedstoneHostWritePort<BuildError>
   realms: ReadonlyArray<RedstoneHostRealm>
+  observer: Option.Option<RedstoneHostEventObserver>
 }>
 
 type RedstonePostCommitPublication = Readonly<{
@@ -1179,7 +1254,7 @@ const planRedstoneEventBatch = <BuildError>(
   base: RedstonePlanBase,
   realm: RedstoneHostRealm,
 ) => Effect.gen(function* planRedstoneEventBatchGenerator() {
-  const plannedPistons = yield* planEventPistons(realm, context.events)
+  const plannedPistons = yield* planEventPistons(realm, context.events, context.observer)
   const commitEvents: RedstoneEventBatch = {
     ...context.events,
     hopper: [],
@@ -1266,6 +1341,25 @@ const commitRedstoneEvents = <BuildError>(
     return yield* mergeAndCommitRedstonePlans(context.port, plans)
   })
 
+const applyRedstoneHostEventsInternal = <BuildError>(input: RedstoneHostEventApplyInput<BuildError>) =>
+  Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* applyRedstoneHostEventsGenerator() {
+      const { observer, port, realms, runtime } = input
+      const events = yield* drainRedstoneEvents(runtime)
+      const result = yield* Effect.exit(restore(commitRedstoneEvents({ events, observer, port, realms })))
+      if (Exit.isFailure(result)) {
+        yield* runtime.restoreEvents(events)
+        return yield* Effect.failCause(result.cause)
+      }
+      const publication = result.value
+      if (Option.isSome(publication)) {
+        for (const event of publication.value.events) {
+          yield* publication.value.eventBus.publish(event)
+        }
+      }
+    }),
+  )
+
 /**
  * Drains every queue accumulated by `RedstoneWorldRuntime` and passes all
  * event categories to one request builder and coordinator commit. Call this
@@ -1281,20 +1375,16 @@ export const applyRedstoneHostEvents = <BuildError>(
 ): Effect.Effect<
   void,
   BlockRegistryResolutionFailure | RedstoneHostEventFailure | RedstoneHostPositionFailure | RedstoneHostHopperFailure | BuildError | Schema.SchemaError | WorldCommitCoordinatorError | HopperServiceError
-> =>
-  Effect.uninterruptibleMask((restore) =>
-    Effect.gen(function* applyRedstoneHostEventsGenerator() {
-      const events = yield* drainRedstoneEvents(runtime)
-      const result = yield* Effect.exit(restore(commitRedstoneEvents({ events, port, realms })))
-      if (Exit.isFailure(result)) {
-        yield* runtime.restoreEvents(events)
-        return yield* Effect.failCause(result.cause)
-      }
-      const publication = result.value
-      if (Option.isSome(publication)) {
-        for (const event of publication.value.events) {
-          yield* publication.value.eventBus.publish(event)
-        }
-      }
-    }),
-  )
+> => applyRedstoneHostEventsInternal({ observer: NO_HOST_EVENT_OBSERVER, port, realms, runtime })
+
+export const applyRedstoneHostEventsObserved = <BuildError>(
+  input: Readonly<{
+    readonly runtime: RedstoneWorldRuntimeService
+    readonly realms: ReadonlyArray<RedstoneHostRealm>
+    readonly port: RedstoneHostWritePort<BuildError>
+    readonly observer: RedstoneHostEventObserver
+  }>,
+): Effect.Effect<
+  void,
+  BlockRegistryResolutionFailure | RedstoneHostEventFailure | RedstoneHostPositionFailure | RedstoneHostHopperFailure | BuildError | Schema.SchemaError | WorldCommitCoordinatorError | HopperServiceError
+> => applyRedstoneHostEventsInternal({ ...input, observer: Option.some(input.observer) })

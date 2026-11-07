@@ -243,6 +243,8 @@ export type Component = {
    * either a container or a wire, never both.
    */
   readonly containerSignal?: PowerLevel
+  /** Levers, buttons, pressure plates and torches: the solid block this component strongly powers. */
+  readonly strongPowerTo?: PositionKey
   /**
    * Repeaters, comparators and observers: the ONE cell this component drives. In
    * the world this is the block it faces — for an observer, the cell behind it,
@@ -281,6 +283,46 @@ export type CircuitBoard = {
 
 export type PowerMap = ReadonlyMap<PositionKey, PowerLevel>
 
+export type PowerTickBlockLevels = {
+  readonly strongLevel: PowerLevel
+  readonly weakLevel: PowerLevel
+}
+
+const EMPTY_BLOCK_POWER: ReadonlyMap<PositionKey, PowerTickBlockLevels> = new Map()
+
+export type PowerTickState = {
+  readonly power: PowerMap
+  readonly blockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>
+}
+
+export type PowerTickContext = {
+  readonly faceBlockNeighboursOf?: (key: PositionKey) => ReadonlyArray<PositionKey>
+  readonly faceComponentNeighboursOf?: (key: PositionKey) => ReadonlyArray<PositionKey>
+  readonly faceNeighboursOf?: (key: PositionKey) => ReadonlyArray<PositionKey>
+  readonly faceWireNeighboursOf?: ((key: PositionKey) => ReadonlyArray<PositionKey>) | undefined
+  readonly faceLampNeighboursOf?: ((key: PositionKey) => ReadonlyArray<PositionKey>) | undefined
+  readonly faceSupportBlockNeighbourOf?: (key: PositionKey) => PositionKey | null
+  readonly hasLampReceivers?: boolean
+  readonly retainBlockPower?: boolean
+  readonly isRedstoneConductiveAt?: (key: PositionKey) => boolean
+  readonly previousBlockPower?: ReadonlyMap<PositionKey, PowerTickBlockLevels>
+}
+
+const EMPTY_POWER_TICK_CONTEXT: PowerTickContext = {}
+
+export type PowerProvenanceCandidate = {
+  readonly source: PositionKey
+  readonly predecessor: PositionKey | null
+  readonly sourceLevel: PowerLevel
+  readonly attenuation: PowerLevel
+}
+
+export type PowerTickWithProvenance = {
+  readonly power: PowerMap
+  readonly blockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>
+  readonly provenance: ReadonlyMap<PositionKey, ReadonlyArray<PowerProvenanceCandidate>>
+}
+
 export const emptyPowerMap: PowerMap = new Map<PositionKey, PowerLevel>()
 
 const EXTERNAL_SOURCE_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
@@ -300,6 +342,7 @@ const SOURCE_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
 
 /** The power level meaning "unpowered". */
 const NO_POWER_LEVEL: PowerLevel = 0
+const NO_POSITION_KEYS: ReadonlyArray<PositionKey> = []
 
 export const powerAt = (map: PowerMap, key: PositionKey): PowerLevel => map.get(key) ?? NO_POWER_LEVEL
 
@@ -353,9 +396,14 @@ const resolveComponent = (
 ): Component | undefined => overrides?.get(key) ?? board.components.get(key)
 
 /** `powerAt(previous, key)`, or `NO_POWER_LEVEL` when the optional cell reference is absent. */
-const inputPowerAt = (previous: PowerMap, key: PositionKey | undefined): PowerLevel => {
+const inputPowerAt = (
+  previous: PowerMap,
+  key: PositionKey | undefined,
+  previousBlockPower?: ReadonlyMap<PositionKey, PowerTickBlockLevels>,
+): PowerLevel => {
   if (key) {
-    return powerAt(previous, key)
+    const block = previousBlockPower?.get(key)
+    return Math.max(powerAt(previous, key), block?.strongLevel ?? NO_POWER_LEVEL, block?.weakLevel ?? NO_POWER_LEVEL)
   }
   return NO_POWER_LEVEL
 }
@@ -411,23 +459,31 @@ const externalSourceLevel = (component: Component): PowerLevel => {
   return NO_POWER_LEVEL
 }
 
-const torchSourceLevel = (component: Component, previous: PowerMap): PowerLevel => {
+const torchSourceLevel = (
+  component: Component,
+  previous: PowerMap,
+  previousBlockPower?: ReadonlyMap<PositionKey, PowerTickBlockLevels>,
+): PowerLevel => {
   // Inversion, delayed by one tick. A torch with no attachment burns
   // Permanently, which is the standard way to write a constant source.
-  const inputPower = inputPowerAt(previous, component.invertedBy)
+  const inputPower = inputPowerAt(previous, component.invertedBy, previousBlockPower)
   if (torchShouldEmit(component, inputPower)) {
     return MAX_POWER_LEVEL
   }
   return NO_POWER_LEVEL
 }
 
-const repeaterSourceLevel = (component: Component, previous: PowerMap): PowerLevel => {
+const repeaterSourceLevel = (
+  component: Component,
+  previous: PowerMap,
+  previousBlockPower?: ReadonlyMap<PositionKey, PowerTickBlockLevels>,
+): PowerLevel => {
   // Repeaters restore FULL power rather than passing the level through:
   // That is what lets a signal cross more wire than one run reaches (14
   // Cells — see `MAX_POWER_LEVEL`). Where that full power GOES is
   // `conductsInto`'s business, not this function's: `sourcesOf` says a cell
   // Generates, never who it generates into.
-  const inputPower = inputPowerAt(previous, component.inputFrom)
+  const inputPower = inputPowerAt(previous, component.inputFrom, previousBlockPower)
   if (inputPower > NO_POWER_LEVEL) {
     return MAX_POWER_LEVEL
   }
@@ -444,20 +500,28 @@ const repeaterSourceLevel = (component: Component, previous: PowerMap): PowerLev
  * CURRENT tick's raw input and discard the delay `advanceOrHoldRepeater`
  * just spent ticks counting down.
  */
-const resolvedOrLiveRepeaterSourceLevel = (component: Component, previous: PowerMap): PowerLevel => {
+const resolvedOrLiveRepeaterSourceLevel = (
+  component: Component,
+  previous: PowerMap,
+  previousBlockPower?: ReadonlyMap<PositionKey, PowerTickBlockLevels>,
+): PowerLevel => {
   if (typeof component.active === 'boolean') {
     return externalSourceLevel(component)
   }
-  return repeaterSourceLevel(component, previous)
+  return repeaterSourceLevel(component, previous, previousBlockPower)
 }
 
-const comparatorSourceLevel = (component: Component, previous: PowerMap): PowerLevel => {
+const comparatorSourceLevel = (
+  component: Component,
+  previous: PowerMap,
+  previousBlockPower?: ReadonlyMap<PositionKey, PowerTickBlockLevels>,
+): PowerLevel => {
   // The rear is either a container's reading or the cell behind, never
   // Both: in the world that cell holds one or the other. Both are read from
   // OUTSIDE the current sweep — `previous` for the wire, the world owner's
   // Statement for the container — which is what makes a comparator a delay
   // Element like a repeater (`DELAYED_KINDS`).
-  const rear = component.containerSignal ?? inputPowerAt(previous, component.inputFrom)
+  const rear = component.containerSignal ?? inputPowerAt(previous, component.inputFrom, previousBlockPower)
   const sides = (component.sideInputs ?? []).map((side) => powerAt(previous, side))
   return comparatorOutput(rear, sides, component.mode ?? 'compare')
 }
@@ -468,18 +532,22 @@ const comparatorSourceLevel = (component: Component, previous: PowerMap): PowerL
  * uses to decide whether to record an entry — which is what lets the four kinds
  * below share one caller instead of each carrying its own `continue`.
  */
-const sourceLevelFor = (component: Component, previous: PowerMap): PowerLevel => {
+const sourceLevelFor = (
+  component: Component,
+  previous: PowerMap,
+  previousBlockPower?: ReadonlyMap<PositionKey, PowerTickBlockLevels>,
+): PowerLevel => {
   if (EXTERNAL_SOURCE_KINDS.has(component.kind)) {
     return externalSourceLevel(component)
   }
   if (component.kind === 'torch') {
-    return torchSourceLevel(component, previous)
+    return torchSourceLevel(component, previous, previousBlockPower)
   }
   if (component.kind === 'repeater') {
-    return resolvedOrLiveRepeaterSourceLevel(component, previous)
+    return resolvedOrLiveRepeaterSourceLevel(component, previous, previousBlockPower)
   }
   if (component.kind === 'comparator') {
-    return comparatorSourceLevel(component, previous)
+    return comparatorSourceLevel(component, previous, previousBlockPower)
   }
 
   // `wire`, `lamp`, `hopper` and `dispenser` generate nothing, so they need no
@@ -493,21 +561,37 @@ const sourceLevelFor = (component: Component, previous: PowerMap): PowerLevel =>
   return NO_POWER_LEVEL
 }
 
-export const sourcesOf = (
+type SourceOptions = {
+  readonly overrides?: ReadonlyMap<PositionKey, Component> | undefined
+  readonly previousBlockPower?: ReadonlyMap<PositionKey, PowerTickBlockLevels> | undefined
+}
+
+const sourcesOfWithOptions = (
   board: CircuitBoard,
   previous: PowerMap,
-  overrides?: ReadonlyMap<PositionKey, Component>,
+  options: SourceOptions,
 ): PowerMap => {
   const sources = new Map<PositionKey, PowerLevel>()
 
-  for (const [key, component] of componentEntriesForKinds(board, SOURCE_KINDS, overrides)) {
-    const level = sourceLevelFor(component, previous)
+  for (const [key, component] of componentEntriesForKinds(board, SOURCE_KINDS, options.overrides)) {
+    const level = sourceLevelFor(component, previous, options.previousBlockPower)
     if (level > NO_POWER_LEVEL) {
       sources.set(key, level)
     }
   }
 
   return sources
+}
+
+export const sourcesOf = (
+  board: CircuitBoard,
+  previous: PowerMap,
+  overrides?: ReadonlyMap<PositionKey, Component>,
+): PowerMap => {
+  if (overrides) {
+    return sourcesOfWithOptions(board, previous, { overrides })
+  }
+  return sourcesOfWithOptions(board, previous, {})
 }
 
 /**
@@ -674,74 +758,982 @@ const SIGNAL_DECAY_PER_BLOCK: PowerLevel = 1
 const orderedSources = (
   board: CircuitBoard,
   previous: PowerMap,
-  overrides?: ReadonlyMap<PositionKey, Component>,
-): ReadonlyArray<readonly [PositionKey, PowerLevel]> =>
-  [...sourcesOf(board, previous, overrides)].sort(([, left], [, right]) => right - left)
+  options: SourceOptions,
+): ReadonlyArray<Readonly<{ component: Component; key: PositionKey; level: PowerLevel }>> => {
+  const sources: Array<Readonly<{ component: Component; key: PositionKey; level: PowerLevel }>> = []
+  for (const [key, component] of componentEntriesForKinds(board, SOURCE_KINDS, options.overrides)) {
+    const level = sourceLevelFor(component, previous, options.previousBlockPower)
+    if (level > NO_POWER_LEVEL) {
+      sources.push({ component, key, level })
+    }
+  }
+  return sources.sort((left, right) => right.level - left.level)
+}
+
+type ComponentQueue = Array<PositionKey>
+
+const enqueueComponent = (queue: ComponentQueue, key: PositionKey): void => {
+  queue.push(key)
+}
+
+const EMPTY_POWER_PROVENANCE_CANDIDATES: ReadonlyArray<PowerProvenanceCandidate> = []
+
+const candidatesForSource = (key: PositionKey, level: PowerLevel): ReadonlyArray<PowerProvenanceCandidate> =>
+  [{ attenuation: NO_POWER_LEVEL, predecessor: null, source: key, sourceLevel: level }]
+
+type SourceSeedInput = {
+  readonly board: CircuitBoard
+  readonly options: SourceOptions
+  readonly previous: PowerMap
+}
+
+type SeededPower = {
+  readonly power: Map<PositionKey, PowerLevel>
+  readonly queue: ComponentQueue
+}
+
+const provenanceMapForTick = (
+  collectProvenance: boolean,
+): Map<PositionKey, ReadonlyArray<PowerProvenanceCandidate>> | null => {
+  if (collectProvenance) {
+    return new Map()
+  }
+  return null
+}
+
+const seedSourceEntries = (input: Readonly<{
+  sources: ReadonlyArray<Readonly<{ key: PositionKey; level: PowerLevel }>>
+  power: Map<PositionKey, PowerLevel>
+  provenance: Map<PositionKey, ReadonlyArray<PowerProvenanceCandidate>> | null
+  queue: ComponentQueue
+}>): void => {
+  const { power, provenance, queue, sources } = input
+  for (const { key, level } of sources) {
+    power.set(key, level)
+    if (provenance) {
+      provenance.set(key, candidatesForSource(key, level))
+    }
+    enqueueComponent(queue, key)
+  }
+}
 
 /** The BFS queue and its power map, seeded from this tick's sources in descending power order. */
-const seedFromSources = (
-  board: CircuitBoard,
-  previous: PowerMap,
-  overrides?: ReadonlyMap<PositionKey, Component>,
-): { readonly power: Map<PositionKey, PowerLevel>; readonly queue: Array<PositionKey> } => {
+function seedFromSources(input: SourceSeedInput & { readonly collectProvenance: true }): SeededPower & {
+  readonly provenance: Map<PositionKey, ReadonlyArray<PowerProvenanceCandidate>>
+}
+function seedFromSources(input: SourceSeedInput & { readonly collectProvenance: false }): SeededPower & {
+  readonly provenance: null
+}
+function seedFromSources(input: SourceSeedInput & { readonly collectProvenance: boolean }): SeededPower & {
+  readonly provenance: Map<PositionKey, ReadonlyArray<PowerProvenanceCandidate>> | null
+} {
+  const { board, collectProvenance, options, previous } = input
   const power = new Map<PositionKey, PowerLevel>()
-  const queue: Array<PositionKey> = []
-  for (const [key, level] of orderedSources(board, previous, overrides)) {
-    power.set(key, level)
-    queue.push(key)
-  }
-  return { power, queue }
+  const provenance = provenanceMapForTick(collectProvenance)
+  const queue: ComponentQueue = []
+  const sources = orderedSources(board, previous, options)
+  seedSourceEntries({ power, provenance, queue, sources })
+  return { power, provenance, queue }
 }
 
 /** The level `key` still has left to give after this tick's decay, if any. */
-const outgoingPowerAt = (power: PowerMap, key: PositionKey, kind: ComponentKind | undefined): PowerLevel => {
+const outgoingPowerFrom = (level: PowerLevel, kind: ComponentKind | undefined): PowerLevel => {
   if (kind === 'wire') {
-    return powerAt(power, key) - SIGNAL_DECAY_PER_BLOCK
+    return level - SIGNAL_DECAY_PER_BLOCK
   }
-  return powerAt(power, key)
+  return level
 }
 
-/** Pushes `outgoing` onto every neighbour of `key` that receives power and is not already at least that strong. */
-const relaxNeighbours = (params: {
+const candidateAfter = (
+  candidate: PowerProvenanceCandidate,
+  predecessor: PositionKey,
+  attenuation: PowerLevel,
+): PowerProvenanceCandidate => ({
+  attenuation: candidate.attenuation + attenuation,
+  predecessor,
+  source: candidate.source,
+  sourceLevel: candidate.sourceLevel,
+})
+
+const appendMissingCandidates = (
+  incoming: ReadonlyArray<PowerProvenanceCandidate>,
+  candidates: Array<PowerProvenanceCandidate>,
+  step: { readonly predecessor: PositionKey; readonly attenuation: PowerLevel },
+): boolean => {
+  let addedCandidate = false
+  for (const candidate of incoming) {
+    const exists = candidates.some((existing) => existing.source === candidate.source)
+    if (!exists) {
+      candidates.push(candidateAfter(candidate, step.predecessor, step.attenuation))
+      addedCandidate = true
+    }
+  }
+  return addedCandidate
+}
+
+type MutableBlockPower = {
+  strongLevel: PowerLevel
+  weakLevel: PowerLevel
+}
+
+// Non-retaining ticks route each channel directly to receivers and never write this shared map.
+const EMPTY_MUTABLE_BLOCK_POWER: Map<PositionKey, MutableBlockPower> = new Map()
+
+type MutableBlockProvenance = {
+  strongCandidates: ReadonlyArray<PowerProvenanceCandidate>
+  weakCandidates: ReadonlyArray<PowerProvenanceCandidate>
+}
+
+type PowerTickOptions = {
+  readonly context?: PowerTickContext | undefined
+  readonly overrides?: ReadonlyMap<PositionKey, Component> | undefined
+}
+
+type MutablePropagationState = {
   readonly board: CircuitBoard
-  readonly power: Map<PositionKey, PowerLevel>
-  readonly queue: Array<PositionKey>
-  readonly key: PositionKey
-  readonly outgoing: PowerLevel
   readonly overrides: ReadonlyMap<PositionKey, Component> | undefined
+  readonly context: PowerTickContext | undefined
+  readonly blockPowerContext: BlockPowerContext | null
+  readonly power: Map<PositionKey, PowerLevel>
+  readonly blockPower: Map<PositionKey, MutableBlockPower>
+  readonly queue: ComponentQueue
+}
+
+type MutablePropagation =
+  | (MutablePropagationState & {
+      readonly collectProvenance: true
+      readonly provenance: Map<PositionKey, ReadonlyArray<PowerProvenanceCandidate>>
+      readonly blockProvenance: Map<PositionKey, MutableBlockProvenance>
+    })
+  | (MutablePropagationState & {
+      readonly collectProvenance: false
+      readonly provenance: null
+      readonly blockProvenance: null
+    })
+
+type BlockPowerContext = {
+  readonly faceBlockNeighboursOf: (key: PositionKey) => ReadonlyArray<PositionKey>
+  readonly faceComponentNeighboursOf: (key: PositionKey) => ReadonlyArray<PositionKey>
+  readonly faceSupportBlockNeighbourOf?: ((key: PositionKey) => PositionKey | null) | undefined
+  readonly faceWireNeighboursOf?: ((key: PositionKey) => ReadonlyArray<PositionKey>) | undefined
+  readonly faceLampNeighboursOf?: ((key: PositionKey) => ReadonlyArray<PositionKey>) | undefined
+  readonly hasLampReceivers?: boolean | undefined
+  readonly isRedstoneConductiveAt: (key: PositionKey) => boolean
+  readonly retainBlockPower: boolean
+  readonly answers: Map<PositionKey, boolean>
+}
+
+type BlockPowerChannel = 'strong' | 'weak' | 'none'
+
+type DirectionalStrongBlockSource = Component & {
+  readonly kind: 'lever' | 'button' | 'pressure-plate' | 'observer' | 'repeater' | 'comparator'
+}
+
+const isDirectionalStrongBlockSource = (component: Component): component is DirectionalStrongBlockSource =>
+  component.kind === 'lever' ||
+  component.kind === 'button' ||
+  component.kind === 'pressure-plate' ||
+  component.kind === 'observer' ||
+  component.kind === 'repeater' ||
+  component.kind === 'comparator'
+
+const strongBlockPowerTarget = (component: DirectionalStrongBlockSource): PositionKey | null => {
+  if (component.kind === 'lever' || component.kind === 'button' || component.kind === 'pressure-plate') {
+    return component.strongPowerTo ?? null
+  }
+  return component.outputTo ?? null
+}
+
+const torchBlockPowerChannelFor = (component: Component, neighbour: PositionKey): BlockPowerChannel => {
+  if (component.invertedBy === neighbour) {
+    return 'none'
+  }
+  if (component.strongPowerTo === neighbour) {
+    return 'strong'
+  }
+  return 'weak'
+}
+
+const blockPowerChannelFor = (component: Component, neighbour: PositionKey): BlockPowerChannel => {
+  if (component.kind === 'torch') {
+    return torchBlockPowerChannelFor(component, neighbour)
+  }
+  if (component.kind === 'wire') {
+    return 'weak'
+  }
+  if (isDirectionalStrongBlockSource(component) && strongBlockPowerTarget(component) === neighbour) {
+    return 'strong'
+  }
+  return 'none'
+}
+
+const blockPowerSource = (component: Component): boolean =>
+  component.kind === 'lever' ||
+  component.kind === 'button' ||
+  component.kind === 'pressure-plate' ||
+  component.kind === 'observer' ||
+  component.kind === 'repeater' ||
+  component.kind === 'comparator' ||
+  component.kind === 'torch' ||
+  component.kind === 'wire'
+
+const blockStateAt = (propagation: MutablePropagation, key: PositionKey): MutableBlockPower => {
+  const current = propagation.blockPower.get(key)
+  if (current) {
+    return current
+  }
+  const state: MutableBlockPower = {
+    strongLevel: NO_POWER_LEVEL,
+    weakLevel: NO_POWER_LEVEL,
+  }
+  propagation.blockPower.set(key, state)
+  return state
+}
+
+const blockProvenanceAt = (
+  provenance: Map<PositionKey, MutableBlockProvenance>,
+  key: PositionKey,
+): MutableBlockProvenance => {
+  const current = provenance.get(key)
+  if (current) {
+    return current
+  }
+  const state: MutableBlockProvenance = {
+    strongCandidates: EMPTY_POWER_PROVENANCE_CANDIDATES,
+    weakCandidates: EMPTY_POWER_PROVENANCE_CANDIDATES,
+  }
+  provenance.set(key, state)
+  return state
+}
+
+const setCandidatesForBlockChannel = (
+  state: MutableBlockProvenance,
+  channel: 'strong' | 'weak',
+  candidates: ReadonlyArray<PowerProvenanceCandidate>,
+): void => {
+  if (channel === 'strong') {
+    state.strongCandidates = candidates
+  } else {
+    state.weakCandidates = candidates
+  }
+}
+
+const candidatesForBlockChannel = (
+  state: MutableBlockProvenance,
+  channel: 'strong' | 'weak',
+): ReadonlyArray<PowerProvenanceCandidate> => {
+  if (channel === 'strong') {
+    return state.strongCandidates
+  }
+  return state.weakCandidates
+}
+
+const componentCandidatesAfter = (
+  incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>,
+  predecessor: PositionKey,
+  attenuation: PowerLevel,
+): ReadonlyArray<PowerProvenanceCandidate> =>
+  incomingCandidates.map((candidate) =>
+    candidateAfter(candidate, predecessor, attenuation),
+  )
+
+type ComponentPowerUpdate = {
+  propagation: MutablePropagation
+  key: PositionKey
+  level: PowerLevel
+  predecessor: PositionKey
+  attenuation: PowerLevel
+  incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+}
+
+const seedComponentPower = (input: ComponentPowerUpdate): void => {
+  const { attenuation, incomingCandidates, key, level, predecessor, propagation } = input
+  propagation.power.set(key, level)
+  const { provenance } = propagation
+  if (provenance) {
+    provenance.set(key, componentCandidatesAfter(
+      incomingCandidates,
+      predecessor,
+      attenuation,
+    ))
+  }
+  enqueueComponent(propagation.queue, key)
+}
+
+const replaceComponentPower = (input: ComponentPowerUpdate): void => {
+  const { attenuation, incomingCandidates, key, level, predecessor, propagation } = input
+  propagation.power.set(key, level)
+  const { provenance } = propagation
+  if (provenance) {
+    provenance.set(key, componentCandidatesAfter(
+      incomingCandidates,
+      predecessor,
+      attenuation,
+    ))
+  }
+  enqueueComponent(propagation.queue, key)
+}
+
+/** @internal */
+export const appendTiedComponentPower = (input: Readonly<{
+  provenance: Map<PositionKey, ReadonlyArray<PowerProvenanceCandidate>>
+  queue: ComponentQueue
+  key: PositionKey
+  predecessor: PositionKey
+  attenuation: PowerLevel
+  incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+}>): void => {
+  const { attenuation, incomingCandidates, key, predecessor, provenance, queue } = input
+  // Positive component entries receive provenance before queueing, so tied updates always have a prior candidate list.
+  const candidates = [...(provenance.get(key) ?? EMPTY_POWER_PROVENANCE_CANDIDATES)]
+  if (appendMissingCandidates(incomingCandidates, candidates, { attenuation, predecessor })) {
+    provenance.set(key, candidates)
+    enqueueComponent(queue, key)
+  }
+}
+
+const updateComponentPower = (input: ComponentPowerUpdate): void => {
+  const { attenuation, incomingCandidates, key, level, predecessor, propagation } = input
+  const current = propagation.power.get(key)
+  if (typeof current === 'undefined') {
+    seedComponentPower(input)
+    return
+  }
+  if (current < level) {
+    replaceComponentPower(input)
+    return
+  }
+  if (current === level && propagation.provenance && level > NO_POWER_LEVEL) {
+    appendTiedComponentPower({
+      attenuation,
+      incomingCandidates,
+      key,
+      predecessor,
+      provenance: propagation.provenance,
+      queue: propagation.queue,
+    })
+  }
+}
+
+const replaceBlockCandidates = (params: {
+  readonly state: MutableBlockProvenance
+  readonly channel: 'strong' | 'weak'
+  readonly incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+  readonly source: PositionKey
 }): void => {
-  const { board, key, outgoing, overrides, power, queue } = params
-  for (const neighbour of conductsInto(board, key, overrides)) {
-    const neighbourKind = resolveComponent(board, neighbour, overrides)?.kind
-    if (neighbourKind && RECEIVES_POWER.has(neighbourKind) && powerAt(power, neighbour) < outgoing) {
-      power.set(neighbour, outgoing)
-      queue.push(neighbour)
+  const { state, channel, incomingCandidates, source } = params
+  const candidates = incomingCandidates.map((candidate) =>
+    candidateAfter(candidate, source, NO_POWER_LEVEL),
+  )
+  setCandidatesForBlockChannel(state, channel, candidates)
+}
+
+const blockChannelLevel = (state: MutableBlockPower, channel: 'strong' | 'weak'): PowerLevel => {
+  if (channel === 'strong') {
+    return state.strongLevel
+  }
+  return state.weakLevel
+}
+
+const setBlockChannelLevel = (
+  state: MutableBlockPower,
+  channel: 'strong' | 'weak',
+  level: PowerLevel,
+): void => {
+  if (channel === 'strong') {
+    state.strongLevel = level
+  } else {
+    state.weakLevel = level
+  }
+}
+
+const appendBlockChannelProvenance = (params: {
+  readonly state: MutableBlockProvenance
+  readonly channel: 'strong' | 'weak'
+  readonly incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+  readonly source: PositionKey
+}): boolean => {
+  const { state, channel, incomingCandidates, source } = params
+  const candidates = [...candidatesForBlockChannel(state, channel)]
+  const added = appendMissingCandidates(incomingCandidates, candidates, {
+    attenuation: NO_POWER_LEVEL,
+    predecessor: source,
+  })
+  if (added) {
+    setCandidatesForBlockChannel(state, channel, candidates)
+  }
+  return added
+}
+
+type BlockPowerLevelUpdate = Readonly<{
+  propagation: MutablePropagation
+  key: PositionKey
+  state: MutableBlockPower
+  source: PositionKey
+  channel: 'strong' | 'weak'
+  level: PowerLevel
+  incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+}>
+
+const setBlockPowerLevel = (input: BlockPowerLevelUpdate): void => {
+  const { channel, incomingCandidates, key, level, propagation, source, state } = input
+  setBlockChannelLevel(state, channel, level)
+  if (propagation.blockProvenance) {
+    replaceBlockCandidates({
+      channel,
+      incomingCandidates,
+      source,
+      state: blockProvenanceAt(propagation.blockProvenance, key),
+    })
+  }
+}
+
+const updateTiedBlockPower = (params: {
+  readonly state: MutableBlockProvenance
+  readonly source: PositionKey
+  readonly channel: 'strong' | 'weak'
+  readonly level: PowerLevel
+  readonly incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+}): boolean => {
+  const { state, source, channel, incomingCandidates } = params
+  return appendBlockChannelProvenance({ channel, incomingCandidates, source, state })
+}
+
+type BlockChannelUpdate = Readonly<{
+  propagation: MutablePropagation
+  key: PositionKey
+  source: PositionKey
+  channel: 'strong' | 'weak'
+  level: PowerLevel
+  incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+}>
+
+const updateTiedBlockChannel = (input: BlockChannelUpdate & {
+  readonly current: PowerLevel
+  readonly state: MutableBlockPower
+  readonly provenance: Map<PositionKey, MutableBlockProvenance> | null
+}): MutableBlockPower | null => {
+  const { channel, current, incomingCandidates, key, level, provenance, source, state } = input
+  if (current !== level || !provenance) {
+    return null
+  }
+  const candidateState = blockProvenanceAt(provenance, key)
+  if (!updateTiedBlockPower({ channel, incomingCandidates, level, source, state: candidateState })) {
+    return null
+  }
+  return state
+}
+
+const updateBlockChannel = (input: BlockChannelUpdate): MutableBlockPower | null => {
+  const { channel, incomingCandidates, key, level, propagation, source } = input
+  const state = blockStateAt(propagation, key)
+  const current = blockChannelLevel(state, channel)
+  if (current < level) {
+    setBlockPowerLevel({ channel, incomingCandidates, key, level, propagation, source, state })
+    return state
+  }
+  return updateTiedBlockChannel({
+    channel,
+    current,
+    incomingCandidates,
+    key,
+    level,
+    propagation,
+    provenance: propagation.blockProvenance,
+    source,
+    state,
+  })
+}
+
+const blockPowerLevelForComponent = (
+  state: MutableBlockPower,
+  componentKind: ComponentKind,
+): PowerLevel => {
+  if (componentKind === 'wire') {
+    return state.strongLevel
+  }
+  return Math.max(state.strongLevel, state.weakLevel)
+}
+
+const blockPowerCandidatesForComponent = (
+  state: MutableBlockPower,
+  provenance: MutableBlockProvenance | undefined,
+  componentKind: ComponentKind,
+): ReadonlyArray<PowerProvenanceCandidate> => {
+  if (!provenance) {
+    return EMPTY_POWER_PROVENANCE_CANDIDATES
+  }
+  if (componentKind === 'wire' || state.strongLevel > state.weakLevel) {
+    return provenance.strongCandidates
+  }
+  if (state.weakLevel > state.strongLevel) {
+    return provenance.weakCandidates
+  }
+  return [...provenance.strongCandidates, ...provenance.weakCandidates]
+}
+
+const queryConductivity = (context: BlockPowerContext, key: PositionKey): boolean => {
+  const cached = context.answers.get(key)
+  if (typeof cached === 'boolean') {
+    return cached
+  }
+  const conductive = context.isRedstoneConductiveAt(key)
+  context.answers.set(key, conductive)
+  return conductive
+}
+
+const queryUnobservedWireSupport = (context: BlockPowerContext, key: PositionKey): void => {
+  const support = context.faceSupportBlockNeighbourOf?.(key)
+  if (typeof support === 'string') {
+    queryConductivity(context, support)
+    return
+  }
+  if (context.faceSupportBlockNeighbourOf) {
+    return
+  }
+  for (const neighbour of context.faceBlockNeighboursOf(key)) {
+    queryConductivity(context, neighbour)
+  }
+}
+
+type BlockPowerReceiverInput = Readonly<{
+  propagation: MutablePropagation
+  key: PositionKey
+  state: MutableBlockPower
+  faceNeighboursOf: (key: PositionKey) => ReadonlyArray<PositionKey>
+}>
+
+const receiveBlockPowerFromNeighbour = (input: BlockPowerReceiverInput, neighbour: PositionKey): void => {
+  const { key, propagation, state } = input
+  const component = resolveComponent(propagation.board, neighbour, propagation.overrides)
+  if (component && RECEIVES_POWER.has(component.kind)) {
+    const level = blockPowerLevelForComponent(state, component.kind)
+    if (level > NO_POWER_LEVEL) {
+      updateComponentPower({
+        attenuation: NO_POWER_LEVEL,
+        incomingCandidates: blockPowerCandidatesForComponent(
+          state,
+          propagation.blockProvenance?.get(key),
+          component.kind,
+        ),
+        key: neighbour,
+        level,
+        predecessor: key,
+        propagation,
+      })
     }
   }
 }
+
+const receiveBlockPowerFromNeighbours = (
+  input: BlockPowerReceiverInput,
+  neighbours: ReadonlyArray<PositionKey>,
+): void => {
+  for (const neighbour of neighbours) {
+    receiveBlockPowerFromNeighbour(input, neighbour)
+  }
+}
+
+const receiveBlockPowerFromTypedNeighbours = (
+  input: BlockPowerReceiverInput,
+  wireNeighbours: ReadonlyArray<PositionKey>,
+  lampNeighbours: ReadonlyArray<PositionKey>,
+): void => {
+  if (input.state.strongLevel > NO_POWER_LEVEL) {
+    receiveBlockPowerFromNeighbours(input, wireNeighbours)
+  }
+  // UpdateBlockChannel only returns a block after raising a positive channel.
+  receiveBlockPowerFromNeighbours(input, lampNeighbours)
+}
+
+const receiveBlockPower = (input: BlockPowerReceiverInput): void => {
+  const { faceNeighboursOf, key, propagation } = input
+  const wireNeighboursOf = propagation.blockPowerContext?.faceWireNeighboursOf
+  const lampNeighboursOf = propagation.blockPowerContext?.faceLampNeighboursOf
+  if (!wireNeighboursOf || !lampNeighboursOf) {
+    receiveBlockPowerFromNeighbours(input, faceNeighboursOf(key))
+    return
+  }
+  receiveBlockPowerFromTypedNeighbours(input, wireNeighboursOf(key), lampNeighboursOf(key))
+}
+
+type DirectBlockPowerReceivers = Readonly<{
+  wires: ReadonlyArray<PositionKey>
+  lamps: ReadonlyArray<PositionKey>
+}>
+
+const directBlockPowerReceiversFor = (
+  context: BlockPowerContext,
+  channel: Exclude<BlockPowerChannel, 'none'>,
+  neighbour: PositionKey,
+): DirectBlockPowerReceivers | null => {
+  if (context.retainBlockPower || !context.faceWireNeighboursOf || !context.faceLampNeighboursOf) {
+    return null
+  }
+  let wires: ReadonlyArray<PositionKey> = NO_POSITION_KEYS
+  if (channel === 'strong') {
+    wires = context.faceWireNeighboursOf(neighbour)
+  }
+  return { lamps: context.faceLampNeighboursOf(neighbour), wires }
+}
+
+const updateDirectBlockPowerReceivers = (input: Readonly<{
+  propagation: MutablePropagation
+  source: PositionKey
+  sourcePower: PowerLevel
+  incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+  neighbour: PositionKey
+  receivers: DirectBlockPowerReceivers
+}>): void => {
+  const { incomingCandidates, neighbour, propagation, receivers, source, sourcePower } = input
+  const update: ComponentPowerUpdate = {
+    attenuation: NO_POWER_LEVEL,
+    incomingCandidates,
+    key: neighbour,
+    level: sourcePower,
+    predecessor: source,
+    propagation,
+  }
+  for (const receiver of receivers.wires) {
+    update.key = receiver
+    updateComponentPower(update)
+  }
+  for (const receiver of receivers.lamps) {
+    update.key = receiver
+    updateComponentPower(update)
+  }
+}
+
+type EmitBlockPowerNeighbourInput = Readonly<{
+  propagation: MutablePropagation
+  blockPowerContext: BlockPowerContext
+  component: Component
+  key: PositionKey
+  sourcePower: PowerLevel
+  incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+  neighbour: PositionKey
+}>
+
+const emitDirectBlockPowerToNeighbour = (
+  input: EmitBlockPowerNeighbourInput,
+  receivers: DirectBlockPowerReceivers,
+): void => {
+  const { blockPowerContext, incomingCandidates, key, neighbour, propagation, sourcePower } = input
+  if (!queryConductivity(blockPowerContext, neighbour)) {
+    return
+  }
+  if (receivers.wires.length === NO_POWER_LEVEL && receivers.lamps.length === NO_POWER_LEVEL) {
+    return
+  }
+  updateDirectBlockPowerReceivers({
+    incomingCandidates,
+    neighbour,
+    propagation,
+    receivers,
+    source: key,
+    sourcePower,
+  })
+}
+
+const emitRetainedBlockPowerToNeighbour = (
+  input: EmitBlockPowerNeighbourInput,
+  channel: Exclude<BlockPowerChannel, 'none'>,
+): void => {
+  const { blockPowerContext, incomingCandidates, key, neighbour, propagation, sourcePower } = input
+  if (!queryConductivity(blockPowerContext, neighbour)) {
+    return
+  }
+  const state = updateBlockChannel({
+    channel,
+    incomingCandidates,
+    key: neighbour,
+    level: sourcePower,
+    propagation,
+    source: key,
+  })
+  if (state) {
+    receiveBlockPower({
+      faceNeighboursOf: blockPowerContext.faceComponentNeighboursOf,
+      key: neighbour,
+      propagation,
+      state,
+    })
+  }
+}
+
+const emitBlockPowerToNeighbour = (input: EmitBlockPowerNeighbourInput): void => {
+  const { blockPowerContext, component, neighbour, propagation } = input
+  const channel = blockPowerChannelFor(component, neighbour)
+  if (channel === 'none' || resolveComponent(propagation.board, neighbour, propagation.overrides)) {
+    return
+  }
+  const receivers = directBlockPowerReceiversFor(blockPowerContext, channel, neighbour)
+  if (receivers) {
+    emitDirectBlockPowerToNeighbour(input, receivers)
+    return
+  }
+  emitRetainedBlockPowerToNeighbour(input, channel)
+}
+
+const emitBlockPower = (input: Readonly<{
+  propagation: MutablePropagation
+  component: Component
+  key: PositionKey
+  sourcePower: PowerLevel
+  incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+}>): void => {
+  const { component, incomingCandidates, key, propagation, sourcePower } = input
+  const { blockPowerContext } = propagation
+  if (!blockPowerContext || !blockPowerSource(component)) {
+    return
+  }
+  // Without block-power readers, query the resting support but do not build discarded channels.
+  if (!blockPowerContext.retainBlockPower &&
+    blockPowerContext.hasLampReceivers === false &&
+    component.kind === 'wire') {
+    queryUnobservedWireSupport(blockPowerContext, key)
+    return
+  }
+  for (const neighbour of blockPowerContext.faceBlockNeighboursOf(key)) {
+    emitBlockPowerToNeighbour({
+      blockPowerContext,
+      component,
+      incomingCandidates,
+      key,
+      neighbour,
+      propagation,
+      sourcePower,
+    })
+  }
+}
+
+const tickStateResult = (propagation: MutablePropagation): PowerTickState => {
+  const { blockPower, blockPowerContext, power } = propagation
+  if (blockPowerContext?.retainBlockPower === true) {
+    return { blockPower, power }
+  }
+  return { blockPower: EMPTY_BLOCK_POWER, power }
+}
+
+const propagateComponentPower = (input: Readonly<{
+  propagation: MutablePropagation
+  key: PositionKey
+  sourcePower: PowerLevel
+  incomingCandidates: ReadonlyArray<PowerProvenanceCandidate>
+  outgoing: PowerLevel
+}>): void => {
+  const { incomingCandidates, key, outgoing, propagation, sourcePower } = input
+  const { board, overrides } = propagation
+  const update: ComponentPowerUpdate = {
+    attenuation: sourcePower - outgoing,
+    incomingCandidates,
+    key,
+    level: outgoing,
+    predecessor: key,
+    propagation,
+  }
+  for (const neighbour of conductsInto(board, key, overrides)) {
+    const receiver = resolveComponent(board, neighbour, overrides)
+    if (receiver && RECEIVES_POWER.has(receiver.kind)) {
+      update.key = neighbour
+      updateComponentPower(update)
+    }
+  }
+}
+
+const propagateComponentQueueEntry = (
+  propagation: MutablePropagation,
+  key: PositionKey,
+  level: PowerLevel,
+): void => {
+  const component = resolveComponent(propagation.board, key, propagation.overrides)
+  const outgoing = outgoingPowerFrom(level, component?.kind)
+  const incomingCandidates = propagation.provenance?.get(key) ?? EMPTY_POWER_PROVENANCE_CANDIDATES
+  if (outgoing > NO_POWER_LEVEL) {
+    propagateComponentPower({ incomingCandidates, key, outgoing, propagation, sourcePower: level })
+  }
+  if (component && propagation.blockPowerContext) {
+    emitBlockPower({ component, incomingCandidates, key, propagation, sourcePower: level })
+  }
+}
+
+const propagateQueueEntry = (propagation: MutablePropagation, key: PositionKey, level: PowerLevel): void =>
+  propagateComponentQueueEntry(propagation, key, level)
+
+/** @internal */
+export const visitPoweredQueueEntries = <Context>(input: Readonly<{
+  context: Context
+  queue: ReadonlyArray<PositionKey>
+  power: ReadonlyMap<PositionKey, PowerLevel>
+  visit: (context: Context, key: PositionKey, level: PowerLevel) => void
+}>): void => {
+  for (const key of input.queue) {
+    const level = input.power.get(key)
+    if (typeof level === 'number') {
+      input.visit(input.context, key, level)
+    }
+  }
+}
+
+const sourceOptionsFor = (options: PowerTickOptions): SourceOptions => ({
+  overrides: options.overrides,
+  previousBlockPower: options.context?.previousBlockPower,
+})
+
+const blockPowerContextFor = (options: PowerTickOptions, collectProvenance: boolean): BlockPowerContext | null => {
+  const faceNeighboursOf = options.context?.faceNeighboursOf
+  const faceBlockNeighboursOf = options.context?.faceBlockNeighboursOf ?? faceNeighboursOf
+  const faceComponentNeighboursOf = options.context?.faceComponentNeighboursOf ?? faceNeighboursOf
+  const faceWireNeighboursOf = options.context?.faceWireNeighboursOf
+  const faceLampNeighboursOf = options.context?.faceLampNeighboursOf
+  const isRedstoneConductiveAt = options.context?.isRedstoneConductiveAt
+  if (!faceBlockNeighboursOf || !faceComponentNeighboursOf || !isRedstoneConductiveAt) {
+    return null
+  }
+  const canRouteWithoutRetaining = options.context?.retainBlockPower === false &&
+    typeof faceWireNeighboursOf !== 'undefined' &&
+    typeof faceLampNeighboursOf !== 'undefined'
+  return {
+    answers: new Map<PositionKey, boolean>(),
+    faceBlockNeighboursOf,
+    faceComponentNeighboursOf,
+    faceLampNeighboursOf,
+    faceSupportBlockNeighbourOf: options.context?.faceSupportBlockNeighbourOf,
+    faceWireNeighboursOf,
+    hasLampReceivers: options.context?.hasLampReceivers,
+    isRedstoneConductiveAt,
+    retainBlockPower: collectProvenance || !canRouteWithoutRetaining,
+  }
+}
+
+type PropagationInputState = {
+  readonly board: CircuitBoard
+  readonly options: PowerTickOptions
+  readonly previous: PowerMap
+}
+
+type PropagationInput = PropagationInputState & (
+  | { readonly collectProvenance: true }
+  | { readonly collectProvenance: false }
+)
+
+const blockPowerForTick = (retainBlockPower: boolean): Map<PositionKey, MutableBlockPower> => {
+  if (!retainBlockPower) {
+    return EMPTY_MUTABLE_BLOCK_POWER
+  }
+  return new Map<PositionKey, MutableBlockPower>()
+}
+
+function propagationForTick(input: PropagationInputState & { readonly collectProvenance: true }): Extract<MutablePropagation, { readonly collectProvenance: true }>
+function propagationForTick(input: PropagationInputState & { readonly collectProvenance: false }): Extract<MutablePropagation, { readonly collectProvenance: false }>
+function propagationForTick(input: PropagationInput): MutablePropagation {
+  const { board, options, previous } = input
+  const sourceOptions = sourceOptionsFor(options)
+  const blockPowerContext = blockPowerContextFor(options, input.collectProvenance)
+  const retainBlockPower = input.collectProvenance || blockPowerContext?.retainBlockPower === true
+  const blockPower = blockPowerForTick(retainBlockPower)
+  if (input.collectProvenance) {
+    const seeded = seedFromSources({ board, collectProvenance: true, options: sourceOptions, previous })
+    return {
+      blockPower,
+      blockPowerContext,
+      blockProvenance: new Map(),
+      board,
+      collectProvenance: true,
+      context: options.context,
+      overrides: options.overrides,
+      power: seeded.power,
+      provenance: seeded.provenance,
+      queue: seeded.queue,
+    }
+  }
+  const seeded = seedFromSources({ board, collectProvenance: false, options: sourceOptions, previous })
+  return {
+    blockPower,
+    blockPowerContext,
+    blockProvenance: null,
+    board,
+    collectProvenance: false,
+    context: options.context,
+    overrides: options.overrides,
+    power: seeded.power,
+    provenance: null,
+    queue: seeded.queue,
+  }
+}
+
+const propagationForNormalTick = (input: Readonly<{
+  board: CircuitBoard
+  previous: PowerMap
+  overrides: ReadonlyMap<PositionKey, Component> | undefined
+}>): Extract<MutablePropagation, { readonly collectProvenance: false }> => {
+  const { board, overrides, previous } = input
+  const seeded = seedFromSources({ board, collectProvenance: false, options: { overrides }, previous })
+  return {
+    blockPower: EMPTY_MUTABLE_BLOCK_POWER,
+    blockPowerContext: null,
+    blockProvenance: null,
+    board,
+    collectProvenance: false,
+    context: EMPTY_POWER_TICK_CONTEXT,
+    overrides,
+    power: seeded.power,
+    provenance: null,
+    queue: seeded.queue,
+  }
+}
+
+const propagateComponentsInQueue = (propagation: MutablePropagation): void => {
+  visitPoweredQueueEntries({
+    context: propagation,
+    power: propagation.power,
+    queue: propagation.queue,
+    visit: propagateQueueEntry,
+  })
+}
+
+const propagateQueue = (propagation: MutablePropagation): PowerTickState => {
+  propagateComponentsInQueue(propagation)
+  return tickStateResult(propagation)
+}
+
+function propagateTickCore(params: PropagationInput & { readonly collectProvenance: true }): PowerTickWithProvenance
+function propagateTickCore(params: PropagationInput & { readonly collectProvenance: false }): PowerTickState
+function propagateTickCore(params: PropagationInput): PowerTickWithProvenance | PowerTickState {
+  if (params.collectProvenance) {
+    const propagation = propagationForTick(params)
+    const state = propagateQueue(propagation)
+    return { ...state, provenance: propagation.provenance }
+  }
+  return propagateQueue(propagationForTick(params))
+}
+
+const propagatePowerQueue = (propagation: MutablePropagation): PowerMap => {
+  propagateComponentsInQueue(propagation)
+  return propagation.power
+}
+
+export const propagateTickState = (
+  board: CircuitBoard,
+  previous: PowerMap,
+  options: PowerTickOptions = {},
+): PowerTickState => propagateTickCore({ board, collectProvenance: false, options, previous })
 
 export const propagateTick = (
   board: CircuitBoard,
   previous: PowerMap,
   overrides?: ReadonlyMap<PositionKey, Component>,
-): PowerMap => {
-  const { power, queue } = seedFromSources(board, previous, overrides)
+): PowerMap => propagatePowerQueue(propagationForNormalTick({
+  board,
+  overrides,
+  previous,
+}))
 
-  // `for...of` over an array re-reads `length` on every step, so entries pushed
-  // Inside the loop ARE visited — which makes this a BFS queue with no cursor
-  // And no `queue[head]` indexed read. Under `noUncheckedIndexedAccess` that
-  // Read would be `PositionKey | undefined` and would need an unreachable
-  // `undefined` guard, i.e. a branch that can never be covered.
-  for (const key of queue) {
-    const kind = resolveComponent(board, key, overrides)?.kind
-    const outgoing = outgoingPowerAt(power, key, kind)
-    if (outgoing > NO_POWER_LEVEL) {
-      relaxNeighbours({ board, key, outgoing, overrides, power, queue })
-    }
-  }
-
-  return power
-}
+export const propagateTickWithProvenance = (
+  board: CircuitBoard,
+  previous: PowerMap,
+  options: PowerTickOptions = {},
+): PowerTickWithProvenance => propagateTickCore({ board, collectProvenance: true, options, previous })
 
 /**
  * The components whose output is a function of the PREVIOUS power map.
@@ -879,12 +1871,43 @@ export const settle = (
  * of a wire run: a wire at level 1 has nothing left to give (`outgoing` is 0) so
  * the cell beside it holds 0, and in vanilla the lamp there is lit.
  */
-export const drivenPowerAt = (
-  board: CircuitBoard,
-  power: PowerMap,
-  key: PositionKey,
+export type PowerReadContext = {
+  readonly blockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>
+  readonly faceNeighboursOf: (key: PositionKey) => ReadonlyArray<PositionKey>
+}
+
+type PowerReadInput = PositionKey | Readonly<{
+  key: PositionKey
+  context?: PowerReadContext | undefined
+}>
+
+const powerReadInputFor = (input: PowerReadInput): Readonly<{
+  key: PositionKey
+  context?: PowerReadContext | undefined
+}> => {
+  if (typeof input === 'string') {
+    return { key: input }
+  }
+  return input
+}
+
+const blockPowerLevelFor = (
+  componentKind: ComponentKind | undefined,
+  channels: PowerTickBlockLevels,
 ): PowerLevel => {
-  let strongest = 0
+  if (componentKind === 'wire') {
+    return channels.strongLevel
+  }
+  return Math.max(channels.strongLevel, channels.weakLevel)
+}
+
+const componentDrivenPowerAt = (params: {
+  readonly board: CircuitBoard
+  readonly power: PowerMap
+  readonly key: PositionKey
+}): PowerLevel => {
+  const { board, power, key } = params
+  let strongest = NO_POWER_LEVEL
   for (const neighbour of neighboursOf(board, key)) {
     const level = powerAt(power, neighbour)
     if (level > strongest && drivesInto(board, neighbour, key)) {
@@ -892,6 +1915,48 @@ export const drivenPowerAt = (
     }
   }
   return strongest
+}
+
+const blockPowerAtNeighbours = (params: {
+  readonly key: PositionKey
+  readonly kind: ComponentKind | undefined
+  readonly context: PowerReadContext
+}): PowerLevel => {
+  const { key, kind, context } = params
+  let strongest = NO_POWER_LEVEL
+  for (const neighbour of context.faceNeighboursOf(key)) {
+    const channels = context.blockPower.get(neighbour)
+    if (channels) {
+      const level = blockPowerLevelFor(kind, channels)
+      if (level > strongest) {
+        strongest = level
+      }
+    }
+  }
+  return strongest
+}
+
+const blockDrivenPowerAt = (params: {
+  readonly board: CircuitBoard
+  readonly key: PositionKey
+  readonly context?: PowerReadContext | undefined
+}): PowerLevel => {
+  const { board, key, context } = params
+  if (!context) {
+    return NO_POWER_LEVEL
+  }
+  return blockPowerAtNeighbours({ context, key, kind: board.components.get(key)?.kind })
+}
+
+export const drivenPowerAt = (
+  board: CircuitBoard,
+  power: PowerMap,
+  input: PowerReadInput,
+): PowerLevel => {
+  const { key, context } = powerReadInputFor(input)
+  const componentPower = componentDrivenPowerAt({ board, key, power })
+  const blockPower = blockDrivenPowerAt({ board, context, key })
+  return Math.max(componentPower, blockPower)
 }
 
 /**
@@ -902,8 +1967,14 @@ export const drivenPowerAt = (
  * the two would light every cell on the board. `test/power-graph.test.ts` pins
  * that separately.
  */
-export const isLit = (board: CircuitBoard, power: PowerMap, key: PositionKey): boolean =>
-  board.components.get(key)?.kind === 'lamp' && drivenPowerAt(board, power, key) > NO_POWER_LEVEL
+export const isLit = (
+  board: CircuitBoard,
+  power: PowerMap,
+  input: PowerReadInput,
+): boolean => {
+  const { key } = powerReadInputFor(input)
+  return board.components.get(key)?.kind === 'lamp' && drivenPowerAt(board, power, input) > NO_POWER_LEVEL
+}
 
 /**
  * Whether an actuator has power arriving at it.
@@ -918,5 +1989,8 @@ export const isLit = (board: CircuitBoard, power: PowerMap, key: PositionKey): b
  * detect powered transitions, but it remains non-conducting here; movement is
  * planned separately by `domain/piston.ts`.
  */
-export const isPowered = (board: CircuitBoard, power: PowerMap, key: PositionKey): boolean =>
-  drivenPowerAt(board, power, key) > NO_POWER_LEVEL
+export const isPowered = (
+  board: CircuitBoard,
+  power: PowerMap,
+  input: PowerReadInput,
+): boolean => drivenPowerAt(board, power, input) > NO_POWER_LEVEL
