@@ -1,5 +1,13 @@
 # @nerima-games/mx-redstone
 
+## 0.6.1
+
+### Patch Changes
+
+- Add optional solid-block redstone conduction support. `RedstoneHostBlock.strongPowerTo` carries lever and button attachment positions into component snapshots. The optional `RedstoneHostLookup.isButtonActive` callback defaults to inactive when omitted. Hosts must provide `strongPowerTo` on applicable host blocks and pass the `isRedstoneConductiveAt` callback to `syncSnapshot` to enable conduction; omitting either keeps the existing behavior for that path.
+
+- Expose internal power tick provenance helpers and result types for debugging, add a browser debug UI for 23 redstone scenarios, and expand runtime verification coverage.
+
 ## 0.6.0
 
 ### Minor Changes
