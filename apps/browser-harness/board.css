@@ -1,0 +1,140 @@
+.redstone-board {
+  display: grid;
+  gap: 0.75rem;
+  color: #e4ecf4;
+}
+
+.board-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.board-toolbar button,
+.board-y-slice-label input,
+.board-inspector-panel button {
+  min-height: 2.25rem;
+  border: 1px solid #405163;
+  border-radius: 0.35rem;
+  background: #17212d;
+  color: inherit;
+  padding: 0.35rem 0.65rem;
+  font: inherit;
+}
+
+.board-toolbar button[aria-pressed="true"] {
+  border-color: #49c5b6;
+  background: #203b3c;
+}
+
+.board-y-slice-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.board-y-slice-label input {
+  width: 5.5rem;
+}
+
+.board-scene {
+  display: block;
+  width: 100%;
+  min-height: 20rem;
+  border: 1px solid #263545;
+  border-radius: 0.55rem;
+  background:
+    linear-gradient(#192532 1px, transparent 1px),
+    linear-gradient(90deg, #192532 1px, transparent 1px),
+    #111a24;
+  background-size: 28px 28px;
+}
+
+.board-scene[hidden] {
+  display: none;
+}
+
+.board-cell {
+  cursor: pointer;
+}
+
+.board-cell:focus .board-cell-shape,
+.board-cell[aria-pressed="true"] .board-cell-shape {
+  stroke: #ffffff;
+  stroke-width: 3;
+}
+
+.board-cell-shape {
+  stroke: #dae5ef;
+  stroke-width: 1.5;
+}
+
+.board-cell-kind,
+.board-cell-power {
+  pointer-events: none;
+  text-anchor: middle;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  fill: #f6f8fa;
+  font-size: 7px;
+  paint-order: stroke;
+  stroke: #101720;
+  stroke-width: 1px;
+  stroke-linejoin: round;
+}
+
+.board-cell-power {
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.board-arrow {
+  fill: none;
+  stroke-width: 2;
+  opacity: 0.9;
+}
+
+.board-arrow-adjacency {
+  stroke: #7a8999;
+  stroke-dasharray: 2 3;
+}
+
+.board-arrow-read {
+  stroke: #49c5b6;
+}
+
+.board-arrow-output {
+  stroke: #f5b648;
+  stroke-width: 2.5;
+}
+
+.board-legend,
+.board-empty {
+  margin: 0;
+  color: #a9b7c6;
+  font-size: 0.9rem;
+}
+
+.board-inspector-panel {
+  border: 1px solid #263545;
+  border-radius: 0.55rem;
+  background: #151f2a;
+  padding: 0.75rem 1rem;
+}
+
+.board-inspector-panel h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.board-inspector {
+  white-space: pre-wrap;
+  margin: 0 0 0.65rem;
+  color: #c6d2de;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.board-inspector-panel button[hidden] {
+  display: none;
+}
