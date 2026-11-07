@@ -141,6 +141,20 @@ describe('public API surface', () => {
     }),
   )
 
+  it.effect('keeps solid-power tick internals out of the package barrel', () =>
+    Effect.sync(() => {
+      // BUG: implementation-only tick context or the timing bridge becomes a consumer contract.
+      const forbidden = [
+        'propagateTickState',
+        'advanceTimedCircuitWithContext',
+        'advanceTimedCircuitWithProvenanceContext',
+      ]
+      for (const name of forbidden) {
+        expect(Object.keys(redstone)).not.toContain(name)
+      }
+    }),
+  )
+
   // REGRESSION: frame-stage vocabulary is owned by @nerima-games/mc-kernel and
   // must not be republished by this package. `domain/position-key.ts` remains
   // local, but it is also intentionally absent from this barrel. This keeps

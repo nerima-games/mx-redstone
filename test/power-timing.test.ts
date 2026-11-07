@@ -1,9 +1,11 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import type { CircuitBoard, Component } from '../src/domain/power-graph'
+import type { CircuitBoard, Component, PowerTickContext } from '../src/domain/power-graph'
 import { powerAt } from '../src/domain/power-graph'
 import {
   advanceTimedCircuit,
+  advanceTimedCircuitWithContext,
+  advanceTimedCircuitWithProvenanceContext,
   emptyTimedCircuitState,
   TORCH_BURNOUT_COOLDOWN_TICKS,
   TORCH_BURNOUT_TOGGLE_LIMIT,
@@ -54,6 +56,86 @@ const burnOutSelfInvertingTorch = (): TimedCircuitState => {
 }
 
 describe('timed redstone', () => {
+  it.effect('treats omitted pressedButtons as an empty set', () =>
+    Effect.sync(() => {
+      // BUG: omitting the optional frame input throws or accidentally retriggers a button.
+      const board = line([
+        ['button', { kind: 'button', active: false }],
+        ['wire', { kind: 'wire' }],
+      ])
+      const state = advanceTimedCircuitWithContext({ board, previous: emptyTimedCircuitState })
+
+      expect(state.buttons.get('button')).toStrictEqual({ inputActive: false, remainingTicks: 0 })
+      expect(powerAt(state.power, 'wire')).toBe(0)
+    }),
+  )
+
+  it.effect('collects block provenance in one timed traversal while ordinary ticks omit it', () =>
+    Effect.sync(() => {
+      // This catches recorder ticks that need a second graph traversal or normal ticks that retain provenance.
+      const board: CircuitBoard = {
+        adjacency: new Map([
+          ['lever', []],
+          ['wire', []],
+        ]),
+        components: new Map([
+          ['lever', { kind: 'lever', active: true, strongPowerTo: 'block' }],
+          ['wire', { kind: 'wire' }],
+        ]),
+      }
+      const neighbourCalls = new Map<string, number>()
+      const context: PowerTickContext = {
+        faceNeighboursOf: (key) => {
+          neighbourCalls.set(key, (neighbourCalls.get(key) ?? 0) + 1)
+          return key === 'lever' ? ['block'] : key === 'block' ? ['wire'] : []
+        },
+        isRedstoneConductiveAt: (key) => key === 'block',
+      }
+      const normal = advanceTimedCircuitWithContext({ board, previous: emptyTimedCircuitState, pressedButtons: new Set(), context })
+      neighbourCalls.clear()
+      const recorded = advanceTimedCircuitWithProvenanceContext({ board, previous: emptyTimedCircuitState, pressedButtons: new Set(), context })
+
+      expect(normal.power).toStrictEqual(recorded.power)
+      expect(normal.blockPower).toStrictEqual(recorded.blockPower)
+      expect('provenance' in normal).toBe(false)
+      expect([...neighbourCalls.values()].reduce((total, count) => total + count, 0)).toBe(3)
+      expect(recorded.provenance.get('wire')).toStrictEqual([
+        { attenuation: 0, predecessor: 'block', source: 'lever', sourceLevel: 15 },
+      ])
+    }),
+  )
+
+  it.effect('reads previous block power for repeater rear input and torch inversion', () =>
+    Effect.sync(() => {
+      // This catches timers reading only component power when a solid block supplies their input.
+      const board: CircuitBoard = {
+        adjacency: new Map([
+          ['repeater', ['out']],
+          ['out', ['repeater']],
+          ['torch', []],
+        ]),
+        components: new Map([
+          ['repeater', { inputFrom: 'rear-block', kind: 'repeater', outputTo: 'out' }],
+          ['out', { kind: 'wire' }],
+          ['torch', { invertedBy: 'torch-support', kind: 'torch' }],
+        ]),
+      }
+      const context: PowerTickContext = {
+        faceNeighboursOf: () => [],
+        isRedstoneConductiveAt: () => false,
+        previousBlockPower: new Map([
+          ['rear-block', { strongLevel: 1, weakLevel: 0 }],
+          ['torch-support', { strongLevel: 0, weakLevel: 4 }],
+        ]),
+      }
+      const state = advanceTimedCircuitWithContext({ board, previous: emptyTimedCircuitState, pressedButtons: new Set(), context })
+
+      expect(state.repeaters.get('repeater')?.output).toBe(true)
+      expect(powerAt(state.power, 'out')).toBe(15)
+      expect(state.torches?.get('torch')?.output).toBe(false)
+    }),
+  )
+
   it.effect('applies timing defaults and clamps invalid component timing', () =>
     Effect.sync(() => {
       for (const [configuredDelay, expectedDelay] of [
