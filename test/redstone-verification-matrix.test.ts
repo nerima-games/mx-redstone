@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { describe, expect, it } from '@effect/vitest'
 import * as ts from 'typescript/unstable/ast'
@@ -7,6 +6,7 @@ import { scenarioRegistry } from '../apps/browser-harness/scenario-registry.js'
 import {
   verificationAngles,
   verificationLedger,
+  plannedScenarioIds,
   type VerificationAngle,
   type VerificationCell,
   type VerificationLedger,
@@ -298,25 +298,6 @@ const coveredTitleProblems = (ledger: VerificationLedger): ReadonlyArray<string>
   return problems
 }
 
-const planScenarioIds = async (): Promise<ReadonlyArray<string>> => {
-  const plan = await readFile(new URL('../.reinloom/plans/mx-redstone-execution-plan.md', import.meta.url), 'utf8')
-  const lines = plan.split(/\r?\n/)
-  const sectionStart = lines.findIndex((line) => /^##\s+3\./.test(line))
-  if (sectionStart === -1) {
-    throw new Error('Section 3 was not found in the mx-redstone execution plan')
-  }
-
-  const sectionLines: Array<string> = []
-  for (const line of lines.slice(sectionStart + 1)) {
-    if (/^##\s/.test(line)) break
-    sectionLines.push(line)
-  }
-
-  return [...sectionLines.join('\n').matchAll(/^\|\s*`(?<id>rs\.[^`]+)`\s*\|/gm)]
-    .map((match) => match.groups?.['id'])
-    .filter((id): id is string => id !== undefined)
-}
-
 const statusCounts = { covered: 0, excluded: 0, gap: 0 }
 for (const cells of Object.values(verificationLedger)) {
   for (const cell of Object.values(cells)) {
@@ -338,9 +319,9 @@ describe('redstone verification matrix', () => {
     expect(coveredTitleProblems(verificationLedger)).toStrictEqual([])
   })
 
-  it('registers every plan scenario exactly once', async () => {
-    // Catches scenario drift, duplicates, or registry entries absent from Section 3.
-    const expectedIds = await planScenarioIds()
+  it('registers every plan scenario exactly once', () => {
+    // Catches scenario drift, duplicates, or missing registrations against the planned scenario set.
+    const expectedIds = plannedScenarioIds
     const actualIds = scenarioRegistry.map(({ id }) => id)
     expect(expectedIds).toHaveLength(23)
     expect(new Set(expectedIds).size).toBe(23)

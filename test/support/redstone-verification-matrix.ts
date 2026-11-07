@@ -17,6 +17,32 @@ export type VerificationCell =
 
 export type VerificationLedger = Record<string, Partial<Record<VerificationAngle, VerificationCell>>>
 
+export const plannedScenarioIds: ReadonlyArray<string> = [
+  'rs.wire.attenuation',
+  'rs.torch.inversion-burnout',
+  'rs.lever.toggle',
+  'rs.button.pulse',
+  'rs.repeater.delay-lock',
+  'rs.lamp.isolation-transition',
+  'rs.comparator.ladder',
+  'rs.observer.change-pulse',
+  'rs.pressure-plate.occupancy',
+  'rs.target.hit-strength',
+  'rs.piston.push-refusal',
+  'rs.sticky-piston.retract-pull',
+  'rs.hopper.lock-transfer',
+  'rs.dispenser.rising-edge',
+  'rs.dropper.rising-edge',
+  'rs.note-block.trigger',
+  'rs.powered-rail.transition',
+  'rs.door.open-transition',
+  'rs.trapdoor.open-transition',
+  'rs.world.vertical-strong-power',
+  'rs.host.failure-injection',
+  'rs.stage.frame-timeline',
+  'rs.share.json-roundtrip',
+]
+
 const covered = (file: string, test: string): VerificationCell => ({ status: 'covered', file, test })
 const excluded = (reason: string, evidence: string): VerificationCell => ({ status: 'excluded', reason, evidence })
 
