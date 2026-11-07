@@ -46,10 +46,11 @@ const config: ReturnType<typeof defineConfig> = defineConfig({
       thresholds: { branches: 100, functions: 100, lines: 100, statements: 100 },
     },
   },
-  esbuild: {
+  // Vitest transforms tests for its Node ESM runtime; Oxc needs only the Node target.
+  // The esbuild format/platform values have no Oxc transform equivalent, and the
+  // package type and test environment already determine module format and runtime.
+  oxc: {
     target: 'node24',
-    format: 'esm',
-    platform: 'node',
   },
 })
 
