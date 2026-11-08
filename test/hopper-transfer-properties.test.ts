@@ -308,7 +308,6 @@ const makeHopperTransferScenario = (
               },
           readContainerSlots: () => undefined,
           readPistonCell: () => ({ kind: 'empty' }),
-          readPistonFacing: () => 'north',
         },
       }
       const hopperServiceWithPostCommitEvent: typeof hopper = {

@@ -1,11 +1,8 @@
 # 設計ノート
 
-plan.md §3.12 の「設計注意」は 1 行しかない。しかし参照実装のレッドストーンには、
-1 行では書ききれない量の実測知見が残っている。本書はそれを `DN-RS-1` 〜 `DN-RS-12` として番号づけし、
-**それぞれを「名前のついた回帰テスト」に対応させる**。
+plan.md §3.12 has one design note, but the reference implementation contains more observations than fit in one line. This document numbers them `DN-RS-1`–`DN-RS-17`.
 
-回帰テストになっていない設計注意は、いずれ「たぶん間違いだろう」と直される。
-したがって各項は「規則 → 参照実装の証拠（`path:line`） → 破れたときに起きること → それを止めているテスト」の順で書く。
+Each note records its evidence and impact and points to a related test or verification method. Not every note has a regression test; some claims require a different verification method, and unreachable branches cannot be exercised by tests.
 
 ---
 
@@ -169,77 +166,21 @@ Wire / Lever / Button / Torch / Piston / PressurePlate / Observer / Repeater / C
 
 ---
 
-## DN-RS-3 レッドストーンは固定レートで進む。フレームレートではない
+## DN-RS-3 Redstone advances on simulation ticks, independent of rendering
 
-### 規則
+### Rule
 
-バニラのレッドストーンは 10 Hz の固定レート（redstone tick）で動き、描画フレームレートとは独立である。
-`REDSTONE_TICK_SECS = 0.1`（`stages/registration.ts:39`）。
+The simulation tick service owns elapsed-time conversion. It passes fixed game-tick counts to registered stages, and the redstone power stage advances once for every two game-tick invocations. Timers, repeater delays, piston transitions, observer pulses, and torch burnout use those integer redstone ticks. The stage does not accumulate frame delta.
 
-### 破れたときに起きること
+### Failure mode
 
-電力グラフを 1 フレームに 1 回進めると、**速いマシンではリピーターチェーンの伝播が速くなる**。
-プレイヤーが作ったタイミング回路（クロック、遅延ライン、モノステーブル）が全部ずれる。
+Advancing the graph once per render frame makes repeater chains and clocks run faster on machines with higher frame rates. Advancing from elapsed seconds inside mx-redstone duplicates the simulation service's scheduling rule and can move redstone time independently from gameplay time.
 
-これは**ユニットテストが検出しない種類のバグ**である。テストは 1 tick ずつ手で進めるので、
-「1 フレームが 1 tick かどうか」を問わない。プレイヤーのマシンでしか現れない。
+### Implementation
 
-参照実装はまさにこの形をしていた。`redstone-service.ts:321` の `tick()` は
-`(): Effect.Effect<RedstoneTickSnapshot, never>` という**引数のないシグネチャ**で、
-`interaction-redstone-handler.ts:113` から
+The power stage toggles its game-tick gate on each invocation. On the second invocation it advances the timed circuit exactly once, using the preceding tick's power and the current button inputs. The effects stage runs after that power advance. `mc-sim` supplies invocations through its tick service; `DeltaTimeSecs` remains part of the stage contract but does not drive redstone timers.
 
-```typescript
-Effect.flatMap(() => services.redstoneService.tick()),
-```
-
-として毎フレーム呼ばれる。dt はどこにも入っていない。
-
-### 実装
-
-`ticksForFrame`（`stages/registration.ts:96-117`）が dt を redstone tick 数と余りに変換する。
-
-```typescript
-const available = accumulatedSecs + Math.max(0, dt)
-const wanted = Math.floor(available / tickSecs)
-const ticks = Math.min(wanted, maxTicks)
-const remainderSecs = wanted > maxTicks ? 0 : available - ticks * tickSecs
-```
-
-3 つの決定がある。
-
-1. **余りを繰り越す。** 60 fps の 1 フレームは 0.167 redstone tick である。
-   毎フレーム累積をリセットすると `floor(0.0167 / 0.1)` は永遠に 0 で、
-   **レッドストーンは一度も動かない**。繰り越しがこの機構の全部である。
-2. **追いつきループに上限を置く**（`MAX_TICKS_PER_FRAME = 4`、`stages/registration.ts:49`）。
-3. **上限に当たったとき、余った時間は捨てる。** 繰り越すと次フレームも予算超過が確定し、
-   その次も超過する——古典的な spiral of death である。捨てると 1 フレームだけレッドストーンが遅れるが、
-   プレイヤーには見えない。フリーズは見える。
-
-### plan.md §3.4 の dt クランプに依存しない
-
-plan.md §3.4 は deltaTime を `min(max(0.001, raw), 0.05)` にクランプすると定めており、
-これは mc-sim が上流で適用する。したがってデバッガの一時停止が 10 秒の dt を届けることは原理的にない。
-
-それでも `MAX_TICKS_PER_FRAME` を置いてあるのは、`stages/registration.ts:22-26` が書いているとおり
-
-> relying on somebody else's clamp is how you discover it was removed
-
-だからである。上流のクランプは上流の都合で消える。**自分の不変条件は自分で守る。**
-
-**回帰テスト**: `test/stage-registration.test.ts` `describe('fixed-rate redstone ticks')`
-
-| テスト名 | 主張 |
-| --- | --- |
-| `REGRESSION: the tick remainder is carried across frames, so redstone does not stop dead at 60 fps` | 600 フレーム回して `executed * REDSTONE_TICK_SECS + accumulated` が経過時間と一致する（シミュレーション時間が失われない）。素朴版は同条件で **0 tick** |
-| `REGRESSION: a long frame is capped and the excess is DISCARDED, not banked (no spiral of death)` | dt=10 で `ticks === 4` かつ `remainderSecs === 0` |
-| `a frame shorter than one tick runs nothing and banks the time` | 0.016 秒は 0 tick + 0.016 秒の貯金 |
-| `dt = 0 runs nothing and loses nothing` | ゼロ dt は合法。stage 側で拒否しない |
-| `a negative dt is treated as zero rather than rewinding the accumulator` | 負の dt で累積が巻き戻らない |
-| `a zero tick rate runs nothing instead of dividing by zero` | `tickSecs: 0` で `Infinity` tick ではなく 0 tick。プレビューが tick レートのスライダを 0 まで下げても止まるだけ |
-
-1 番目のテストのコメントは、なぜ実行数が 100 ではなく 99 になるかまで書いてある——
-浮動小数の反復減算で最後の 1 tick が閾値をわずかに下回るだけで、時間は `accumulated` の中にある。
-**「99 は 100 の間違いだろう」と直されないための注記**である。
+The 1:2 boundary is covered by `test/redstone-state-tick-stage.test.ts`, which feeds `makeTickService().advanceFrame(...)` counts to `runStagesForTicks(...)` and checks repeater, observer, torch, piston, and dispenser behavior. `test/stage-registration.test.ts` also calls the power stage with different deltas and verifies that its tick count depends only on invocation count.
 
 ---
 
@@ -600,16 +541,13 @@ oxlint の `default-case` は `.oxlintrc.json` で `restriction` カテゴリの
 あるいは達成するために `/* c8 ignore */` を撒くことになる。どちらの道も、
 最終的に「カバレッジの赤は無視するもの」という文化に着地する。
 
-このリポジトリはまだ閾値を有効にしていない（[testing.md](./testing.md) §6）。
-**しかし閾値を入れる日を前提にコードを書いている**というのが、この 2 箇所の意味である。
-後から到達不能分岐を掃除するのは、書かないより高い。
+`vitest.config.ts` already enforces 100% coverage for branches, functions, lines, and statements. The two code choices avoid adding branches that can never be covered and would prevent that gate from passing.
 
 同じ判断が `vitest.config.ts:32-42` の除外にも現れている——
 `domain/position-key.ts` は型エイリアス 1 行で実行可能な文が 0 であり、v8 provider がそれを 0% と報告するため
 計測対象から外してある。**「測ると 0% になるもの」を外すことと「測ると都合が悪いもの」を外すことは違う。**
 
-**回帰テストは無い。** 到達不能な分岐が存在しないことは、実行では確かめられない。
-確かめる手段はカバレッジレポートそのものであり、それが 6 節の閾値が最終的に果たす役割である。
+**There is no regression test for unreachable branches.** Tests cannot execute a branch that cannot be reached. The active four-metric coverage gate catches an uncovered branch in measured code; it does not make an unreachable branch executable.
 
 ---
 
@@ -729,6 +667,8 @@ lever  C  dust  C  dust  C  dust
 「2 つのコンテナの読みを比較する」形をしている。経路のコンパレータの個数が違えば、
 **中身が等しい 2 つのチェストが違う数を返す**。到達距離の乖離と違って、これは
 「1 マス足りない」ではなく「答えが間違っている」である。
+
+**Historical finding, now fixed:** The original comparator ladder lost one level in the dust between stages. `test/power-graph.test.ts` now asserts that one through four stages each preserve 15; this note records why source output must reach adjacent dust unchanged.
 
 ### 回帰境界
 

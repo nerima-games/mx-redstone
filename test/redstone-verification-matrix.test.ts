@@ -310,7 +310,7 @@ describe('redstone verification matrix', () => {
     // Catches a new component, missing angle, stray row, or unsupported exclusion becoming invisible.
     expect(verificationAngles).toHaveLength(10)
     expect(new Set(verificationAngles).size).toBe(10)
-    expect(statusCounts).toStrictEqual({ covered: 157, excluded: 33, gap: 0 })
+    expect(statusCounts).toStrictEqual({ covered: 161, excluded: 29, gap: 0 })
     expect(ledgerProblems(verificationLedger, componentSubjects, verificationAngles)).toStrictEqual([])
   })
 

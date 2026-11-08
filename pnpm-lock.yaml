@@ -163,7 +163,6 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@nerima-games/mc-kernel': 0.15.0
   nanoid: '>=3.3.18'
   '@vitest/mocker': 4.1.12
   launch-editor: 2.14.2

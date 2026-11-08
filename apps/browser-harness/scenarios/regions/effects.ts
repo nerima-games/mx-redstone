@@ -1,10 +1,17 @@
+import { DimensionIdSchema } from '@nerima-games/mc-kernel'
+import { Schema } from 'effect'
 import type {
   BrowserScenario,
   HostFixtureInput,
   HostFixtureRequest,
 } from '../../scenario-registry.js'
+import type { RedstoneWorldSnapshot } from '../../../../src/application/world-runtime.js'
 
 const dimensionName = 'overworld'
+const emptySnapshot: RedstoneWorldSnapshot = {
+  components: [],
+  dimension: Schema.decodeUnknownSync(DimensionIdSchema)(dimensionName),
+}
 
 const hostPosition = (
   x: number,
@@ -17,7 +24,13 @@ const hostBlock = (
   x: number,
   y: number,
   z: number,
-): HostFixtureInput['blocks'][number] => ({ block, position: hostPosition(x, y, z) })
+  state?: HostFixtureInput['blocks'][number]['state'],
+): HostFixtureInput['blocks'][number] => {
+  if (typeof state === 'undefined') {
+    return { block, position: hostPosition(x, y, z) }
+  }
+  return { block, position: hostPosition(x, y, z), state }
+}
 
 const hostScenario = (
   id: string,
@@ -49,27 +62,25 @@ export const effectScenarios: ReadonlyArray<BrowserScenario> = [
     'Piston push refusal',
     [
       hostBlock('lever', 0, 0, 0),
-      hostBlock('piston', 1, 0, 0),
+      hostBlock('piston', 1, 0, 0, { extended: false, facing: 'east' }),
       ...pistonLongColumn,
       hostBlock('lever', 0, 0, 2),
-      hostBlock('piston', 1, 0, 2),
+      hostBlock('piston', 1, 0, 2, { extended: false, facing: 'east' }),
       ...Array.from({ length: 12 }, (_, index) => hostBlock('stone', index + 2, 0, 2)),
       hostBlock('obsidian', 14, 0, 2),
     ],
     [],
-    { leverActive: true, pistonFacing: 'east' },
+    { leverActive: true },
   ),
-  hostScenario(
-    'rs.sticky-piston.retract-pull',
-    'Sticky piston retract pull',
-    [
-      hostBlock('sticky_piston', 0, 0, 0),
-      hostBlock('piston_head', 1, 0, 0),
-      hostBlock('stone', 2, 0, 0),
-    ],
-    [{ dimension: dimensionName, kind: 'piston', position: hostPosition(0, 0, 0) }],
-    { leverActive: false, pistonFacing: 'east' },
-  ),
+  {
+    id: 'rs.sticky-piston.retract-pull',
+    displayName: 'Sticky piston retract pull',
+    fixture: () => ({
+      path: 'blocked',
+      reason: 'The pinned kernel has no sticky_piston identity or facing state. The host adapter reports a typed unsupported-state failure.',
+      snapshot: emptySnapshot,
+    }),
+  },
   hostScenario(
     'rs.hopper.lock-transfer',
     'Powered hopper lock blocks a transfer request',

@@ -60,12 +60,9 @@
  * not change, and sample only the rest. The dirty batch cannot say which block
  * moved, but it can say for certain which ones did not.
  *
- * The one thing this file therefore does NOT do is decide which cell an observer
- * watches. `Component` carries no `watching` field, for the same reason it
- * carries no `delayTicks` (DN-RS-12): the graph cannot read a block, so a field
- * naming one would be received, stored and never read — worse than absent. The
- * mapping from observer to watched cell belongs to whoever owns the world, next
- * to the `active` flag it produces.
+ * The host supplies each observer's watched-cell identity on the component
+ * snapshot. This module compares those identities; `power-timing.ts` turns a
+ * change into the observer's timed output.
  */
 import type { BlockRef } from './block-ref.js'
 import type { PositionKey } from './position-key.js'
@@ -73,17 +70,11 @@ import type { PositionKey } from './position-key.js'
 /**
  * How long an observer holds its output up, in redstone ticks.
  *
- * Two, matching the reference (`redstone-observer-world-effects.ts:17`,
- * `OBSERVER_PULSE_TICKS`). A RULE, not a capability, so it lives with the rule —
- * the same placement argument `PISTON_PUSH_LIMIT` gets in `domain/piston.ts`.
+ * Two game ticks are one redstone tick.
  *
- * Counting it down is NOT this file's job, and that is the same decision the
- * button's pulse got (`sourcesOf` in `domain/power-graph.ts` carries the full
- * argument): remaining time is state, the power map has no cell for it, and the
- * thing that knows redstone time is passing is `stages/registration.ts`. This
- * constant is the LENGTH; the clock is the caller's.
+ * Counting it down is the power-timing stage's job.
  */
-export const OBSERVER_PULSE_TICKS = 2
+export const OBSERVER_PULSE_TICKS = 1
 
 /**
  * What each observer's watched cell holds — keyed by the OBSERVER's position,

@@ -9,7 +9,8 @@ import {
   WorldRevisionSchema,
   capabilityOfBlockId,
   blockIdOf,
-  DeltaTimeSecs,
+  decodeBlockState,
+  NonNegativeTickCount,
   type BlockPosition,
   type BlockRegistryResolutionFailure,
   type StageRegistration,
@@ -18,10 +19,14 @@ import { vi } from 'vitest'
 import {
   CONTAINER_STORAGE_SNAPSHOT_VERSION,
   HOPPER_REPLICATED_OWNER_ID,
+  runStagesForTicks,
+  type RunStagesForTicksFailure,
 } from '@nerima-games/mc-sim'
 import {
   applyRedstoneHostEvents,
+  componentForBlock,
   kernelPistonCapabilities,
+  type RedstoneHostLookup,
   type RedstoneHostRealm,
   type RedstoneHostWritePort,
 } from '../src/application/redstone-host-port'
@@ -30,7 +35,6 @@ import {
   RedstoneWorldRuntimeLayer,
 } from '../src/application/world-runtime'
 import { makeRuntimeRedstoneStages } from '../src/stages/registration'
-import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 // eslint-disable-next-line sort-imports
 import { FrameServicesLayer } from './frame-services'
 
@@ -40,6 +44,7 @@ vi.mock('@nerima-games/mc-kernel', async (importOriginal) => {
     ...actual,
     blockIdOf: vi.fn(actual.blockIdOf),
     capabilityOfBlockId: vi.fn(actual.capabilityOfBlockId),
+    decodeBlockState: vi.fn(actual.decodeBlockState),
   }
 })
 
@@ -57,19 +62,17 @@ const dimensionRevision = Schema.decodeUnknownSync(DimensionRevisionSchema)(0)
 const blockPosition = (x: number, y: number, z: number): BlockPosition =>
   Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
 
-const stageById = (stages: ReadonlyArray<StageRegistration>, id: string): StageRegistration => {
-  const stage = stages.find((candidate) => candidate.id === id)
-  if (stage === undefined) {
-    throw new Error(`Missing redstone stage ${id}`)
-  }
-  return stage
+const stateLookup: RedstoneHostLookup = {
+  isLeverActive: () => false,
+  isPoweredRailPowered: () => false,
+  readHopperBlockId: () => AIR_BLOCK_ID,
+  readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
+  readContainerSlots: () => undefined,
+  readPistonCell: () => ({ kind: 'missing' }),
 }
 
-const runFrame = (stages: ReadonlyArray<StageRegistration>): Effect.Effect<void> =>
-  Effect.gen(function* () {
-    yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.1)).pipe(Effect.provide(FrameServicesLayer))
-    yield* stageById(stages, REDSTONE_STAGE_IDS.effects).run(DeltaTimeSecs(0.1)).pipe(Effect.provide(FrameServicesLayer))
-  })
+const runFrame = (stages: ReadonlyArray<StageRegistration>): Effect.Effect<void, RunStagesForTicksFailure> =>
+  runStagesForTicks(stages, NonNegativeTickCount(2)).pipe(Effect.provide(FrameServicesLayer))
 
 describe('kernel capability registry failures at the host boundary', () => {
   it.effect('does not treat a registered block with no registry id as immovable', () =>
@@ -99,7 +102,6 @@ describe('kernel capability registry failures at the host boundary', () => {
           readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
           readContainerSlots: () => undefined,
           readPistonCell: () => ({ kind: 'block', block: 'bedrock' }),
-          readPistonFacing: () => 'south',
         },
       }
 
@@ -153,5 +155,79 @@ describe('kernel capability registry failures at the host boundary', () => {
       expect(buildCalls).toBe(0)
       expect(commitCalls).toBe(0)
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('returns typed failures for incomplete or invalid decoded component state', () =>
+    Effect.sync(() => {
+      vi.mocked(blockIdOf).mockReturnValueOnce(Option.some(AIR_BLOCK_ID))
+      vi.mocked(decodeBlockState).mockReturnValueOnce(Result.succeed({
+        delay: 4,
+        facing: 'east',
+        powered: false,
+      }))
+
+      const missingRequired = componentForBlock(stateLookup, 'repeater', {
+        position: blockPosition(0, 0, 0),
+        encodedState: 0,
+      })
+      expect(missingRequired).toStrictEqual(Result.fail({
+        _tag: 'RedstoneHostBlockStateSchemaFailure',
+        block: 'repeater',
+      }))
+
+      vi.mocked(blockIdOf).mockReturnValueOnce(Option.some(AIR_BLOCK_ID))
+      vi.mocked(decodeBlockState).mockReturnValueOnce(Result.succeed({
+        facing: 'up',
+        mode: 'compare',
+        powered: false,
+      }))
+
+      const invalidComponentFacing = componentForBlock(stateLookup, 'comparator', {
+        position: blockPosition(0, 0, 0),
+        encodedState: 0,
+      })
+      expect(invalidComponentFacing).toStrictEqual(Result.fail({
+        _tag: 'RedstoneHostBlockStateSchemaFailure',
+        block: 'comparator',
+      }))
+    }),
+  )
+
+  it.effect('returns a typed codec failure when a stateful block id is missing', () =>
+    Effect.sync(() => {
+      vi.mocked(blockIdOf).mockReturnValue(Option.none())
+      vi.mocked(decodeBlockState).mockClear()
+
+      expect(componentForBlock(stateLookup, 'repeater', {
+        position: blockPosition(0, 0, 0),
+        encodedState: 0,
+      })).toStrictEqual(Result.fail({
+        _tag: 'BlockStateCodecFailure',
+        reason: 'unknown-block-id',
+      }))
+      expect(decodeBlockState).not.toHaveBeenCalled()
+    }),
+  )
+
+  it.effect('returns a typed codec failure when the observer target has no block id', () =>
+    Effect.sync(() => {
+      vi.mocked(blockIdOf)
+        .mockReturnValueOnce(Option.some(AIR_BLOCK_ID))
+        .mockReturnValueOnce(Option.none())
+      vi.mocked(decodeBlockState).mockReturnValueOnce(Result.succeed({ facing: 'north', powered: false }))
+      const lookup: RedstoneHostLookup = {
+        ...stateLookup,
+        readObservedBlock: () => ({ block: 'stone', encodedState: 0 }),
+      }
+
+      expect(componentForBlock(lookup, 'observer', {
+        position: blockPosition(0, 0, 0),
+        encodedState: 0,
+      })).toStrictEqual(Result.fail({
+        _tag: 'BlockStateCodecFailure',
+        reason: 'unknown-block-id',
+      }))
+      expect(blockIdOf).toHaveBeenCalledTimes(2)
+    }),
   )
 })

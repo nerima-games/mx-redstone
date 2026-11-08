@@ -24,9 +24,7 @@ $ pnpm preview --once --ascii --levers-on --scenario piston-push --ticks 2
 | `power` | 各セルの電力 0–15 を 16 進数 1 桁で。回路の**測定値** |
 | `timeline` | 監視セルの電力を**tick 軸**に沿って並べたテープ |
 
-**timeline がこのアプリの存在理由である。** テストは最終状態を assert する。
-「2 tick 遅れて届いた信号」は最終状態が同じなので**テストからは見えない**。
-tick 軸に並べれば一目で分かる。同じ理由で `tick` カウンタは常時表示している。
+**The timeline visually complements automated timing tests.** `test/power-timing.test.ts` checks repeater output at configured tick boundaries. The timeline and always-visible `tick` counter show the signal at each intervening tick.
 
 置く・消す・倒す・押す・回す・1 tick 進める・N tick 進める・安定するまで進める、が全部キー 1 つである
 （`?` でキー一覧）。ピストンは `domain/piston.ts` の `planPush` を呼び、**拒否理由**（`immovable` /
@@ -61,13 +59,13 @@ tick 軸に並べれば一目で分かる。同じ理由で `tick` カウンタ�
 直った finding は出力から消えるので位置がずれる——今日の出力の `F3` が下の表の `F8` である。
 番号ではなく症状で引くこと。
 
-### 直したもの（4 件 + 1 件）
+### 直したもの（5 件 + 1 件）
 
 | # | 症状 | 原因と決着 |
 | --- | --- | --- |
 | F2 | **リピーターが自分をラッチして二度と落ちない** | `propagateTick` がソースの電力を**全隣接**に流すため、リピーターは自分の入力セルを 12 → 14 に持ち上げ、次 tick に自分自身から再点火していた。`Component.outputTo` と `conductsInto` で、駆動先を正面 1 セルに限定（DN-RS-12） |
 | F3 | **リピーターが側面にも給電する** | 同じ原因・同じ修正。プレイヤーが回路を**分離**するために置く部品で、DN-RS-5 が警告する「2 回路の無言の溶接」が起きていた |
-| F8 | **コンパレータが 1 段ごとに 1 レベル失う**（`comparator-ladder`。**直していない**——下の「残したもの」を参照） | 4 段のラダーが 15, 14, 13, 12 を返す。バニラは全部 15。F1 と**同じ 1 つの乖離**が、到達距離ではなく**値そのもの**を壊す場所に出たもの（DN-RS-13） |
+| F8 | **Comparator output previously lost one level per stage** (`comparator-ladder`; fixed) | The old four-stage ladder returned 15, 14, 13, 12. Comparator output now reaches adjacent dust unchanged; the regression asserts 15 for one through four stages (DN-RS-13). |
 | — | **トーチが 2 tick 周期で点滅する**（`--stats` ではなく `torch-inverter` シナリオ自身の主張が偽だった） | 同じ原因。トーチが自分の反転対象ワイヤを駆動していた。バニラでも参照実装でもトーチは支持セルに給電しない（testing.md §7）。`conductsInto` が `invertedBy` を除外 |
 | F5 | **`settle` が非循環回路を OSCILLATING と報告する** | `SETTLE_TICK_LIMIT = MAX_POWER_LEVEL + 2 = 17` の根拠が「ワイヤ最長走行距離 + 2」だが、収束時間を決めるのは減衰ではなく**直列の遅延素子数**。定数を廃し `settleTickLimitFor(board)`（遅延素子数 + 2）へ（DN-RS-4） |
 | F6 | **ランプが隣のランプを光らせる** | `propagateTick` は正しい（ランプは伝導しない）。漏れていたのは `isLit` で、隣接セルの電力を見ていた。**自分に給電しているセル**に限定し、sweep と同じ `conductsInto` を共有（DN-RS-5 §5-1） |
@@ -79,12 +77,10 @@ tick 軸に並べれば一目で分かる。同じ理由で `tick` カウンタ�
 | F1 | 信号がワイヤ 14 マスしか進まない（vanilla は 15） | **算術の主張は直した**（15 と書いてあった全箇所を 14 に）。挙動は残す——閉じるには「ソースは最初の隣接セルへ減衰しない」が要り、全回路の全レベルが変わる |
 | F4 | リピーターの遅延が常に 1 tick | `Component.delayTicks` は**削除した**。実装には「N tick 前の入力」という記憶が要り、`propagateTick` の (board, previous) という設計を変える話である |
 | F7 | 押したボタンが戻らない | パルスは**残り時間**＝状態。解放は `stages/registration.ts`（dt を tick に換算し盤面 `Ref` を持つ）の仕事である |
-| F8 | コンパレータが値を 1 段ごとに 1 失う | **F1 と同じ 1 つの決定**であり、2 つではない。閉じるには「ソースは最初の隣接セルへ減衰しない」が要る。ただしコストは F1 より重い——コンパレータは数を次へ渡す唯一の部品なので、アイテムソーターが**中身の等しい 2 つのチェストに違う答えを返す**（DN-RS-13） |
 
 ### 5 部品を足したときに新しく見つけたもの
 
-- **F8**（上記）。ラダーを組んで `power` ビューを見るまで、誰も書いていなかった。
-  `MAX_POWER_LEVEL` のコメントは同じ乖離を**到達距離の話としてしか**説明していない。
+- **F8** first appeared in the comparator ladder: the old `MAX_POWER_LEVEL` comment described the discrepancy only as signal reach. Comparator output is now preserved across adjacent dust, with the regression locking all four ladder lengths at 15 (DN-RS-13).
 - **説明用の回路は一般ケースに置く。** `comparator-sides` シナリオの最初の版は側面を背面と同じ 14 にしており、
   compare は等号で通り subtract は 0 になる——**境界ケースだけを実演していた**。
   側面の走行を 1 マス伸ばして 13 対 14 にしてある（compare 14、subtract 1）。
@@ -105,8 +101,7 @@ tick 軸に並べれば一目で分かる。同じ理由で `tick` カウンタ�
 上の 8 件はすべてそこにある——**直したものは修正を固定するテストが、
 残したものは現在の挙動を名指しするテストが**。レポートは読まれなければ効かないが、テストは落ちる。
 
-**チェック自体は残してある。** 直った 4 件の測定は今も毎回走っており、
-ただ finding を出さないだけである。合格したら消すチェックは、コードを 1 回しか検査しない。
+**Checks remain in place.** The preview still measures corrected findings; it simply stops reporting them after they are fixed. A check removed after passing inspects the code only once.
 
 ## 制約
 

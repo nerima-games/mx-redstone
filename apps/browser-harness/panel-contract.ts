@@ -1,4 +1,4 @@
-import type { NonNegativeTickCount, FixedDurationSecs } from '@nerima-games/mc-kernel'
+import type { NonNegativeTickCount } from '@nerima-games/mc-kernel'
 import type {
   RedstoneFrameObservation,
   RedstoneInvariantResult,
@@ -58,13 +58,10 @@ export type PanelFrame = Readonly<{
     fixtureInput: HostFixtureInput | PanelUnavailable
     pendingButtonPresses: ReadonlySet<PositionKey> | PanelUnavailable
   }>
-  /** Current stage frame timing, consumed ticks, per-frame cap, and any discarded ticks. */
+  /** Redstone stage progress in fixed simulation game ticks. */
   stage: Readonly<{
-    tickAccumulatorSecs: FixedDurationSecs | PanelUnavailable
     consumedTicks: NonNegativeTickCount | PanelUnavailable
-    maxTicksPerFrame: NonNegativeTickCount
-    tickDurationSecs: FixedDurationSecs
-    discardedTicks: NonNegativeTickCount | PanelUnavailable
+    gameTicksPerRedstoneTick: NonNegativeTickCount
   }>
 }>
 

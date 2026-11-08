@@ -145,8 +145,6 @@ kernel から import した消費者は `makeRedstoneStages` の戻り値に対�
 | `redstoneStages` | 内部（可視） | 状態を外から渡す版。テストとプレビュー用 |
 | `makeRedstoneFrameState` | 内部（可視） | 再入可能な初期化（[design-notes.md](./design-notes.md) DN-RS-8） |
 | `RedstoneFrameState` | 内部（可視） | `Ref` 4 本の束。形は変わる |
-| `ticksForFrame` | 内部（可視） | 固定レート換算。純粋なのでテスト可能 |
-| `REDSTONE_TICK_SECS` / `MAX_TICKS_PER_FRAME` | 内部（可視） | チューニング値 |
 | `emptyCircuitBoard` | 内部（可視） | プレビューの初期盤面 |
 
 ### `application/world-runtime.ts`
@@ -338,11 +336,14 @@ host adapter は登録済み block 名を kernel の `BlockId` に解決して `
 | `Component` | `domain/power-graph.ts` | 内部（可視） |
 | `CircuitBoard` | `domain/power-graph.ts` | 内部（可視） |
 | `PowerMap` | `domain/power-graph.ts` | 内部（可視） |
+| `PowerProvenanceCandidate` | `domain/power-graph.ts` | 内部（可視） |
+| `PowerTickWithProvenance` | `domain/power-graph.ts` | 内部（可視） |
 | `emptyPowerMap` | `domain/power-graph.ts` | 内部（可視） |
 | `powerAt` | `domain/power-graph.ts` | 内部（可視） |
 | `componentEntriesForKinds` | `domain/power-graph.ts` | 内部（可視） |
 | `sourcesOf` | `domain/power-graph.ts` | 内部（可視） |
 | `propagateTick` | `domain/power-graph.ts` | 内部（可視） |
+| `propagateTickWithProvenance` | `domain/power-graph.ts` | 内部（可視） |
 | `settleTickLimitFor` | `domain/power-graph.ts` | 内部（可視） |
 | `SettleResult` | `domain/power-graph.ts` | 内部（可視） |
 | `settle` | `domain/power-graph.ts` | 内部（可視） |
@@ -365,12 +366,9 @@ host adapter は登録済み block 名を kernel の `BlockId` に解決して `
 | `plateSignal` | `domain/pressure-plate.ts` | 内部（可視） |
 | `TargetHit` | `domain/target-block.ts` | 内部（可視） |
 | `targetSignal` | `domain/target-block.ts` | 内部（可視） |
-| `REDSTONE_TICK_SECS` | `stages/registration.ts` | 内部（可視） |
-| `MAX_TICKS_PER_FRAME` | `stages/registration.ts` | 内部（可視） |
 | `emptyCircuitBoard` | `stages/registration.ts` | 内部（可視） |
 | `RedstoneFrameState` | `stages/registration.ts` | 内部（可視） |
 | `makeRedstoneFrameState` | `stages/registration.ts` | 内部（可視） |
-| `ticksForFrame` | `stages/registration.ts` | 内部（可視） |
 | `redstoneStages` | `stages/registration.ts` | 内部（可視） |
 | `makeRedstoneStages` | `stages/registration.ts` | 内部（可視） |
 | `makeRuntimeRedstoneStages` | `stages/registration.ts` | 契約 |

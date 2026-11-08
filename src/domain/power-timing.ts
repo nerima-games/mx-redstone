@@ -6,6 +6,7 @@ import {
   type PowerProvenanceCandidate,
   type PowerTickBlockLevels,
   type PowerTickContext,
+  type PowerTickWithProvenance,
   componentEntriesForKinds,
   emptyPowerMap,
   powerAt,
@@ -13,17 +14,21 @@ import {
   propagateTickState,
   propagateTickWithProvenance,
 } from './power-graph.js'
+import { OBSERVER_PULSE_TICKS, type Sightings, observeChanges } from './observer.js'
 import type { PositionKey } from './position-key.js'
 
 const TIMED_COMPONENT_KINDS: ReadonlySet<Component['kind']> = new Set([
   'repeater',
   'button',
+  'observer',
   'torch',
 ])
+const OBSERVER_COMPONENT_KINDS: ReadonlySet<Component['kind']> = new Set(['observer'])
 
 export const DEFAULT_BUTTON_PULSE_TICKS = 10
 export const TORCH_BURNOUT_TOGGLE_LIMIT = 8
 export const TORCH_BURNOUT_WINDOW_TICKS = 30
+/** Java's optional 160-game-tick relight attempt; this sampler does not schedule it. */
 export const TORCH_BURNOUT_COOLDOWN_TICKS = 80
 
 const NO_TICKS = 0
@@ -50,9 +55,14 @@ export type ButtonTimer = {
 }
 
 export type TorchTimer = {
-  readonly burnoutRemainingTicks: number
+  readonly burnedOut?: boolean
   readonly output: boolean
   readonly recentOffTicks: ReadonlyArray<number>
+}
+
+export type ObserverTimer = {
+  readonly output: boolean
+  readonly remainingTicks: number
 }
 
 export type TimedCircuitState = {
@@ -61,6 +71,8 @@ export type TimedCircuitState = {
   readonly buttons: ReadonlyMap<PositionKey, ButtonTimer>
   /** Optional so states constructed before torch burnout support remain valid. */
   readonly torches?: ReadonlyMap<PositionKey, TorchTimer>
+  readonly observers?: ReadonlyMap<PositionKey, ObserverTimer>
+  readonly observerSeen?: Sightings
 }
 
 type TimedCircuitInput = TimedCircuitState & {
@@ -74,8 +86,10 @@ type TimedCircuitAdvanceInput = {
   readonly context?: PowerTickContext
 }
 
-export type TimedCircuitWithBlockPower = Omit<TimedCircuitState, 'torches'> & {
+export type TimedCircuitWithBlockPower = Omit<TimedCircuitState, 'observers' | 'observerSeen' | 'torches'> & {
   readonly blockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>
+  readonly observerSeen: Sightings
+  readonly observers: ReadonlyMap<PositionKey, ObserverTimer>
   readonly torches: ReadonlyMap<PositionKey, TorchTimer>
 }
 
@@ -85,6 +99,8 @@ export type TimedCircuitWithProvenance = TimedCircuitWithBlockPower & {
 
 export const emptyTimedCircuitState: TimedCircuitState = {
   buttons: new Map(),
+  observerSeen: new Map(),
+  observers: new Map(),
   power: emptyPowerMap,
   repeaters: new Map(),
   torches: new Map(),
@@ -128,8 +144,12 @@ const advanceRepeater = (
   return { output, pendingOutput: requestedOutput, remainingTicks: remaining }
 }
 
-const repeaterIsLocked = (component: Component, previous: PowerMap): boolean =>
-  (component.sideInputs ?? []).some((side) => powerAt(previous, side) > NO_POWER_LEVEL)
+const repeaterIsLocked = (component: Component, previous: PowerMap): boolean => {
+  if (typeof component.locked === 'boolean') {
+    return component.locked
+  }
+  return (component.sideInputs ?? []).some((side) => powerAt(previous, side) > NO_POWER_LEVEL)
+}
 
 const holdRepeater = (previous: RepeaterTimer | undefined): RepeaterTimer => ({
   output: previous?.output ?? false,
@@ -158,38 +178,26 @@ const advanceTorch = (
   },
 ): TorchTimer => {
   const { previous, previousOutput, requestedOutput } = options
-  /**
-   * Computed once and reused below: the guard and the return value must agree
-   * on the same reading of `previous`, and re-deriving it a second time would
-   * create a branch (the `?? NO_TICKS` fallback at this second site) that can
-   * never fire — the guard already proves the fallback wasn't needed to reach
-   * here, since NO_TICKS (0) can never satisfy `> NEXT_TICK`.
-   */
-  const burnoutRemainingTicks = previous?.burnoutRemainingTicks ?? NO_TICKS
-  if (burnoutRemainingTicks > NEXT_TICK) {
-    return {
-      burnoutRemainingTicks: burnoutRemainingTicks - NEXT_TICK,
-      output: false,
-      recentOffTicks: [],
-    }
-  }
-
   const recentOffTicks = (previous?.recentOffTicks ?? [])
     .map((age) => age + NEXT_TICK)
     .filter((age) => age < TORCH_BURNOUT_WINDOW_TICKS)
+
+  if (previous?.burnedOut === true && recentOffTicks.length >= TORCH_BURNOUT_TOGGLE_LIMIT) {
+    return { burnedOut: true, output: false, recentOffTicks }
+  }
+
+  // Support is sampled every redstone tick, so the next sample is the relight
+  // Attempt once fewer than eight forced-off transitions remain.
   if (previousOutput && !requestedOutput) {
     recentOffTicks.push(NO_TICKS)
   }
 
-  if (recentOffTicks.length >= TORCH_BURNOUT_TOGGLE_LIMIT) {
-    return {
-      burnoutRemainingTicks: TORCH_BURNOUT_COOLDOWN_TICKS,
-      output: false,
-      recentOffTicks: [],
-    }
+  const burnedOut = recentOffTicks.length > TORCH_BURNOUT_TOGGLE_LIMIT
+  if (burnedOut) {
+    return { burnedOut, output: false, recentOffTicks }
   }
 
-  return { burnoutRemainingTicks: 0, output: requestedOutput, recentOffTicks }
+  return { burnedOut: false, output: requestedOutput, recentOffTicks }
 }
 
 /**
@@ -312,7 +320,29 @@ const applyTorchEntry = (params: {
   components.set(key, { ...component, active: timer.output })
 }
 
-const applyTimedEntry = (params: {
+const advanceObserver = (previous: ObserverTimer | undefined, changed: boolean): ObserverTimer => {
+  if (changed) {
+    return { output: true, remainingTicks: OBSERVER_PULSE_TICKS }
+  }
+  const remainingTicks = Math.max(NO_TICKS, (previous?.remainingTicks ?? NO_TICKS) - NEXT_TICK)
+  return { output: remainingTicks > NO_TICKS, remainingTicks }
+}
+
+const applyObserverEntry = (params: {
+  readonly key: PositionKey
+  readonly component: Component
+  readonly previous: TimedCircuitState
+  readonly changedObservers: ReadonlySet<PositionKey>
+  readonly observers: Map<PositionKey, ObserverTimer>
+  readonly components: Map<PositionKey, Component>
+}): void => {
+  const { changedObservers, component, components, key, observers, previous } = params
+  const timer = advanceObserver(previous.observers?.get(key), changedObservers.has(key))
+  observers.set(key, timer)
+  components.set(key, { ...component, active: timer.output })
+}
+
+type ApplyTimedEntryParameters = {
   readonly key: PositionKey
   readonly component: Component
   readonly previous: TimedCircuitState
@@ -321,17 +351,32 @@ const applyTimedEntry = (params: {
   readonly repeaters: Map<PositionKey, RepeaterTimer>
   readonly buttons: Map<PositionKey, ButtonTimer>
   readonly torches: Map<PositionKey, TorchTimer>
+  readonly observers: Map<PositionKey, ObserverTimer>
+  readonly changedObservers: ReadonlySet<PositionKey>
   readonly components: Map<PositionKey, Component>
-}): void => {
-  const { buttons, component, components, key, pressedButtons, previous, previousBlockPower, repeaters, torches } = params
-  if (component.kind === 'repeater') {
-    applyRepeaterEntry({ component, components, key, previous, previousBlockPower, repeaters })
+}
+
+const applyNonTorchTimedEntry = (params: ApplyTimedEntryParameters): boolean => {
+  if (params.component.kind === 'repeater') {
+    applyRepeaterEntry(params)
+    return true
+  }
+  if (params.component.kind === 'button') {
+    applyButtonEntry(params)
+    return true
+  }
+  if (params.component.kind === 'observer') {
+    applyObserverEntry(params)
+    return true
+  }
+  return false
+}
+
+const applyTimedEntry = (params: ApplyTimedEntryParameters): void => {
+  if (applyNonTorchTimedEntry(params)) {
     return
   }
-  if (component.kind === 'button') {
-    applyButtonEntry({ buttons, component, components, key, pressedButtons, previous })
-    return
-  }
+  const { component, components, key, previous, previousBlockPower, torches } = params
   /**
    * `advanceTimedCircuit` only ever calls this for `TIMED_COMPONENT_KINDS`
    * members (`componentEntriesForKinds` filters upstream), so having ruled out
@@ -345,14 +390,31 @@ const applyTimedEntry = (params: {
 type ResolvedTimedCircuitTick = {
   readonly buttons: ReadonlyMap<PositionKey, ButtonTimer>
   readonly components: ReadonlyMap<PositionKey, Component>
+  readonly observerSeen: Sightings
+  readonly observers: ReadonlyMap<PositionKey, ObserverTimer>
   readonly repeaters: ReadonlyMap<PositionKey, RepeaterTimer>
   readonly tickContext: PowerTickContext
   readonly torches: ReadonlyMap<PositionKey, TorchTimer>
 }
 
+const timedCircuitWithProvenance = (
+  tickState: PowerTickWithProvenance,
+  resolved: ResolvedTimedCircuitTick,
+): TimedCircuitWithProvenance => ({
+  blockPower: tickState.blockPower,
+  buttons: resolved.buttons,
+  observerSeen: resolved.observerSeen,
+  observers: resolved.observers,
+  power: tickState.power,
+  provenance: tickState.provenance,
+  repeaters: resolved.repeaters,
+  torches: resolved.torches,
+})
+
 type TimedComponentMaps = {
   readonly buttons: Map<PositionKey, ButtonTimer>
   readonly components: Map<PositionKey, Component>
+  readonly observers: Map<PositionKey, ObserverTimer>
   readonly repeaters: Map<PositionKey, RepeaterTimer>
   readonly torches: Map<PositionKey, TorchTimer>
 }
@@ -360,6 +422,7 @@ type TimedComponentMaps = {
 const emptyTimedComponentMaps = (): TimedComponentMaps => ({
   buttons: new Map(),
   components: new Map(),
+  observers: new Map(),
   repeaters: new Map(),
   torches: new Map(),
 })
@@ -367,18 +430,42 @@ const emptyTimedComponentMaps = (): TimedComponentMaps => ({
 const previousBlockPowerFor = (input: TimedCircuitAdvanceInput): ReadonlyMap<PositionKey, PowerTickBlockLevels> =>
   input.previous.blockPower ?? input.context?.previousBlockPower ?? EMPTY_PREVIOUS_BLOCK_POWER
 
+const observerSweepFor = (board: CircuitBoard, previous: TimedCircuitState): ReturnType<typeof observeChanges> => {
+  const current = new Map<PositionKey, NonNullable<Component['observedBlock']>>()
+  for (const [key, component] of componentEntriesForKinds(board, OBSERVER_COMPONENT_KINDS)) {
+    if (typeof component.observedBlock !== 'undefined') {
+      current.set(key, component.observedBlock)
+    }
+  }
+  return observeChanges(current, previous.observerSeen ?? new Map())
+}
+
 const resolveTimedCircuitTick = (input: TimedCircuitAdvanceInput): ResolvedTimedCircuitTick => {
   const { board, previous, context } = input
   const pressedButtons = input.pressedButtons ?? new Set<PositionKey>()
-  const { buttons, components, repeaters, torches } = emptyTimedComponentMaps()
+  const { buttons, components, observers, repeaters, torches } = emptyTimedComponentMaps()
   const previousBlockPower = previousBlockPowerFor(input)
+  const sweep = observerSweepFor(board, previous)
+  const changedObservers = new Set(sweep.fired)
 
   for (const [key, component] of componentEntriesForKinds(board, TIMED_COMPONENT_KINDS)) {
-    applyTimedEntry({ buttons, component, components, key, pressedButtons, previous, previousBlockPower, repeaters, torches })
+    applyTimedEntry({
+      buttons,
+      changedObservers,
+      component,
+      components,
+      key,
+      observers,
+      pressedButtons,
+      previous,
+      previousBlockPower,
+      repeaters,
+      torches,
+    })
   }
 
   const tickContext: PowerTickContext = { ...context, previousBlockPower }
-  return { buttons, components, repeaters, tickContext, torches }
+  return { buttons, components, observerSeen: sweep.seen, observers, repeaters, tickContext, torches }
 }
 
 /** Advances all timers once, then computes this tick's state without provenance. */
@@ -394,6 +481,8 @@ export const advanceTimedCircuitWithContext = (
   return {
     blockPower: tickState.blockPower,
     buttons: resolved.buttons,
+    observerSeen: resolved.observerSeen,
+    observers: resolved.observers,
     power: tickState.power,
     repeaters: resolved.repeaters,
     torches: resolved.torches,
@@ -410,14 +499,7 @@ export const advanceTimedCircuitWithProvenanceContext = (
     context: resolved.tickContext,
     overrides: resolved.components,
   })
-  return {
-    blockPower: tickState.blockPower,
-    buttons: resolved.buttons,
-    power: tickState.power,
-    provenance: tickState.provenance,
-    repeaters: resolved.repeaters,
-    torches: resolved.torches,
-  }
+  return timedCircuitWithProvenance(tickState, resolved)
 }
 
 export const advanceTimedCircuit = (
@@ -425,19 +507,32 @@ export const advanceTimedCircuit = (
   previous: TimedCircuitState,
   pressedButtons: ReadonlySet<PositionKey> = new Set(),
 ): TimedCircuitState => {
-  const repeaters = new Map<PositionKey, RepeaterTimer>()
-  const buttons = new Map<PositionKey, ButtonTimer>()
-  const torches = new Map<PositionKey, TorchTimer>()
-  const components = new Map<PositionKey, Component>()
+  const { buttons, components, observers, repeaters, torches } = emptyTimedComponentMaps()
   const previousBlockPower = previousBlockPowerFor({ board, pressedButtons, previous })
+  const sweep = observerSweepFor(board, previous)
+  const changedObservers = new Set(sweep.fired)
 
   for (const [key, component] of componentEntriesForKinds(board, TIMED_COMPONENT_KINDS)) {
-    applyTimedEntry({ buttons, component, components, key, pressedButtons, previous, previousBlockPower, repeaters, torches })
+    applyTimedEntry({
+      buttons,
+      changedObservers,
+      component,
+      components,
+      key,
+      observers,
+      pressedButtons,
+      previous,
+      previousBlockPower,
+      repeaters,
+      torches,
+    })
   }
 
   // The map-only API avoids constructing block-power contexts and result wrappers on every tick.
   return {
     buttons,
+    observerSeen: sweep.seen,
+    observers,
     power: propagateTick(board, previous.power, components),
     repeaters,
     torches,

@@ -157,8 +157,8 @@ const sightingAt = (sandbox: Sandbox, key: PositionKey, facing: Facing): BlockRe
  * observers fired and how long a pulse lasts; the countdown is here, next to the
  * tick counter, for the same reason the button's release belongs in
  * `stages/registration.ts` — remaining time is state and the power map has no
- * cell for it. Watch an observer on screen: it goes bright for exactly two
- * ticks and then dark, and nothing in `domain/` counted either of them.
+ * cell for it. Watch an observer on screen: it goes bright for one redstone
+ * tick (two simulation game ticks) and then dark.
  *
  * It is also the cheap version of the sampling argument. One lookup per placed
  * observer per tick, not a scan of the board: plan.md §3.11 records per-tick

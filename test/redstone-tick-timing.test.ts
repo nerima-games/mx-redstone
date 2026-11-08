@@ -36,6 +36,16 @@ import {
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
 
+// Java Edition burns a torch out after more than eight forced-off changes in the last 60 game ticks.
+// One redstone tick is two game ticks. Source: https://minecraft.wiki/w/Redstone_Torch
+const JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT = 8
+const JAVA_TORCH_BURNOUT_WINDOW_GAME_TICKS = 60
+const GAME_TICKS_PER_REDSTONE_TICK = 2
+const JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS =
+  JAVA_TORCH_BURNOUT_WINDOW_GAME_TICKS / GAME_TICKS_PER_REDSTONE_TICK
+const JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS = JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT + 1
+const TORCH_SELF_CLOCK_REDSTONE_TICKS_PER_OFF_TRANSITION = 2
+
 const line = (cells: ReadonlyArray<readonly [string, Component]>): CircuitBoard => ({
   components: new Map(cells),
   adjacency: new Map(
@@ -76,7 +86,6 @@ const makeHopperRealmAndPort = (elapsedGameTicks: Array<number>) => {
       destinationFacing: null,
     }),
     readPistonCell: () => ({ kind: 'missing' }),
-    readPistonFacing: () => 'north',
   }
   const realm: RedstoneHostRealm = { dimension: TEST_DIMENSION, lookup: emptyLookup }
   const transferRejected: HopperTransferOutcome = {
@@ -197,34 +206,47 @@ describe('tick-by-tick component timing', () => {
     }),
   )
 
-  it.effect('burns out after the eighth rapid off transition and relights after eighty cooldown ticks', () =>
+  it.effect('burns out after the ninth rapid off transition and resumes when fewer than eight remain', () =>
     Effect.sync(() => {
-      // Counting the wrong edge or shortening cooldown changes an asserted tick in this sequence.
+      // The Java rule uses forced-off transitions in a rolling 60-game-tick window.
       const board = line([['torch', { invertedBy: 'torch', kind: 'torch' }]])
       let state = emptyTimedCircuitState
-      for (let tick = 1; tick <= 15; tick += 1) {
+      const redstoneTicksToBurnout =
+        JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS * TORCH_SELF_CLOCK_REDSTONE_TICKS_PER_OFF_TRANSITION
+      expect(redstoneTicksToBurnout * GAME_TICKS_PER_REDSTONE_TICK)
+        .toBeLessThan(JAVA_TORCH_BURNOUT_WINDOW_GAME_TICKS)
+
+      for (let tick = 1; tick < redstoneTicksToBurnout; tick += 1) {
         state = advanceTimedCircuit(board, state)
         expect(state.torches?.get('torch')?.output).toBe(tick % 2 === 1)
-        expect(state.torches?.get('torch')?.burnoutRemainingTicks).toBe(0)
+        expect(state.torches?.get('torch')?.burnedOut).toBe(false)
+        expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(
+          Math.floor(tick / TORCH_SELF_CLOCK_REDSTONE_TICKS_PER_OFF_TRANSITION),
+        )
       }
 
       state = advanceTimedCircuit(board, state)
       expect(state.torches?.get('torch')).toMatchObject({
-        burnoutRemainingTicks: 80,
+        burnedOut: true,
         output: false,
       })
-      for (let cooldownTick = 1; cooldownTick <= 79; cooldownTick += 1) {
+      expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(
+        JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS,
+      )
+      const redstoneTicksUntilOneMoreOffExpires =
+        JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS / TORCH_SELF_CLOCK_REDSTONE_TICKS_PER_OFF_TRANSITION
+      for (let tick = 0; tick < redstoneTicksUntilOneMoreOffExpires; tick += 1) {
         state = advanceTimedCircuit(board, state)
-        expect(state.torches?.get('torch')).toMatchObject({
-          burnoutRemainingTicks: 80 - cooldownTick,
-          output: false,
-        })
       }
-      state = advanceTimedCircuit(board, state)
       expect(state.torches?.get('torch')).toMatchObject({
-        burnoutRemainingTicks: 0,
-        output: true,
+        burnedOut: true,
+        output: false,
       })
+      expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(
+        JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT,
+      )
+      state = advanceTimedCircuit(board, state)
+      expect(state.torches?.get('torch')).toMatchObject({ burnedOut: false, output: true })
     }),
   )
 
@@ -265,9 +287,8 @@ describe('tick-by-tick component timing', () => {
     }),
   )
 
-  it.effect('caps each stage frame at four ticks and discards its excess elapsed time', () =>
+  it.effect('stage time follows simulation-tick invocations and ignores large frame deltas', () =>
     Effect.gen(function* () {
-      // Banking a capped frame's overflow makes the next ordinary frame exceed the same limit again.
       const state = yield* makeRedstoneFrameState
       const powerStage = redstoneStages(state).find((stage) => stage.id === REDSTONE_STAGE_IDS.power)
       if (powerStage === undefined) throw new Error('Expected the redstone power stage')
@@ -277,9 +298,11 @@ describe('tick-by-tick component timing', () => {
       ]))
 
       yield* powerStage.run(DeltaTimeSecs(1))
-      expect(yield* Ref.get(state.tickCount)).toBe(4)
+      expect(yield* Ref.get(state.tickCount)).toBe(0)
       yield* powerStage.run(DeltaTimeSecs(0.1))
-      expect(yield* Ref.get(state.tickCount)).toBe(5)
+      expect(yield* Ref.get(state.tickCount)).toBe(1)
+      yield* powerStage.run(DeltaTimeSecs(30))
+      expect(yield* Ref.get(state.tickCount)).toBe(1)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 })

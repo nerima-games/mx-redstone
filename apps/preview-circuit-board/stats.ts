@@ -35,7 +35,6 @@
  * a regression reaching a person; these lines are what stop it reaching a person
  * who is only looking at the picture.
  */
-import { DeltaTimeSecs, FixedDurationSecs } from '@nerima-games/mc-kernel'
 import { planPush, PISTON_PUSH_LIMIT } from '../../src/domain/piston'
 import {
   emptyPowerMap,
@@ -49,7 +48,6 @@ import {
   type PowerMap,
 } from '../../src/domain/power-graph'
 import type { PositionKey } from '../../src/domain/position-key'
-import { REDSTONE_TICK_SECS, ticksForFrame } from '../../src/stages/registration'
 import {
   circuitBoardOf,
   keyOf,
@@ -396,36 +394,6 @@ const measureClockPeriod = (): number => {
   return -1
 }
 
-/**
- * Redstone ticks executed over `frames` frames of `dt`, against the ticks that
- * much wall time is worth.
- *
- * This is the accumulator's claim under test: 「the long-run tick rate is exact
- * rather than losing up to one tick's worth of time every frame」
- * (`stages/registration.ts:11-27`). A per-frame loss would show up here as a
- * drift that grows with the run length; a single pending tick would not.
- */
-const measureFrameRate = (frames: number, fps: number): { readonly ticks: number; readonly drift: number } => {
-  const dt = DeltaTimeSecs(1 / fps)
-  let accumulated = FixedDurationSecs(0)
-  let total = 0
-  for (let frame = 0; frame < frames; frame += 1) {
-    const { ticks, remainderSecs } = ticksForFrame(accumulated, dt)
-    accumulated = remainderSecs
-    total += ticks
-  }
-  const expected = Math.round((frames / fps) / REDSTONE_TICK_SECS)
-  return { ticks: total, drift: total - expected }
-}
-
-const FRAME_RATE_PROBES: ReadonlyArray<{ readonly frames: number; readonly fps: number }> = [
-  { frames: 600, fps: 60 },
-  { frames: 6000, fps: 60 },
-  { frames: 60000, fps: 60 },
-  { frames: 6000, fps: 144 },
-  { frames: 3000, fps: 30 },
-]
-
 // ---------------------------------------------------------------------------
 // The report
 // ---------------------------------------------------------------------------
@@ -701,15 +669,8 @@ export const buildStatsReport = (): ReadonlyArray<string> => {
     ...pushProbes.map((probe) => `  ${padNumber(probe.length, 3)} movable block(s): ${probe.outcome}`),
     ...[0, 2, 4].map((index) => `  immovable at index ${String(index)} of 5: ${probeImmovableAt(index)}`),
     '',
-    '7. timing above the graph',
+    '7. timing in redstone ticks',
     `  torch/torch clock period: ${String(clockPeriod)} tick(s)`,
-    `  REDSTONE_TICK_SECS = ${String(REDSTONE_TICK_SECS)}  (${String(Math.round(1 / REDSTONE_TICK_SECS))} Hz)`,
-    '  the accumulator claims the long-run rate is exact; a per-frame loss would grow with the run.',
-    ...FRAME_RATE_PROBES.map(({ frames, fps }) => {
-      const measured = measureFrameRate(frames, fps)
-      return `  ${padNumber(frames, 6)} frames at ${padNumber(fps, 3)} fps (${pad(`${((frames / fps)).toFixed(1)} s`, 8)}) -> ${padNumber(measured.ticks, 6)} ticks   drift ${String(measured.drift)}`
-    }),
-    '  drift stays at one pending tick however long the run: the remainder is carried, not dropped.',
     '',
     `findings: ${String(findings.length)}`,
   ]

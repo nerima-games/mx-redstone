@@ -182,7 +182,7 @@ plan.md §6 Step 2 の完了条件は 2 つある。
 | # | 条件 | 状態 |
 | --- | --- | --- |
 | 1 | `pnpm verify` が green | ✅ |
-| 2 | ワイヤ / トーチ / レバー / ボタン / リピーター / ピストンのシナリオテスト | ✅（部品の一部は未実装、[responsibility.md](./responsibility.md) §1） |
+| 2 | ワイヤ / トーチ / レバー / ボタン / リピーター / ピストンのシナリオテスト | ✅ Scenario tests exist; some redstone behavior remains unimplemented ([responsibility.md](./responsibility.md) §1). |
 | 3 | ディスペンサ / ホッパー / オブザーバ / 感圧板 / コンパレータ | **コンパレータ・オブザーバ ✅／ホッパーは host adapter と `HopperService` を接続済み／ディスペンサ・感圧板はレッドストーン規則を実装済み。実 world の lookup や entity 入力は host の責務（§4-2、[design-notes.md](./design-notes.md) DN-RS-17）** |
 | 4 | 参照実装のテスト資産（**2,658 行**）をオラクルとして移植 | **一巡した。4 本を移植し、残りは理由つきで見送った**（§4-3、[porting.md](./porting.md) §3-1） |
 | 5 | **回路盤サンドボックスプレビューが操作可能** | ✅（§4-1） |
@@ -277,11 +277,9 @@ plan.md §3.12 が要求する「部品を置いて動かすサンドボック�
 | 安定するまで進む | `s`。発振する回路は `oscillating: true` をそのまま表示する（DN-RS-4） |
 | 各セルの電力 0–15 を見る | `power` ビュー（`v` で巡回）。16 進 1 桁で全セル表示 |
 
-**加えて、テストには書けないものを 2 つ出している。**
+**The preview complements automated tests with three behaviors shown visually.**
 
-- **tick カウンタ**と、**tick 軸に沿った電力テープ**（`timeline` ビュー）。
-  テストは最終状態を assert するので、「2 tick 遅れて届いた信号」は最終状態が同じ限り見えない。
-  リピーターの遅延が効いているかどうかは、まさにこれでしか分からない。
+- **Tick counter and timeline.** `test/power-timing.test.ts` checks repeater output at configured tick boundaries. The timeline adds a visual trace of the signal at each tick between those assertions.
 - **ピストンの拒否理由**（`immovable` / `too-long`）。`planPush` が 2 種類の拒否を区別しているのは
   「プレイヤーへの説明が違うから」（`domain/piston.ts:93-102`）であり、
   表示されない拒否理由は「何も起きなかった」と区別がつかない。
@@ -334,11 +332,7 @@ plan.md §3.12 が要求する「部品を置いて動かすサンドボック�
 
 #### 5 部品を足したときにプレビューが見つけたこと
 
-- **コンパレータの減衰**（`--stats` の finding、`comparator-ladder` シナリオ）。
-  4 段のラダーが `15, 14, 13, 12` を返す。バニラは全部 15 である。
-  これは `MAX_POWER_LEVEL` が既に記録していた乖離だが、**到達距離の話としてしか書かれていなかった**——
-  「数を次へ渡す部品」で何が起きるかは、ラダーを実際に組んで power ビューを見るまで誰も書いていない。
-  DN-RS-13 がその finding である。
+- **Comparator attenuation** (the initial `--stats` finding and `comparator-ladder` scenario). The original four-stage ladder returned `15, 14, 13, 12`, unlike vanilla's 15 at every stage. Comparator output now reaches adjacent dust unchanged; `test/power-graph.test.ts` asserts 15 across one through four stages. DN-RS-13 preserves the historical discovery.
 - **側面が同じ値だとモードの差が消える。** `comparator-sides` シナリオの最初の版は、
   側面レバーをコンパレータの 2 マス上に置いていた。すると側面は背面と同じ 14 になり、
   compare は**等号で通る**ので 14、subtract は 0 になる。
@@ -360,8 +354,7 @@ plan.md §3.12 が要求する「部品を置いて動かすサンドボック�
 
 回路テストが**厳密に再現可能**であることは、3 つの性質から出てくる。
 
-1. **固定レート tick。** 経過時間は `ticksForFrame` で整数の tick 数に量子化される。
-   フレームレートは結果に影響しない（DN-RS-3）。
+1. **Fixed simulation ticks.** mc-sim owns elapsed-time conversion; redstone advances once per two game-tick invocations and does not read frame delta (DN-RS-3).
 2. **壁時計を読まない。** `Date.now()` / `new Date()` / `performance.now()` は `.ast-grep/rules/no-wall-clock-read.yml` で禁止（DN-RS-9）。
 3. **シードがない。** `propagateTick` / `settle` / `planPush` はすべて純粋関数で、乱数を使わない。
    参照実装は作物のドロップ等で乱数を使うが、それは mx-gameplay の資産である

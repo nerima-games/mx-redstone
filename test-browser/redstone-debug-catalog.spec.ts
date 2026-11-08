@@ -5,8 +5,7 @@ const INITIAL_FRAME = 0
 const FIRST_FRAME = 1
 const SECOND_FRAME = 2
 const THIRD_FRAME = 3
-const OBSERVER_PULSE_LENGTH = 2
-const OBSERVER_ONE_TICK_REMAINING = 1
+const OBSERVER_PULSE_LENGTH = 1
 const NO_PULSE_REMAINING = 0
 const FIRST_FAILURE_INDEX = 0
 const FAILURE_INDEX_STEP = 1
@@ -63,8 +62,8 @@ const HOST_FAILURE_DRAINED_EVENTS = JSON.stringify({
     { dimension: 'overworld', kind: 'powered-rail', position: { x: 10, y: 0, z: 1 }, powered: true },
   ],
   trigger: [
-    { dimension: 'overworld', kind: 'dispenser', position: { x: 0, y: 1, z: 0 } },
-    { dimension: 'overworld', kind: 'dropper', position: { x: 10, y: 1, z: 0 } },
+    { dimension: 'overworld', facing: 'north', kind: 'dispenser', position: { x: 0, y: 1, z: 0 } },
+    { dimension: 'overworld', facing: 'north', kind: 'dropper', position: { x: 10, y: 1, z: 0 } },
   ],
 })
 
@@ -96,12 +95,12 @@ const expectDrainedEventBatch = async (page: Page, expected: string): Promise<vo
   const events = page.getByRole('region', { name: 'Events and transitions' })
   const drainedEvents = events.getByText('Event drain', { exact: true })
     .locator('xpath=following-sibling::dd[1]')
-  await expect(drainedEvents).toHaveText(expected)
   const drainedText = await drainedEvents.textContent()
-  expect(drainedText).not.toBeNull()
-  if (drainedText !== null) {
-    expect(drainedText).toMatch(/"hopper".*"lamp".*"piston".*"powered".*"trigger"/)
+  if (drainedText === null) {
+    throw new Error('Drained event batch is missing')
   }
+  expect(JSON.parse(drainedText)).toStrictEqual(JSON.parse(expected))
+  expect(drainedText).toMatch(/"hopper".*"lamp".*"piston".*"powered".*"trigger"/)
 }
 
 const expectPistonRefusals = async (page: Page): Promise<void> => {
@@ -132,15 +131,10 @@ const expectObserverPulse = async (page: Page, state: ObserverPulseExpectation):
   const observer = components.getByRole('list', { name: 'Observed component state and timers' })
     .locator('li')
     .filter({ hasText: 'observer @ overworld (0, 0, 0)' })
-  const timeline = page.getByRole('region', { name: 'Timeline and frame' })
+  const timeline = page.getByRole('region', { name: 'Timeline and simulation ticks' })
   await expect(timeline).toContainText(`Redstone tick: ${state.tick}`)
   await expect(observer).toContainText(`"active":${String(state.active)}`)
-  if (state.active) {
-    await expect(observer).toContainText(`"pulseTicks":${state.pulseTicks}`)
-  } else {
-    await expect(observer).not.toContainText('"pulseTicks":2')
-    await expect(observer).not.toContainText('"pulseTicks":1')
-  }
+  await expect(observer).toContainText(`"pulseTicks":${state.pulseTicks}`)
 }
 
 const stepFrame = async (page: Page): Promise<void> => {
@@ -224,14 +218,14 @@ test('button fixture exposes its pending press before the power tick', async ({ 
   errors.assertClear()
 })
 
-// The caller decrements the two-tick pulse before each power stage.
-test('observer pulse remains active for two ticks and clears on the third', async ({ page }) => {
+// The runtime samples the watched block and holds its output for one redstone tick.
+test('observer change starts a one-tick pulse and clears on the next tick', async ({ page }) => {
   const errors = captureErrors(page)
   await page.goto(scenarioUrl('rs.observer.change-pulse', FIRST_FRAME))
 
-  await expectObserverPulse(page, { active: true, pulseTicks: OBSERVER_PULSE_LENGTH, tick: FIRST_FRAME })
+  await expectObserverPulse(page, { active: false, pulseTicks: NO_PULSE_REMAINING, tick: FIRST_FRAME })
   await stepFrame(page)
-  await expectObserverPulse(page, { active: true, pulseTicks: OBSERVER_ONE_TICK_REMAINING, tick: SECOND_FRAME })
+  await expectObserverPulse(page, { active: true, pulseTicks: OBSERVER_PULSE_LENGTH, tick: SECOND_FRAME })
   await stepFrame(page)
   await expectObserverPulse(page, { active: false, pulseTicks: NO_PULSE_REMAINING, tick: THIRD_FRAME })
   errors.assertClear()
@@ -272,16 +266,16 @@ test('host failure selector exposes each typed failure result', async ({ page })
   errors.assertClear()
 })
 
-// Catches a timeline that confuses frame accumulation with redstone ticks or omits serialized state.
-test('stage timeline shows tick diff, accumulator, and JSON state', async ({ page }) => {
+// Catches a timeline that confuses simulation ticks with redstone ticks or omits serialized state.
+test('stage timeline shows tick diff, tick ratio, and JSON state', async ({ page }) => {
   const errors = captureErrors(page)
   await page.goto(scenarioUrl('rs.stage.frame-timeline', SECOND_FRAME))
 
-  const timeline = page.getByRole('region', { name: 'Timeline and frame' })
+  const timeline = page.getByRole('region', { name: 'Timeline and simulation ticks' })
   await expect(timeline).toContainText('Redstone tick: 2')
-  await expect(timeline).toContainText('Frame tick accumulator: 0 seconds')
+  await expect(timeline).toContainText('game ticks per redstone tick 2')
   await expect(timeline).toContainText(
-    'Frame stage: consumed ticks 1; max ticks per frame 4; tick duration 0.1 seconds; discarded ticks 0',
+    'Simulation tick stage: consumed redstone ticks 1; game ticks per redstone tick 2',
   )
   await expect(timeline.getByRole('list', { name: 'One-tick power differences' }))
     .toContainText('Tick 1 → 2: no power-map changes recorded')

@@ -2,11 +2,13 @@ import { describe, expect, it } from '@effect/vitest'
 import {
   BlockAddressSchema,
   BlockPositionSchema,
-  DeltaTimeSecs,
   DimensionIdSchema,
+  NonNegativeTickCount,
   WorldIdSchema,
   WorldWriteBatchSchema,
   blockIdOf,
+  encodeBlockState,
+  isBlockType,
   type BlockAddress,
   type BlockPosition,
   type StageRegistration,
@@ -21,6 +23,8 @@ import {
   type HopperTransferTickPlanState,
   type WorldCommitPlanSnapshot,
   type WorldCommitRequest,
+  runStagesForTicks,
+  type RunStagesForTicksFailure,
   itemStack,
   type Container,
 } from '@nerima-games/mc-sim'
@@ -48,7 +52,6 @@ import { planDispenserAction } from '../src/domain/dispenser'
 import { ContainerSlotSchema } from '../src/domain/comparator'
 import type { PistonMovementPlan } from '../src/domain/piston'
 import { makeRuntimeRedstoneStages } from '../src/stages/registration'
-import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 // eslint-disable-next-line sort-imports
 import { FrameServicesLayer } from './frame-services'
 
@@ -81,6 +84,17 @@ const successValue = <Value, Failure>(result: Result.Result<Value, Failure>): Va
   return result.success
 }
 
+const encodedStateFor = (name: RedstoneHostBlockType | null, state: unknown = {}): unknown => {
+  if (name === null || !isBlockType(name) || !['comparator', 'dispenser', 'dropper', 'hopper', 'observer', 'piston', 'redstone_torch', 'repeater'].includes(name)) {
+    return undefined
+  }
+  const blockId = Option.getOrUndefined(blockIdOf(name))
+  if (typeof blockId === 'undefined') {
+    throw new Error(`Missing kernel block ID for ${name}`)
+  }
+  return successValue(encodeBlockState(blockId, state))
+}
+
 const block = (
   name: RedstoneHostBlockType,
   x = 0,
@@ -88,10 +102,25 @@ const block = (
   z = 0,
   strongPowerTo?: BlockPosition,
   dimension: RedstoneDimensionId = dimensionId('overworld'),
+): RedstoneHostBlock => {
+  const encodedState = encodedStateFor(name)
+  return {
+    address: blockAddress(x, y, z, dimension),
+    block: Schema.decodeUnknownSync(RedstoneHostBlockTypeSchema)(name),
+    ...(encodedState === undefined ? {} : { encodedState }),
+    ...(strongPowerTo === undefined ? {} : { strongPowerTo }),
+  }
+}
+
+const blockWithState = (
+  name: RedstoneHostBlockType,
+  x: number,
+  y: number,
+  z: number,
+  state: unknown,
 ): RedstoneHostBlock => ({
-  address: blockAddress(x, y, z, dimension),
-  block: Schema.decodeUnknownSync(RedstoneHostBlockTypeSchema)(name),
-  ...(strongPowerTo === undefined ? {} : { strongPowerTo }),
+  ...block(name, x, y, z),
+  encodedState: encodedStateFor(name, state),
 })
 
 type RecordedCall =
@@ -215,17 +244,8 @@ const recordingRealm = (
   return { calls, port, realm: { dimension, lookup } }
 }
 
-const runFrame = (stages: ReadonlyArray<StageRegistration>): Effect.Effect<void> =>
-  Effect.gen(function* runFrameGenerator() {
-    const power = stages.find((stage) => stage.id === REDSTONE_STAGE_IDS.power)
-    const effects = stages.find((stage) => stage.id === REDSTONE_STAGE_IDS.effects)
-    if (typeof power !== 'undefined') {
-      yield* power.run(DeltaTimeSecs(0.1)).pipe(Effect.provide(FrameServicesLayer))
-    }
-    if (typeof effects !== 'undefined') {
-      yield* effects.run(DeltaTimeSecs(0.1)).pipe(Effect.provide(FrameServicesLayer))
-    }
-  })
+const runFrame = (stages: ReadonlyArray<StageRegistration>): Effect.Effect<void, RunStagesForTicksFailure> =>
+  runStagesForTicks(stages, NonNegativeTickCount(2)).pipe(Effect.provide(FrameServicesLayer))
 
 const makeDispenser = (kind: 'dispenser' | 'dropper', withArrow: boolean): Container => {
   const slots: Array<Container['slots'][number]> = Array.from({ length: 9 }, () => null)
@@ -257,7 +277,6 @@ describe('raw host block to host request', () => {
         readHopperBlockId: () => HOPPER_BLOCK_ID,
         readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
         readPistonCell: () => ({ kind: 'empty' }),
-        readPistonFacing: () => 'south',
       }
       const realm: RedstoneHostRealm = { dimension, lookup }
       const rawBlocks = [
@@ -316,15 +335,14 @@ describe('raw host block to host request', () => {
           return { powered: false, sourceAbove: null, destinationFacing: null }
         },
         readPistonCell: () => ({ kind: 'empty' }),
-        readPistonFacing: () => 'south',
       }
       const { calls, port, realm } = recordingRealm(lookup)
       const rawBlocks = [
         block('lever', 0, 0, 0),
         block('redstone_wire', 1, 0, 0),
         block('redstone_lamp', 2, 0, 0),
-        block('comparator', 30, 0, 0),
-        block('piston', 0, 0, -1),
+        blockWithState('comparator', 30, 0, 0, { facing: 'north', mode: 'compare', powered: false }),
+        blockWithState('piston', 0, 0, -1, { facing: 'south', extended: false }),
         block('hopper', hopperPosition.x, hopperPosition.y, hopperPosition.z),
         block('dispenser', -1, 0, 0),
         block('dropper', 0, 1, 0),
@@ -334,8 +352,11 @@ describe('raw host block to host request', () => {
         block('trapdoor', 9, 0, 0),
         block('lever', 10, 0, 0),
       ]
-      const mappedComponents = rawBlocks.flatMap(({ address, block: blockType }) => {
-        const component = successValue(componentForBlock(lookup, blockType, address.position))
+      const mappedComponents = rawBlocks.flatMap(({ address, block: blockType, encodedState }) => {
+        const component = successValue(componentForBlock(lookup, blockType, {
+          position: address.position,
+          ...(encodedState === undefined ? {} : { encodedState }),
+        }))
         return typeof component === 'undefined' ? [] : [component]
       })
       const snapshot = successValue(redstoneSnapshotFromRealm(realm, rawBlocks))
@@ -347,11 +368,13 @@ describe('raw host block to host request', () => {
           { kind: 'lamp', position: blockPosition(2, 0, 0) },
           {
             containerSlots: [slot],
+            facing: 'north',
             inputFrom: blockPosition(30, 0, 1),
             kind: 'comparator',
             mode: 'compare',
             outputTo: blockPosition(30, 0, -1),
             position: blockPosition(30, 0, 0),
+            powered: false,
             sideInputs: [blockPosition(29, 0, 0), blockPosition(31, 0, 0)],
           },
           {
@@ -361,9 +384,9 @@ describe('raw host block to host request', () => {
             pistonState: 'retracted',
             position: blockPosition(0, 0, -1),
           },
-          { kind: 'hopper', position: hopperPosition },
-          { kind: 'dispenser', position: blockPosition(-1, 0, 0) },
-          { kind: 'dropper', position: blockPosition(0, 1, 0) },
+          { enabled: true, facing: 'down', kind: 'hopper', position: hopperPosition },
+          { facing: 'north', kind: 'dispenser', position: blockPosition(-1, 0, 0), triggered: false },
+          { facing: 'north', kind: 'dropper', position: blockPosition(0, 1, 0), triggered: false },
           { kind: 'powered-rail', powered: false, position: blockPosition(10, 1, 0) },
           { kind: 'door', position: blockPosition(0, -1, 0) },
           { kind: 'note-block', position: blockPosition(10, 0, -1) },
@@ -400,8 +423,8 @@ describe('raw host block to host request', () => {
           { dimension: dimensionId('overworld'), kind: 'powered-rail', powered: true, position: blockPosition(10, 1, 0) },
         ],
         trigger: [
-          { dimension: dimensionId('overworld'), kind: 'dispenser', position: blockPosition(-1, 0, 0) },
-          { dimension: dimensionId('overworld'), kind: 'dropper', position: blockPosition(0, 1, 0) },
+          { dimension: dimensionId('overworld'), facing: 'north', kind: 'dispenser', position: blockPosition(-1, 0, 0) },
+          { dimension: dimensionId('overworld'), facing: 'north', kind: 'dropper', position: blockPosition(0, 1, 0) },
           { dimension: dimensionId('overworld'), kind: 'note-block', position: blockPosition(10, 0, -1) },
         ],
       }
@@ -463,11 +486,14 @@ describe('raw host block to host request', () => {
         readHopperBlockId: () => HOPPER_BLOCK_ID,
         readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
         readPistonCell: () => ({ kind: 'empty' }),
-        readPistonFacing: () => 'south',
       }
       const { calls, port, realm } = recordingRealm(lookup)
       const rawBlocks = [
-        block('comparator', comparatorPosition.x, comparatorPosition.y, comparatorPosition.z),
+        blockWithState('comparator', comparatorPosition.x, comparatorPosition.y, comparatorPosition.z, {
+          facing: 'north',
+          mode: 'compare',
+          powered: false,
+        }),
         block('redstone_wire', outputWirePosition.x, outputWirePosition.y, outputWirePosition.z),
         block('redstone_lamp', lampPosition.x, lampPosition.y, lampPosition.z),
       ]
@@ -477,11 +503,13 @@ describe('raw host block to host request', () => {
         components: [
           {
             containerSlots: [slot],
+            facing: 'north',
             inputFrom: blockPosition(30, 0, 1),
             kind: 'comparator',
             mode: 'compare',
             outputTo: outputWirePosition,
             position: comparatorPosition,
+            powered: false,
             sideInputs: [blockPosition(29, 0, 0), blockPosition(31, 0, 0)],
           },
           { kind: 'wire', position: outputWirePosition },
@@ -518,78 +546,270 @@ describe('raw host block to host request', () => {
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
-  it.effect('keeps a sticky piston sticky through its raw retraction host plan', () =>
+  it.effect('uses encoded repeater facing and delay during simulation-tick advances', () =>
     Effect.gen(function* () {
-      // Fails if sticky_piston becomes normal before its one-block retraction plan reaches the host.
-      const pistonPosition = blockPosition(0, 0, 0)
-      const headPosition = blockPosition(0, 0, 1)
-      const pullSourcePosition = blockPosition(0, 0, 2)
       const lookup: RedstoneHostLookup = {
-        isLeverActive: () => false,
+        isLeverActive: () => true,
         isPoweredRailPowered: () => false,
         readContainerSlots: () => undefined,
         readHopperBlockId: () => HOPPER_BLOCK_ID,
         readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
-        readPistonCell: (position) => {
-          if (position.z === headPosition.z) {
-            return { block: 'piston_head', kind: 'block' }
-          }
-          if (position.z === pullSourcePosition.z) {
-            return { block: 'stone', kind: 'block' }
-          }
-          return { kind: 'empty' }
-        },
-        readPistonFacing: () => 'south',
+        readPistonCell: () => ({ kind: 'empty' }),
       }
-      const { calls, port, realm } = recordingRealm(lookup)
-      const rawBlocks = [block('sticky_piston', pistonPosition.x, pistonPosition.y, pistonPosition.z)]
-      const snapshot = successValue(redstoneSnapshotFromRealm(realm, rawBlocks))
-
-      expect(snapshot.components).toStrictEqual([{
-        kind: 'piston',
-        pistonFacing: 'south',
-        pistonKind: 'sticky',
-        pistonState: 'extended',
-        position: pistonPosition,
-      }])
+      const { realm } = recordingRealm(lookup)
+      const repeaterPosition = blockPosition(1, 0, 0)
+      const snapshot = successValue(redstoneSnapshotFromRealm(realm, [
+        block('lever', 0, 0, 0),
+        blockWithState('repeater', repeaterPosition.x, repeaterPosition.y, repeaterPosition.z, {
+          delay: 2,
+          facing: 'east',
+          locked: false,
+          powered: false,
+        }),
+        block('redstone_wire', 2, 0, 0),
+        block('redstone_lamp', 3, 0, 0),
+      ]))
+      expect(snapshot.components.find(({ kind }) => kind === 'repeater')).toMatchObject({
+        delayTicks: 2,
+        facing: 'east',
+        inputFrom: blockPosition(0, 0, 0),
+        kind: 'repeater',
+        outputTo: blockPosition(2, 0, 0),
+      })
 
       const runtime = yield* RedstoneWorldRuntime
       const stages = yield* makeRuntimeRedstoneStages
       yield* runtime.syncSnapshot(snapshot)
-      yield* runFrame(stages)
-      yield* applyRedstoneHostEvents(runtime, [realm], port)
-
-      const [build] = callsOf(calls, 'build')
-      const [commit] = callsOf(calls, 'commit')
-      const expectedEvents: RedstoneEventBatch = {
-        hopper: [],
-        lamp: [],
-        piston: [{
-          dimension: dimensionId('overworld'),
-          facing: 'south',
-          kind: 'sticky',
-          piston: pistonPosition,
-          powered: false,
-          state: 'extended',
-        }],
-        powered: [],
-        trigger: [],
+      yield* setRedstoneObservationEnabled(runtime, true)
+      const outputPower: Array<number | undefined> = []
+      for (let tick = 0; tick < 3; tick += 1) {
+        yield* runFrame(stages)
+        const observations = yield* redstoneTickObservationsFor(runtime)
+        outputPower.push(observations.at(-1)?.power.get(redstoneNodeId(dimensionId('overworld'), repeaterPosition)) ?? 0)
       }
-      expect(callsOf(calls, 'build')).toHaveLength(1)
-      expect(build?.events).toStrictEqual(expectedEvents)
-      expect(build?.pistonPlans).toStrictEqual([{
-        facing: 'south',
-        fromState: 'extended',
-        kind: 'sticky',
-        moves: [{ block: 'stone', from: pullSourcePosition, to: headPosition }],
-        piston: pistonPosition,
-        toState: 'retracted',
-      }])
-      expect(callsOf(calls, 'commit')).toHaveLength(1)
-      expect(commit?.request.changes[0]?.state).toStrictEqual({
-        events: expectedEvents,
-        pistonPlans: build?.pistonPlans,
-      })
+      expect(outputPower).toStrictEqual([0, 0, 15])
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
+
+  it.effect('holds and releases an encoded repeater lock across simulation-tick advances', () =>
+    Effect.gen(function* () {
+      const lookup: RedstoneHostLookup = {
+        isLeverActive: () => true,
+        isPoweredRailPowered: () => false,
+        readContainerSlots: () => undefined,
+        readHopperBlockId: () => HOPPER_BLOCK_ID,
+        readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
+        readPistonCell: () => ({ kind: 'empty' }),
+      }
+      const { realm } = recordingRealm(lookup)
+      const repeaterPosition = blockPosition(1, 0, 0)
+      const snapshotFor = (inputOn: boolean, locked: boolean) => successValue(redstoneSnapshotFromRealm(realm, [
+        ...(inputOn ? [block('lever', 0, 0, 0)] : []),
+        blockWithState('repeater', repeaterPosition.x, repeaterPosition.y, repeaterPosition.z, {
+          delay: 2,
+          facing: 'east',
+          locked,
+          powered: false,
+        }),
+        block('redstone_wire', 2, 0, 0),
+      ]))
+      const unlockedWithInput = snapshotFor(true, false)
+      const lockedWithoutInput = snapshotFor(false, true)
+      const unlockedWithoutInput = snapshotFor(false, false)
+      expect(lockedWithoutInput.components.find(({ kind }) => kind === 'repeater')).toMatchObject({
+        delayTicks: 2,
+        facing: 'east',
+        inputFrom: blockPosition(0, 0, 0),
+        locked: true,
+        outputTo: blockPosition(2, 0, 0),
+      })
+
+      const runtime = yield* RedstoneWorldRuntime
+      const stages = yield* makeRuntimeRedstoneStages
+      yield* runtime.syncSnapshot(unlockedWithInput)
+      yield* setRedstoneObservationEnabled(runtime, true)
+      const outputPower: Array<number> = []
+      for (let tick = 0; tick < 3; tick += 1) {
+        yield* runFrame(stages)
+        const observations = yield* redstoneTickObservationsFor(runtime)
+        outputPower.push(observations.at(-1)?.power.get(redstoneNodeId(dimensionId('overworld'), repeaterPosition)) ?? 0)
+      }
+
+      yield* runtime.syncSnapshot(lockedWithoutInput)
+      for (let tick = 0; tick < 2; tick += 1) {
+        yield* runFrame(stages)
+        const observations = yield* redstoneTickObservationsFor(runtime)
+        outputPower.push(observations.at(-1)?.power.get(redstoneNodeId(dimensionId('overworld'), repeaterPosition)) ?? 0)
+      }
+
+      yield* runtime.syncSnapshot(unlockedWithoutInput)
+      for (let tick = 0; tick < 2; tick += 1) {
+        yield* runFrame(stages)
+        const observations = yield* redstoneTickObservationsFor(runtime)
+        outputPower.push(observations.at(-1)?.power.get(redstoneNodeId(dimensionId('overworld'), repeaterPosition)) ?? 0)
+      }
+
+      expect(outputPower).toStrictEqual([0, 0, 15, 15, 15, 15, 0])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('applies the encoded comparator facing and subtraction mode after one simulation tick', () =>
+    Effect.gen(function* () {
+      const comparatorPosition = blockPosition(1, 0, 0)
+      const fullContainerSlots = Array.from(
+        { length: 27 },
+        () => Schema.decodeUnknownSync(ContainerSlotSchema)({ count: 64, maxStack: 64 }),
+      )
+      const lookup: RedstoneHostLookup = {
+        isLeverActive: () => true,
+        isPoweredRailPowered: () => false,
+        readContainerSlots: (position) => {
+          expect(position).toStrictEqual(blockPosition(0, 0, 0))
+          return fullContainerSlots
+        },
+        readHopperBlockId: () => HOPPER_BLOCK_ID,
+        readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
+        readPistonCell: () => ({ kind: 'empty' }),
+      }
+      const { realm } = recordingRealm(lookup)
+      const snapshot = successValue(redstoneSnapshotFromRealm(realm, [
+        block('chest', 0, 0, 0),
+        blockWithState('comparator', comparatorPosition.x, comparatorPosition.y, comparatorPosition.z, {
+          facing: 'east',
+          mode: 'subtract',
+          powered: false,
+        }),
+        block('lever', 1, 0, 1),
+        block('redstone_wire', 2, 0, 0),
+      ]))
+      expect(snapshot.components.find(({ kind }) => kind === 'comparator')).toMatchObject({
+        containerSlots: fullContainerSlots,
+        facing: 'east',
+        inputFrom: blockPosition(0, 0, 0),
+        kind: 'comparator',
+        mode: 'subtract',
+        outputTo: blockPosition(2, 0, 0),
+        sideInputs: [blockPosition(1, 0, -1), blockPosition(1, 0, 1)],
+      })
+
+      const runtime = yield* RedstoneWorldRuntime
+      const stages = yield* makeRuntimeRedstoneStages
+      yield* runtime.syncSnapshot(snapshot)
+      yield* setRedstoneObservationEnabled(runtime, true)
+      const outputPower: Array<number | undefined> = []
+      for (let tick = 0; tick < 2; tick += 1) {
+        yield* runFrame(stages)
+        const observations = yield* redstoneTickObservationsFor(runtime)
+        outputPower.push(observations.at(-1)?.power.get(redstoneNodeId(dimensionId('overworld'), comparatorPosition)) ?? 0)
+      }
+      expect(outputPower).toStrictEqual([15, 0])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('inverts an encoded floor torch from power at its supporting block', () =>
+    Effect.gen(function* () {
+      const torchPosition = blockPosition(0, 0, 0)
+      const supportPosition = blockPosition(0, -1, 0)
+      const isRedstoneConductiveAt = (position: BlockPosition): boolean =>
+        position.x === supportPosition.x && position.y === supportPosition.y && position.z === supportPosition.z
+      const lookup: RedstoneHostLookup = {
+        isRedstoneConductiveAt,
+        isLeverActive: () => true,
+        isPoweredRailPowered: () => false,
+        readContainerSlots: () => undefined,
+        readHopperBlockId: () => HOPPER_BLOCK_ID,
+        readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
+        readPistonCell: () => ({ kind: 'empty' }),
+      }
+      const { realm } = recordingRealm(lookup)
+      const snapshot = successValue(redstoneSnapshotFromRealm(realm, [
+        blockWithState('redstone_torch', torchPosition.x, torchPosition.y, torchPosition.z, { lit: true }),
+        block('lever', 1, -1, 0, supportPosition),
+        block('redstone_wire', 0, 0, 1),
+      ]))
+      expect(snapshot.components.find(({ kind }) => kind === 'torch')).toMatchObject({
+        active: true,
+        invertedBy: supportPosition,
+        kind: 'torch',
+      })
+
+      const runtime = yield* RedstoneWorldRuntime
+      const stages = yield* makeRuntimeRedstoneStages
+      yield* runtime.syncSnapshot(snapshot, { isRedstoneConductiveAt })
+      yield* setRedstoneObservationEnabled(runtime, true)
+      const outputPower: Array<number> = []
+      for (let tick = 0; tick < 2; tick += 1) {
+        yield* runFrame(stages)
+        const observations = yield* redstoneTickObservationsFor(runtime)
+        outputPower.push(observations.at(-1)?.power.get(redstoneNodeId(dimensionId('overworld'), torchPosition)) ?? 0)
+      }
+      expect(outputPower).toStrictEqual([15, 0])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it.effect('keeps an encoded unlit floor torch off while its support is already powered', () =>
+    Effect.gen(function* () {
+      const torchPosition = blockPosition(0, 0, 0)
+      const supportPosition = blockPosition(0, -1, 0)
+      const isRedstoneConductiveAt = (position: BlockPosition): boolean =>
+        position.x === supportPosition.x && position.y === supportPosition.y && position.z === supportPosition.z
+      const lookup: RedstoneHostLookup = {
+        isRedstoneConductiveAt,
+        isLeverActive: () => true,
+        isPoweredRailPowered: () => false,
+        readContainerSlots: () => undefined,
+        readHopperBlockId: () => HOPPER_BLOCK_ID,
+        readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
+        readPistonCell: () => ({ kind: 'empty' }),
+      }
+      const { realm } = recordingRealm(lookup)
+      const poweredSupport = successValue(redstoneSnapshotFromRealm(realm, [
+        block('stone', supportPosition.x, supportPosition.y, supportPosition.z),
+        block('lever', 1, -1, 0, supportPosition),
+      ]))
+      const unlitTorch = successValue(redstoneSnapshotFromRealm(realm, [
+        block('stone', supportPosition.x, supportPosition.y, supportPosition.z),
+        blockWithState('redstone_torch', torchPosition.x, torchPosition.y, torchPosition.z, { lit: false }),
+        block('lever', 1, -1, 0, supportPosition),
+        block('redstone_wire', 0, 0, 1),
+      ]))
+      expect(unlitTorch.components.find(({ kind }) => kind === 'torch')).toMatchObject({
+        active: false,
+        invertedBy: supportPosition,
+        kind: 'torch',
+      })
+
+      const runtime = yield* RedstoneWorldRuntime
+      const stages = yield* makeRuntimeRedstoneStages
+      yield* runtime.syncSnapshot(poweredSupport, { isRedstoneConductiveAt })
+      yield* setRedstoneObservationEnabled(runtime, true)
+      yield* runFrame(stages)
+      yield* runtime.syncSnapshot(unlitTorch, { isRedstoneConductiveAt })
+      const outputPower: Array<number> = []
+      for (let tick = 0; tick < 2; tick += 1) {
+        yield* runFrame(stages)
+        const observations = yield* redstoneTickObservationsFor(runtime)
+        outputPower.push(observations.at(-1)?.power.get(redstoneNodeId(dimensionId('overworld'), torchPosition)) ?? 0)
+      }
+      expect(outputPower).toStrictEqual([0, 0])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
+  it('returns a typed failure when kernel state data cannot identify a sticky piston', () => {
+    const lookup: RedstoneHostLookup = {
+      isLeverActive: () => false,
+      isPoweredRailPowered: () => false,
+      readContainerSlots: () => undefined,
+      readHopperBlockId: () => HOPPER_BLOCK_ID,
+      readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
+      readPistonCell: () => ({ kind: 'empty' }),
+    }
+    const realm = { dimension: dimensionId('overworld'), lookup }
+    const rawBlocks = [block('sticky_piston')]
+
+    expect(redstoneSnapshotFromRealm(realm, rawBlocks)).toStrictEqual(Result.fail({
+      _tag: 'RedstoneHostUnsupportedBlockState',
+      block: 'sticky_piston',
+    }))
+  })
 })

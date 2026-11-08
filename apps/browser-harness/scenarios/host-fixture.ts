@@ -1,11 +1,11 @@
 import {
   BlockAddressSchema,
   BlockPositionSchema,
-  DeltaTimeSecs,
   DimensionIdSchema,
   EpochMillis,
   FixedClockLayer,
   MonotonicTimeSecs,
+  NonNegativeTickCount,
   SimulationTickSchema,
   CHUNK_SIZE_XZ,
   chunkCoordOfBlock,
@@ -14,8 +14,12 @@ import {
   WorldRevisionSchema,
   WorldWriteBatchSchema,
   blockIdOf,
+  defaultBlockState,
+  encodeBlockState,
+  isBlockType,
   type BlockAddress,
   type BlockPosition,
+  type BlockStateValues,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
 import { ChunkCapacity, makeChunkStore, type ChunkStoreError } from '@nerima-games/mc-worldgen'
@@ -38,6 +42,7 @@ import {
   makeContainerStorageService,
   makeHopperService,
   makeWorldCommitCoordinator,
+  runStagesForTicks,
   worldContainerIdAt,
   WorldCommitCoordinator,
   type WorldCommitCoordinatorError,
@@ -87,7 +92,7 @@ const HOPPER_BLOCK_ID = Option.getOrThrow(blockIdOf('hopper'))
 const ZERO_REVISION = 0
 const WORLD_REVISION = Schema.decodeUnknownSync(WorldRevisionSchema)(ZERO_REVISION)
 const DIMENSION_REVISION = Schema.decodeUnknownSync(DimensionRevisionSchema)(ZERO_REVISION)
-const FRAME_DELTA_SECS = 0.1
+const GAME_TICKS_PER_REDSTONE_TICK = 2
 
 export type HostFixtureResult = Readonly<{
   snapshot: RedstoneWorldSnapshot
@@ -111,13 +116,37 @@ const blockPosition = (position: HostFixtureInput['blocks'][number]['position'])
 const blockAddress = (dimension: RedstoneDimensionId, position: BlockPosition): BlockAddress =>
   Schema.decodeUnknownSync(BlockAddressSchema)({ dimension, position })
 
+const encodedStateFor = (block: RedstoneHostBlock['block'], state?: BlockStateValues): unknown => {
+  if (block === null || block === 'sticky_piston' || block === 'redstone_wall_torch' || !isBlockType(block)) {
+    return undefined
+  }
+  const blockId = Option.getOrUndefined(blockIdOf(block))
+  if (typeof blockId === 'undefined') {
+    return undefined
+  }
+  const defaults = defaultBlockState(blockId)
+  if (Result.isFailure(defaults)) {
+    return undefined
+  }
+  const encoded = encodeBlockState(blockId, { ...defaults.success, ...state })
+  if (Result.isFailure(encoded)) {
+    return undefined
+  }
+  return encoded.success
+}
+
 const rawBlocksFromInput = (
   input: HostFixtureInput,
   dimension = dimensionId(input.dimension),
-): ReadonlyArray<RedstoneHostBlock> => input.blocks.map(({ block, position }) => ({
+): ReadonlyArray<RedstoneHostBlock> => input.blocks.map(({ block, position, state, strongPowerTo }) => {
+  const decodedBlock = typeof block === 'string' ? Schema.decodeUnknownSync(RedstoneHostBlockTypeSchema)(block) : null
+  return {
     address: blockAddress(dimension, blockPosition(position)),
-    block: typeof block === 'string' ? Schema.decodeUnknownSync(RedstoneHostBlockTypeSchema)(block) : null,
-  }))
+    block: decodedBlock,
+    ...(decodedBlock === null ? {} : { encodedState: encodedStateFor(decodedBlock, state) }),
+    ...(typeof strongPowerTo === 'undefined' ? {} : { strongPowerTo: blockPosition(strongPowerTo) }),
+  }
+})
 
 const hostRequestsFromEvents = (events: RedstoneEventBatch): ReadonlyArray<HostFixtureRequest> => [
   ...events.lamp.map((event): HostFixtureRequest => ({
@@ -149,7 +178,14 @@ const hostRequestsFromEvents = (events: RedstoneEventBatch): ReadonlyArray<HostF
   })),
 ]
 
-const hostLookup = (input: HostFixtureInput): RedstoneHostLookup => ({
+type HostFixtureLookup = RedstoneHostLookup & Readonly<{
+  isRedstoneConductiveAt: NonNullable<RedstoneHostLookup['isRedstoneConductiveAt']>
+}>
+
+const hostLookup = (input: HostFixtureInput): HostFixtureLookup => ({
+  isRedstoneConductiveAt: (position) => input.lookups?.conductivePositions?.some((candidate) =>
+    samePosition(candidate, position)
+  ) ?? false,
   isLeverActive: () => input.lookups?.leverActive ?? true,
   isPoweredRailPowered: () => input.lookups?.poweredRailPowered ?? false,
   readContainerSlots: () => input.lookups?.containerSlots,
@@ -184,11 +220,18 @@ const hostLookup = (input: HostFixtureInput): RedstoneHostLookup => ({
       destinationFacing,
     }
   },
+  readObservedBlock: (position) => {
+    const candidate = input.blocks.find((entry) => samePosition(entry.position, position))
+    if (candidate === undefined || candidate.block === null) {
+      return undefined
+    }
+    const block = Schema.decodeUnknownSync(RedstoneHostBlockTypeSchema)(candidate.block)
+    return { block, encodedState: encodedStateFor(block, candidate.state) }
+  },
   readPistonCell: (position) => {
     const block = input.blocks.find(({ position: candidate }) => samePosition(candidate, position))?.block
     return typeof block === 'string' ? { block, kind: 'block' } : { kind: 'empty' }
   },
-  readPistonFacing: () => input.lookups?.pistonFacing ?? 'south',
 })
 
 const CHUNK_BIOME_COUNT = CHUNK_SIZE_XZ * CHUNK_SIZE_XZ
@@ -484,16 +527,14 @@ const runtimeWithCapturedFixtureEvents = (
   }
 }
 
-const runStages = (stages: ReadonlyArray<StageRegistration>): Effect.Effect<void> =>
-  Effect.gen(function* runStagesGenerator() {
-    const clock = FixedClockLayer({
-      monotonicSecs: MonotonicTimeSecs(0),
-      wallClockEpochMillis: EpochMillis(0),
-    })
-    for (const stage of stages) {
-      yield* stage.run(DeltaTimeSecs(FRAME_DELTA_SECS)).pipe(Effect.provide(clock))
-    }
+const runStages = (stages: ReadonlyArray<StageRegistration>): Effect.Effect<void, unknown> => {
+  const clock = FixedClockLayer({
+    monotonicSecs: MonotonicTimeSecs(0),
+    wallClockEpochMillis: EpochMillis(0),
   })
+  return runStagesForTicks(stages, NonNegativeTickCount(GAME_TICKS_PER_REDSTONE_TICK))
+    .pipe(Effect.provide(clock))
+}
 
 /** Builds the fixture with the production host builders and records the real apply path. */
 export const buildHostFixture = (
@@ -505,7 +546,8 @@ export const buildHostFixture = (
   const pistonRefusals: Array<PistonRefusalObservation> = []
   const hopperTransferResults: Array<HopperTransferOutcome> = []
   const dimension = dimensionId(input.dimension)
-  const realm: RedstoneHostRealm = { dimension, lookup: hostLookup(input) }
+  const lookup = hostLookup(input)
+  const realm: RedstoneHostRealm = { dimension, lookup }
   const rawBlocks = rawBlocksFromInput(input)
   const hostSnapshot = redstoneSnapshotFromRealm(realm, rawBlocks)
   if (Result.isFailure(hostSnapshot)) {
@@ -516,7 +558,7 @@ export const buildHostFixture = (
   const program = Effect.gen(function* buildHostFixtureGenerator() {
     const runtime = yield* RedstoneWorldRuntime
     const stages = yield* makeRuntimeRedstoneStages
-    yield* runtime.syncSnapshot(hostSnapshot.success)
+    yield* runtime.syncSnapshot(hostSnapshot.success, { isRedstoneConductiveAt: lookup.isRedstoneConductiveAt })
     yield* setRedstoneObservationEnabled(runtime, true)
     yield* runStages(stages)
     const services = yield* makeFixtureHopperServices(input, dimension)

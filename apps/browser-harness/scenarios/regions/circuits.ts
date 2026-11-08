@@ -16,7 +16,21 @@ const rawPosition = (x: number, y = 0, z = 0) => ({ x, y, z })
 const hostBlock = (
   block: HostFixtureInput['blocks'][number]['block'],
   blockPosition: HostFixtureInput['blocks'][number]['position'],
-): HostFixtureInput['blocks'][number] => ({ block, position: blockPosition })
+  state?: HostFixtureInput['blocks'][number]['state'],
+): HostFixtureInput['blocks'][number] => ({
+  block,
+  position: blockPosition,
+  ...(state === undefined ? {} : { state }),
+})
+
+const hostBlockPowering = (
+  block: HostFixtureInput['blocks'][number]['block'],
+  blockPosition: HostFixtureInput['blocks'][number]['position'],
+  strongPowerTo: NonNullable<HostFixtureInput['blocks'][number]['strongPowerTo']>,
+): HostFixtureInput['blocks'][number] => ({
+  ...hostBlock(block, blockPosition),
+  strongPowerTo,
+})
 
 const snapshot = (components: ReadonlyArray<RedstoneComponentSnapshot>): RedstoneWorldSnapshot => ({
   components,
@@ -44,14 +58,21 @@ export const circuitScenarios: ReadonlyArray<BrowserScenario> = [
   },
   {
     id: 'rs.torch.inversion-burnout',
-    displayName: 'Torch inversion and burnout timing',
+    displayName: 'Torch inversion from support-cell power',
     fixture: () => ({
-      path: 'fixture-only',
-      reason: 'The raw-host builder classifies torch blocks but cannot supply support-cell power or the invertedBy relation needed to demonstrate burnout timing.',
-      snapshot: snapshot([
-        { active: true, kind: 'lever', position: position(0) },
-        { invertedBy: position(0), kind: 'torch', position: position(1) },
-      ]),
+      expectedRequests: [{ kind: 'lamp', dimension: 'overworld', position: rawPosition(0, 0, 2) }],
+      input: {
+        blocks: [
+          hostBlock('stone', rawPosition(0, -1)),
+          hostBlock('redstone_torch', rawPosition(0), { lit: true }),
+          hostBlockPowering('lever', rawPosition(1, -1), rawPosition(0, -1)),
+          hostBlock('redstone_wire', rawPosition(0, 0, 1)),
+          hostBlock('redstone_lamp', rawPosition(0, 0, 2)),
+        ],
+        dimension: 'overworld',
+        lookups: { conductivePositions: [rawPosition(0, -1)], leverActive: true },
+      },
+      path: 'host',
     }),
   },
   {
@@ -85,23 +106,25 @@ export const circuitScenarios: ReadonlyArray<BrowserScenario> = [
   },
   {
     id: 'rs.repeater.delay-lock',
-    displayName: 'Repeater delay and side lock',
+    displayName: 'Repeater state, delay, and side lock',
     fixture: () => ({
-      path: 'fixture-only',
-      reason: 'There is no raw-host repeater builder or lookup for facing, delay, or side-lock input; this domain snapshot seeds a four-tick repeater with a powered side input.',
-      snapshot: snapshot([
-        { active: true, kind: 'lever', position: position(0, 0, 1) },
-        { active: true, kind: 'lever', position: position(1) },
-        {
-          delayTicks: NonNegativeTickCount(4),
-          inputFrom: position(0, 0, 1),
-          kind: 'repeater',
-          outputTo: position(0, 0, -1),
-          position: position(0),
-          sideInputs: [position(1)],
-        },
-        { kind: 'lamp', position: position(0, 0, -1) },
-      ]),
+      expectedRequests: [],
+      input: {
+        blocks: [
+          hostBlock('lever', rawPosition(0)),
+          hostBlock('repeater', rawPosition(1), { delay: 4, facing: 'east', locked: false, powered: false }),
+          hostBlock('redstone_wire', rawPosition(2)),
+          hostBlock('redstone_lamp', rawPosition(3)),
+          hostBlock('lever', rawPosition(0, 0, 4)),
+          hostBlock('repeater', rawPosition(1, 0, 4), { delay: 2, facing: 'east', locked: true, powered: false }),
+          hostBlock('redstone_wire', rawPosition(2, 0, 4)),
+          hostBlock('lever', rawPosition(1, 0, 5)),
+          hostBlock('redstone_lamp', rawPosition(3, 0, 4)),
+        ],
+        dimension: 'overworld',
+        lookups: { leverActive: true },
+      },
+      path: 'host',
     }),
   },
   {
@@ -124,19 +147,19 @@ export const circuitScenarios: ReadonlyArray<BrowserScenario> = [
   },
   {
     id: 'rs.comparator.ladder',
-    displayName: 'Comparator 0–15 input ladder',
+    displayName: 'Comparator facing and compare mode from block state',
     fixture: () => ({
-      path: 'fixture-only',
-      reason: 'The host comparator builder fixes compare mode and cannot express a 0–15 container-signal ladder across compare and subtract modes.',
-      snapshot: snapshot(Array.from({ length: 16 }, (_, signal) => ({
-        containerSignal: signal,
-        inputFrom: position(signal * 3, 0, 1),
-        kind: 'comparator',
-        mode: signal % 2 === 0 ? 'compare' : 'subtract',
-        outputTo: position(signal * 3, 0, -1),
-        position: position(signal * 3),
-        sideInputs: [],
-      }))),
+      expectedRequests: [{ kind: 'lamp', dimension: 'overworld', position: rawPosition(2) }],
+      input: {
+        blocks: [
+          hostBlock('chest', rawPosition(0)),
+          hostBlock('comparator', rawPosition(1), { facing: 'east', mode: 'compare', powered: false }),
+          hostBlock('redstone_lamp', rawPosition(2)),
+        ],
+        dimension: 'overworld',
+        lookups: { containerSlots: [{ count: 32, maxStack: 64 }], leverActive: true },
+      },
+      path: 'host',
     }),
   },
 ]

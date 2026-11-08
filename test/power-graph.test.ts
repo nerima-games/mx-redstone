@@ -28,6 +28,7 @@
  * These assertions are the pin.
  */
 import { describe, expect, it } from '@effect/vitest'
+import * as fc from 'fast-check'
 import { Effect } from 'effect'
 import {
   drivenPowerAt,
@@ -1121,6 +1122,32 @@ describe('comparators — the only component whose output is a NUMBER', () => {
       expect(powerAt(settled.power, 's3')).toBe(12)
       expect(powerAt(settled.power, 'comparator')).toBe(15 - 12)
       expect(powerAt(settled.power, 'out')).toBe(3)
+    }),
+  )
+
+  it.effect('subtract-mode output matches max(0, rear minus strongest side) for generated levels', () =>
+    Effect.sync(() => {
+      fc.assert(
+        fc.property(
+          fc.record({
+            rear: fc.integer({ min: 0, max: 15 }),
+            side: fc.integer({ min: 0, max: 15 }),
+          }),
+          ({ rear, side }) => {
+            const board = graph([
+              ['comparator', {
+                containerSignal: rear,
+                kind: 'comparator',
+                mode: 'subtract',
+                sideInputs: ['side'],
+              }],
+            ], [])
+            const previous = new Map([['side', side]])
+            const current = propagateTick(board, previous)
+            expect(powerAt(current, 'comparator')).toBe(Math.max(0, rear - side))
+          },
+        ),
+      )
     }),
   )
 

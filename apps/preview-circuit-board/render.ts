@@ -78,9 +78,8 @@ const glyphFor = (part: Part, level: number, lit: boolean): { readonly glyph: st
     return { glyph: part.subtract ? 'S' : 'C', color: powerColor(level) }
   }
   if (part.kind === 'observer') {
-    // Case follows the lever and the button: loud while it fires. A pulse two
-    // ticks long is exactly the thing a final-state test cannot see, so it has
-    // to be visible here.
+    // Case follows the lever and the button: loud while it fires. A one-redstone-
+    // tick pulse is exactly the thing a final-state test cannot see, so show it.
     return part.active
       ? { glyph: 'E', color: SOURCE }
       : { glyph: 'e', color: [90, 120, 100] }

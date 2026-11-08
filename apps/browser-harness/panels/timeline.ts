@@ -3,7 +3,7 @@ import type { RedstoneTickObservation } from '../../../src/application/world-run
 import { redstoneNodeId } from '../../../src/application/world-runtime.js'
 import type { PositionKey } from '../../../src/domain/position-key.js'
 
-const TITLE = 'Timeline and frame'
+const TITLE = 'Timeline and simulation ticks'
 const TAPE_WINDOW = 20
 
 type TextRow = {
@@ -116,11 +116,9 @@ export const timelinePanel: DebugPanel = {
     const heading = document.createElement('h2')
     heading.textContent = TITLE
     const tick = document.createElement('p')
-    tick.textContent = 'Redstone tick: awaiting frame.'
-    const accumulator = document.createElement('p')
-    accumulator.textContent = 'Frame tick accumulator: awaiting frame.'
+    tick.textContent = 'Redstone tick: awaiting simulation tick.'
     const stageMetrics = document.createElement('p')
-    stageMetrics.textContent = 'Frame stage metrics: awaiting frame.'
+    stageMetrics.textContent = 'Simulation tick stage metrics: awaiting tick.'
 
     const diffHeading = document.createElement('h3')
     diffHeading.textContent = 'One-tick power diff'
@@ -139,7 +137,7 @@ export const timelinePanel: DebugPanel = {
     tape.hidden = true
 
     const stageGaps = document.createElement('ul')
-    stageGaps.setAttribute('aria-label', 'Unavailable frame diagnostics')
+    stageGaps.setAttribute('aria-label', 'Unavailable simulation tick diagnostics')
     const stageGapLabels = [
       'Settle state and play speed: blocked because PanelFrame has no settle or speed fields.',
       'Convergence and oscillation period: blocked because PanelFrame has no cycle-analysis result.',
@@ -164,7 +162,6 @@ export const timelinePanel: DebugPanel = {
     container.append(
       heading,
       tick,
-      accumulator,
       stageMetrics,
       diffHeading,
       diffBlocked,
@@ -238,22 +235,13 @@ export const timelinePanel: DebugPanel = {
     const update = (frame: PanelFrame): void => {
       currentFrame = frame
       setText(tick, `Redstone tick: ${frame.tick}`)
-      const accumulatorSecs = frame.stage.tickAccumulatorSecs
-      const accumulatorText = typeof accumulatorSecs === 'number'
-        ? `${accumulatorSecs} seconds`
-        : `unavailable: ${accumulatorSecs.unavailable}`
-      setText(accumulator, `Frame tick accumulator: ${accumulatorText}`)
       const consumedTicks = frame.stage.consumedTicks
       const consumedTicksText = typeof consumedTicks === 'number'
         ? `${consumedTicks}`
         : `unavailable: ${consumedTicks.unavailable}`
-      const discardedTicks = frame.stage.discardedTicks
-      const discardedTicksText = typeof discardedTicks === 'number'
-        ? `${discardedTicks}`
-        : `unavailable: ${discardedTicks.unavailable}`
       setText(
         stageMetrics,
-        `Frame stage: consumed ticks ${consumedTicksText}; max ticks per frame ${frame.stage.maxTicksPerFrame}; tick duration ${frame.stage.tickDurationSecs} seconds; discarded ticks ${discardedTicksText}`,
+        `Simulation tick stage: consumed redstone ticks ${consumedTicksText}; game ticks per redstone tick ${frame.stage.gameTicksPerRedstoneTick}`,
       )
 
       const current = frame.history[frame.history.length - 1]

@@ -3,7 +3,7 @@ import { type Page, expect, test } from '@playwright/test'
 let consoleErrors: Array<string> = []
 let pageErrors: Array<string> = []
 const NO_CELLS = [].length
-const ONE_RELATION = ['inputFrom'].length
+const TWO_REPEATER_RELATIONS = 2
 
 const expectBlockedBoard = async (page: Page): Promise<void> => {
   await expect(page.getByText(/^BLOCKED:/)).toBeVisible()
@@ -22,22 +22,32 @@ const exerciseLayerControls = async (page: Page): Promise<void> => {
 }
 
 const expectRepeaterInspector = async (page: Page): Promise<void> => {
-  const repeater = page.locator('[data-testid="board-cell"][data-coordinate="0, 0, 0"]')
+  const repeater = page.locator('[data-testid="board-cell"][data-coordinate="1, 0, 0"]')
   await expect(repeater).toHaveAttribute('data-kind', 'repeater')
   await repeater.click()
   const inspector = page.getByRole('region', { name: 'Cell inspector' })
-  await expect(inspector).toContainText('repeater at 0, 0, 0')
-  await expect(inspector).toContainText('Facing: not recorded')
-  await expect(inspector).toContainText('inputFrom 0, 0, 1')
-  await expect(inspector).toContainText('sideInputs 1, 0, 0')
-  await expect(inspector).toContainText('outputTo 0, 0, -1')
+  await expect(inspector).toContainText('repeater at 1, 0, 0')
+  await expect(inspector).toContainText('inputFrom 0, 0, 0')
+  await expect(inspector).toContainText('outputTo 2, 0, 0')
 }
 
 const expectRepeaterRelations = async (page: Page): Promise<void> => {
-  await expect(page.locator('[data-relation="inputFrom"]')).toHaveCount(ONE_RELATION)
-  await expect(page.locator('[data-relation="sideInputs"]')).toHaveCount(ONE_RELATION)
-  await expect(page.locator('[data-relation="outputTo"]')).toHaveCount(ONE_RELATION)
+  await expect(page.locator('[data-relation="inputFrom"]')).toHaveCount(TWO_REPEATER_RELATIONS)
+  await expect(page.locator('[data-relation="outputTo"]')).toHaveCount(TWO_REPEATER_RELATIONS)
   await expect(page.locator('[data-relation="adjacency"]')).not.toHaveCount(NO_CELLS)
+}
+
+const expectRawHostRepeaterState = async (page: Page): Promise<void> => {
+  const host = page.getByRole('region', { name: 'Host boundary' })
+  const hostState = page.getByTestId('host-realm-state')
+  await Promise.all([
+    expect(host).toContainText('Host apply reached.'),
+    expect(page.getByTestId('host-requests')).toHaveText('[]'),
+    expect(hostState).toContainText('"facing":"east"'),
+    expect(hostState).toContainText('"delayTicks":4'),
+    expect(hostState).toContainText('"delayTicks":2'),
+    expect(hostState).toContainText('"locked":true'),
+  ])
 }
 
 test.beforeEach(async ({ page }) => {
@@ -76,11 +86,10 @@ test('blocked vertical fixture keeps observation cells unavailable while layer c
   await exerciseLayerControls(page)
 })
 
-// Catches dropped coordinates, facing fields, or read relations between the registry snapshot and the board inspector.
-test('fixture-only repeater board shows coordinates and observed relations', async ({ page }) => {
+// Catches a raw-host repeater fixture that loses its decoded direction, lock, delay, or read relations.
+test('raw-host repeater board shows facing-derived coordinates and observed relations', async ({ page }) => {
   await page.goto('/?scenario=rs.repeater.delay-lock')
-
-  await expect(page.getByText(/^MOCK:/)).toBeVisible()
+  await expectRawHostRepeaterState(page)
   await expectRepeaterInspector(page)
   await expectRepeaterRelations(page)
 })

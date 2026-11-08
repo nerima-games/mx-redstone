@@ -82,6 +82,8 @@
  */
 import { type ComparatorMode, comparatorOutput } from './comparator.js'
 import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level.js'
+import type { BlockRef } from './block-ref.js'
+import type { BlockStateFacing } from '@nerima-games/mc-kernel'
 import type { PositionKey } from './position-key.js'
 
 /**
@@ -152,12 +154,21 @@ export type Component = {
    * a plate (`domain/pressure-plate.ts`) — and none of those is visible from
    * inside the power graph.
    *
-   * A button is a PULSE in vanilla and a boolean here; nothing in this file
-   * counts one down, and neither does anything count down an observer's two
-   * ticks. That is deliberate and it is the caller's job — see the note above
-   * `sourcesOf`.
+   * A button is a PULSE in vanilla and a boolean here. `power-timing.ts`
+   * counts button and observer pulses down and installs the current `active`
+   * value before this graph propagates them.
    */
   readonly active?: boolean
+  /** Directional state decoded from the placed block. */
+  readonly facing?: BlockStateFacing
+  /** Repeaters: decoded lock state; when absent, side power is used. */
+  readonly locked?: boolean
+  /** Hoppers: decoded enabled state. */
+  readonly enabled?: boolean
+  /** Dispensers and droppers: decoded trigger state. */
+  readonly triggered?: boolean
+  /** Observers: current identity of the block in their watched cell. */
+  readonly observedBlock?: BlockRef
   /**
    * How strong this source is while `active`. Omitted means full power.
    *
@@ -422,29 +433,11 @@ const neighboursOf = (board: CircuitBoard, key: PositionKey): ReadonlyArray<Posi
  * ---------------------------------------------------------------------------
  *
  * In vanilla a stone button pops back out after 10 redstone ticks and a wooden
- * one after 15 — that pulse is what makes a button a button rather than a small
- * lever, and every monostable circuit depends on it. `active` is nevertheless a
- * plain boolean here and nothing below counts down, so a pressed button stays
- * pressed for as long as the board says it is pressed.
+ * one after 15. `active` is a plain boolean here; `power-timing.ts` holds the
+ * pulse duration and supplies its resolved value before propagation.
  *
- * That is a placement, not an oversight. Two reasons, in order of weight:
- *
- *   - A pulse is REMAINING TIME, and remaining time is state. This function is a
- *     pure function of (board, previous power map); the power map has no cell to
- *     put it in, and the board is an input, not something this file may rewrite
- *     ("There is NO world mutation" in the header). Counting it here means
- *     inventing a second state shape, exactly as repeater delay does.
- *   - The component records are assembled by whoever owns the world — the
- *     preview's grid today, mc-worldgen's chunks later — and `active` is that
- *     owner's statement about the world right now. A lever's `active` is cleared
- *     by the player; a button's is cleared by TIME, and the thing that knows
- *     redstone time is passing is `stages/registration.ts`, which converts a
- *     frame's dt into redstone ticks and already holds the board `Ref`. Release
- *     belongs there, next to the tick counter, not in the graph.
- *
- * So the graph's contract is narrow and honest: it reports what the board says.
- * `test/power-graph.test.ts` names the current behaviour so that implementing
- * release upstream shows up as a failing test rather than a silent change.
+ * Pulse duration and observer sampling live in `power-timing.ts`. It resolves
+ * each source's active state before this pure graph propagates power.
  */
 const torchShouldEmit = (component: Component, inputPower: PowerLevel): boolean =>
   inputPower === NO_POWER_LEVEL && component.active !== false
