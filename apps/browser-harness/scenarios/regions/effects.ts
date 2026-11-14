@@ -1,17 +1,10 @@
-import { DimensionIdSchema } from '@nerima-games/mc-kernel'
-import { Schema } from 'effect'
 import type {
   BrowserScenario,
   HostFixtureInput,
   HostFixtureRequest,
 } from '../../scenario-registry.js'
-import type { RedstoneWorldSnapshot } from '../../../../src/application/world-runtime.js'
 
 const dimensionName = 'overworld'
-const emptySnapshot: RedstoneWorldSnapshot = {
-  components: [],
-  dimension: Schema.decodeUnknownSync(DimensionIdSchema)(dimensionName),
-}
 
 const hostPosition = (
   x: number,
@@ -72,15 +65,17 @@ export const effectScenarios: ReadonlyArray<BrowserScenario> = [
     [],
     { leverActive: true },
   ),
-  {
-    id: 'rs.sticky-piston.retract-pull',
-    displayName: 'Sticky piston retract pull',
-    fixture: () => ({
-      path: 'blocked',
-      reason: 'The pinned kernel has no sticky_piston identity or facing state. The host adapter reports a typed unsupported-state failure.',
-      snapshot: emptySnapshot,
-    }),
-  },
+  hostScenario(
+    'rs.sticky-piston.retract-pull',
+    'Sticky piston retract pull',
+    [
+      hostBlock('lever', 0, 0, 0),
+      hostBlock('sticky_piston', 1, 0, 0, { extended: true, facing: 'east' }),
+      hostBlock('stone', 3, 0, 0),
+    ],
+    [{ kind: 'piston', dimension: dimensionName, position: hostPosition(1, 0, 0) }],
+    { leverActive: false },
+  ),
   hostScenario(
     'rs.hopper.lock-transfer',
     'Powered hopper lock blocks a transfer request',

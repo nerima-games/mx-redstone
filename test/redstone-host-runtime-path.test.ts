@@ -85,7 +85,18 @@ const successValue = <Value, Failure>(result: Result.Result<Value, Failure>): Va
 }
 
 const encodedStateFor = (name: RedstoneHostBlockType | null, state: unknown = {}): unknown => {
-  if (name === null || !isBlockType(name) || !['comparator', 'dispenser', 'dropper', 'hopper', 'observer', 'piston', 'redstone_torch', 'repeater'].includes(name)) {
+  if (name === null || !isBlockType(name) || ![
+    'comparator',
+    'dispenser',
+    'dropper',
+    'hopper',
+    'observer',
+    'piston',
+    'redstone_torch',
+    'redstone_wall_torch',
+    'repeater',
+    'sticky_piston',
+  ].includes(name)) {
     return undefined
   }
   const blockId = Option.getOrUndefined(blockIdOf(name))
@@ -747,6 +758,51 @@ describe('raw host block to host request', () => {
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
+  it.effect('inverts an encoded wall torch from power at the block opposite its facing', () =>
+    Effect.gen(function* () {
+      const torchPosition = blockPosition(0, 0, 0)
+      const supportPosition = blockPosition(-1, 0, 0)
+      const isRedstoneConductiveAt = (position: BlockPosition): boolean =>
+        position.x === supportPosition.x && position.y === supportPosition.y && position.z === supportPosition.z
+      const lookup: RedstoneHostLookup = {
+        isRedstoneConductiveAt,
+        isLeverActive: () => true,
+        isPoweredRailPowered: () => false,
+        readContainerSlots: () => undefined,
+        readHopperBlockId: () => HOPPER_BLOCK_ID,
+        readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
+        readPistonCell: () => ({ kind: 'empty' }),
+      }
+      const { realm } = recordingRealm(lookup)
+      const snapshot = successValue(redstoneSnapshotFromRealm(realm, [
+        block('stone', supportPosition.x, supportPosition.y, supportPosition.z),
+        blockWithState('redstone_wall_torch', torchPosition.x, torchPosition.y, torchPosition.z, {
+          facing: 'east',
+          lit: true,
+        }),
+        block('lever', -1, -1, 0, supportPosition),
+        block('redstone_wire', 0, 0, 1),
+      ]))
+      expect(snapshot.components.find(({ kind }) => kind === 'torch')).toMatchObject({
+        active: true,
+        invertedBy: supportPosition,
+        kind: 'torch',
+      })
+
+      const runtime = yield* RedstoneWorldRuntime
+      const stages = yield* makeRuntimeRedstoneStages
+      yield* runtime.syncSnapshot(snapshot, { isRedstoneConductiveAt })
+      yield* setRedstoneObservationEnabled(runtime, true)
+      const outputPower: Array<number> = []
+      for (let tick = 0; tick < 2; tick += 1) {
+        yield* runFrame(stages)
+        const observations = yield* redstoneTickObservationsFor(runtime)
+        outputPower.push(observations.at(-1)?.power.get(redstoneNodeId(dimensionId('overworld'), torchPosition)) ?? 0)
+      }
+      expect(outputPower).toStrictEqual([15, 0])
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
   it.effect('keeps an encoded unlit floor torch off while its support is already powered', () =>
     Effect.gen(function* () {
       const torchPosition = blockPosition(0, 0, 0)
@@ -795,7 +851,7 @@ describe('raw host block to host request', () => {
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
-  it('returns a typed failure when kernel state data cannot identify a sticky piston', () => {
+  it('decodes an encoded sticky piston into the runtime component snapshot', () => {
     const lookup: RedstoneHostLookup = {
       isLeverActive: () => false,
       isPoweredRailPowered: () => false,
@@ -805,11 +861,19 @@ describe('raw host block to host request', () => {
       readPistonCell: () => ({ kind: 'empty' }),
     }
     const realm = { dimension: dimensionId('overworld'), lookup }
-    const rawBlocks = [block('sticky_piston')]
+    const rawBlocks = [blockWithState('sticky_piston', 1, 0, 0, { extended: true, facing: 'east' })]
 
-    expect(redstoneSnapshotFromRealm(realm, rawBlocks)).toStrictEqual(Result.fail({
-      _tag: 'RedstoneHostUnsupportedBlockState',
-      block: 'sticky_piston',
-    }))
+    expect(redstoneSnapshotFromRealm(realm, rawBlocks)).toMatchObject({
+      _tag: 'Success',
+      success: {
+        components: [{
+          kind: 'piston',
+          pistonFacing: 'east',
+          pistonKind: 'sticky',
+          pistonState: 'extended',
+          position: blockPosition(1, 0, 0),
+        }],
+      },
+    })
   })
 })

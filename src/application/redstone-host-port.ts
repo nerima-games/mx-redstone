@@ -169,9 +169,9 @@ export const kernelPistonCapabilities: BlockCapabilityLookup = {
 }
 
 /** One decoded host block address and the block occupying it. */
-const REDSTONE_HOST_BLOCK_TYPES = [...BLOCK_TYPES, 'note_block', 'redstone_wall_torch', 'sticky_piston', 'trapdoor'] as const
+const REDSTONE_HOST_BLOCK_TYPES = [...BLOCK_TYPES, 'note_block', 'trapdoor'] as const
 
-export type RedstoneHostBlockType = BlockType | 'note_block' | 'redstone_wall_torch' | 'sticky_piston' | 'trapdoor'
+export type RedstoneHostBlockType = BlockType | 'note_block' | 'trapdoor'
 export const RedstoneHostBlockTypeSchema: Schema.Codec<RedstoneHostBlockType, RedstoneHostBlockType> =
   schemaLiterals(REDSTONE_HOST_BLOCK_TYPES)
 
@@ -182,7 +182,9 @@ type BlockStateRequiredFields = Readonly<{
   hopper: readonly ['facing', 'enabled']
   observer: readonly ['facing', 'powered']
   piston: readonly ['facing', 'extended']
+  sticky_piston: readonly ['facing', 'extended']
   redstone_torch: readonly ['lit']
+  redstone_wall_torch: readonly ['facing', 'lit']
   repeater: readonly ['facing', 'delay', 'locked', 'powered']
 }>
 
@@ -191,7 +193,7 @@ type HorizontalFacing = Extract<BlockStateFacing, 'north' | 'east' | 'south' | '
 type RequiredBlockState = {
   readonly [Block in StatefulHostBlockType]: Required<
     Pick<BlockStateValues, BlockStateRequiredFields[Block][number]>
-  > & (Block extends 'comparator' | 'repeater' ? Readonly<{ facing: HorizontalFacing }> : unknown)
+  > & (Block extends 'comparator' | 'repeater' | 'redstone_wall_torch' ? Readonly<{ facing: HorizontalFacing }> : unknown)
 }
 const horizontalFacingSchema = schemaLiterals(['east', 'north', 'south', 'west'] as const)
 const comparatorModeSchema = schemaLiterals(['compare', 'subtract'] as const)
@@ -213,6 +215,8 @@ const pistonBlockStateSchema: Schema.Codec<RequiredBlockState['piston'], BlockSt
   structSchema({ extended: Schema.Boolean, facing: BlockStateFacingSchema })
 const torchBlockStateSchema: Schema.Codec<RequiredBlockState['redstone_torch'], BlockStateValues> =
   structSchema({ lit: Schema.Boolean })
+const wallTorchBlockStateSchema: Schema.Codec<RequiredBlockState['redstone_wall_torch'], BlockStateValues> =
+  structSchema({ facing: horizontalFacingSchema, lit: Schema.Boolean })
 const repeaterBlockStateSchema: Schema.Codec<RequiredBlockState['repeater'], BlockStateValues> = structSchema({
   delay: repeaterDelaySchema,
   facing: horizontalFacingSchema,
@@ -304,7 +308,6 @@ export type RedstoneHostBlockStateFailure =
   | BlockStateCodecFailure
   | Readonly<{ _tag: 'RedstoneHostEncodedBlockStateMissing'; block: StatefulHostBlockType }>
   | Readonly<{ _tag: 'RedstoneHostBlockStateSchemaFailure'; block: StatefulHostBlockType }>
-  | Readonly<{ _tag: 'RedstoneHostUnsupportedBlockState'; block: 'redstone_wall_torch' | 'sticky_piston' }>
   | Readonly<{ _tag: 'RedstoneHostObservedBlockUnavailable'; position: BlockPosition }>
 
 export type RedstoneHostHopperFailure =
@@ -477,19 +480,16 @@ const pistonStateFor = (extended: boolean): 'extended' | 'retracted' => {
   return 'retracted'
 }
 
-const pistonComponent: ComponentBuilder = (input) =>
-  Result.map(decodeRequiredBlockState('piston', input.encodedState, pistonBlockStateSchema), (state) => ({
-      kind: 'piston',
-      pistonFacing: state.facing,
-      pistonKind: 'normal',
-      pistonState: pistonStateFor(state.extended),
-      position: input.position,
-    }))
+const pistonComponentFor = (block: 'piston' | 'sticky_piston'): ComponentBuilder => (input) =>
+  Result.map(decodeRequiredBlockState(block, input.encodedState, pistonBlockStateSchema), (state) => ({
+    kind: 'piston',
+    pistonFacing: state.facing,
+    pistonKind: block === 'sticky_piston' ? 'sticky' : 'normal',
+    pistonState: pistonStateFor(state.extended),
+    position: input.position,
+  }))
 
 const observedBlockId = (block: RedstoneHostBlockType): Result.Result<BlockId, RedstoneHostBlockStateFailure> => {
-  if (block === 'sticky_piston' || block === 'redstone_wall_torch') {
-    return Result.fail({ _tag: 'RedstoneHostUnsupportedBlockState', block })
-  }
   if (!isBlockType(block)) {
     return Result.fail({ _tag: 'BlockStateCodecFailure', reason: 'unknown-block-id' })
   }
@@ -556,14 +556,24 @@ const dispenserComponent = (kind: 'dispenser' | 'dropper'): ComponentBuilder => 
     triggered: state.triggered,
   }))
 
-const torchComponent: ComponentBuilder = (input) =>
+const torchComponentFor = (block: 'redstone_torch' | 'redstone_wall_torch'): ComponentBuilder => (input) =>
   Result.gen(function* torchComponentGenerator() {
-    const state = yield* decodeRequiredBlockState('redstone_torch', input.encodedState, torchBlockStateSchema)
-    const invertedBy = yield* blockPositionAt(
-      input.position.x,
-      input.position.y + TORCH_SUPPORT_Y_OFFSET,
-      input.position.z,
-    )
+    if (block === 'redstone_torch') {
+      const state = yield* decodeRequiredBlockState(block, input.encodedState, torchBlockStateSchema)
+      const invertedBy = yield* blockPositionAt(
+        input.position.x,
+        input.position.y + TORCH_SUPPORT_Y_OFFSET,
+        input.position.z,
+      )
+      return {
+        active: state.lit,
+        invertedBy,
+        kind: 'torch',
+        position: input.position,
+      }
+    }
+    const state = yield* decodeRequiredBlockState(block, input.encodedState, wallTorchBlockStateSchema)
+    const invertedBy = yield* safePistonPositionAt(input.position, oppositeFacing[state.facing], PISTON_HEAD_DISTANCE)
     return {
       active: state.lit,
       invertedBy,
@@ -648,11 +658,13 @@ const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, Compone
   lever: leverComponent,
   note_block: fixedKindComponent('note-block'),
   observer: observerComponent,
-  piston: pistonComponent,
+  piston: pistonComponentFor('piston'),
+  sticky_piston: pistonComponentFor('sticky_piston'),
   powered_rail: poweredRailComponent,
   redstone_lamp: fixedKindComponent('lamp'),
   redstone_lamp_lit: fixedKindComponent('lamp'),
-  redstone_torch: torchComponent,
+  redstone_torch: torchComponentFor('redstone_torch'),
+  redstone_wall_torch: torchComponentFor('redstone_wall_torch'),
   redstone_wire: fixedKindComponent('wire'),
   repeater: repeaterComponent,
   stone_button: buttonComponent,
@@ -691,9 +703,6 @@ export const componentForBlock = (
 ): Result.Result<RedstoneComponentSnapshot | undefined, RedstoneHostComponentFailure> => {
   if (block === null) {
     return Result.succeed(NO_COMPONENT)
-  }
-  if (block === 'sticky_piston' || block === 'redstone_wall_torch') {
-    return Result.fail({ _tag: 'RedstoneHostUnsupportedBlockState', block })
   }
   const builder = COMPONENT_BUILDERS[block]
   if (!builder) {

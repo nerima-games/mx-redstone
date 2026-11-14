@@ -117,7 +117,7 @@ const blockAddress = (dimension: RedstoneDimensionId, position: BlockPosition): 
   Schema.decodeUnknownSync(BlockAddressSchema)({ dimension, position })
 
 const encodedStateFor = (block: RedstoneHostBlock['block'], state?: BlockStateValues): unknown => {
-  if (block === null || block === 'sticky_piston' || block === 'redstone_wall_torch' || !isBlockType(block)) {
+  if (block === null || !isBlockType(block)) {
     return undefined
   }
   const blockId = Option.getOrUndefined(blockIdOf(block))

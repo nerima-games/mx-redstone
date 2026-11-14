@@ -14,6 +14,8 @@ import {
   BlockAddressSchema,
   blockIdOf,
   BlockPositionSchema,
+  chunkCoordOfBlock,
+  CHUNK_SIZE_XZ,
   DeltaTimeSecs,
   DimensionIdSchema,
   DimensionRevisionSchema,
@@ -43,8 +45,13 @@ import {
   type WorldCommitPlanSnapshot,
   type WorldCommitRequest,
   makeTickService,
+  makeWorldCommitCoordinator,
+  containerStorageOwnerRegistration,
+  hopperOwnerRegistration,
   runStagesForTicks,
 } from '@nerima-games/mc-sim'
+import { ChunkCapacity, makeChunkStore } from '@nerima-games/mc-worldgen'
+import { emptyBlocks } from '@nerima-games/mc-worldgen/testing'
 import {
   applyRedstoneHostEvents,
   applyRedstoneHostEventsObserved,
@@ -77,7 +84,10 @@ import { ContainerSlotSchema } from '../src/domain/comparator'
 type RedstoneDimensionId = BlockAddress['dimension']
 
 const testWorldId = Schema.decodeUnknownSync(WorldIdSchema)('redstone-host-test-world')
+const CHUNK_BIOME_COUNT = CHUNK_SIZE_XZ * CHUNK_SIZE_XZ
 const HOPPER_BLOCK_ID = Option.getOrThrow(blockIdOf('hopper'))
+const PISTON_BLOCK_ID = Option.getOrThrow(blockIdOf('piston'))
+const STICKY_PISTON_BLOCK_ID = Option.getOrThrow(blockIdOf('sticky_piston'))
 const STONE_BLOCK_ID = Option.getOrThrow(blockIdOf('stone'))
 
 const dimensionId = (value: string): RedstoneDimensionId =>
@@ -87,7 +97,7 @@ const blockPosition = (x: number, y = 0, z = 0): BlockPosition =>
   Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
 
 const encodedStateFor = (name: RedstoneHostBlockType | null, values: unknown = {}): unknown => {
-  if (name === null || name === 'sticky_piston' || name === 'redstone_wall_torch' || !isBlockType(name)) {
+  if (name === null || !isBlockType(name)) {
     return undefined
   }
   const blockId = Option.getOrUndefined(blockIdOf(name))
@@ -607,15 +617,28 @@ describe('componentForBlock', () => {
     }),
   )
 
-  it.effect('returns explicit typed failures for unsupported sticky pistons and wall torches', () =>
+  it.effect('decodes sticky pistons and wall torch support from the schema-backed state', () =>
     Effect.sync(() => {
       const position = blockPosition(0, 0, 0)
+      expect(componentWithState(missingLookup, 'sticky_piston', position, { extended: true, facing: 'down' })).toStrictEqual({
+        kind: 'piston',
+        pistonFacing: 'down',
+        pistonKind: 'sticky',
+        pistonState: 'extended',
+        position,
+      })
+      expect(componentWithState(missingLookup, 'redstone_wall_torch', position, { facing: 'east', lit: true })).toStrictEqual({
+        active: true,
+        invertedBy: blockPosition(-1, 0, 0),
+        kind: 'torch',
+        position,
+      })
       expect(componentForBlock(missingLookup, 'sticky_piston', position)).toStrictEqual(Result.fail({
-        _tag: 'RedstoneHostUnsupportedBlockState',
+        _tag: 'RedstoneHostEncodedBlockStateMissing',
         block: 'sticky_piston',
       }))
       expect(componentForBlock(missingLookup, 'redstone_wall_torch', position)).toStrictEqual(Result.fail({
-        _tag: 'RedstoneHostUnsupportedBlockState',
+        _tag: 'RedstoneHostEncodedBlockStateMissing',
         block: 'redstone_wall_torch',
       }))
     }),
@@ -666,10 +689,9 @@ describe('componentForBlock', () => {
         readObservedBlock: () => ({ block: watchedBlockType, encodedState }),
       }, 'observer', observerInput)
 
-      expect(observerWithWatchedBlock('sticky_piston', 0)).toStrictEqual(Result.fail({
-        _tag: 'RedstoneHostUnsupportedBlockState',
-        block: 'sticky_piston',
-      }))
+      const stickyPistonResult = observerWithWatchedBlock('sticky_piston', 0)
+      expect(Result.isSuccess(stickyPistonResult)).toBe(true)
+      expect(stickyPistonResult).toMatchObject({ success: { observedBlock: 'sticky_piston:0' } })
       expect(observerWithWatchedBlock('note_block', 0)).toStrictEqual(Result.fail({
         _tag: 'BlockStateCodecFailure',
         reason: 'unknown-block-id',
@@ -681,7 +703,7 @@ describe('componentForBlock', () => {
     }),
   )
 
-  it.effect('decodes hopper, dispenser, dropper, and torch state instead of fixed component defaults', () =>
+  it.effect('decodes hopper, dispenser, dropper, floor torch, and wall torch state', () =>
     Effect.sync(() => {
       const position = blockPosition(4, 5, 6)
       expect(componentWithState(missingLookup, 'hopper', position, { enabled: false, facing: 'west' })).toStrictEqual({
@@ -705,6 +727,12 @@ describe('componentForBlock', () => {
       expect(componentWithState(missingLookup, 'redstone_torch', position, { lit: false })).toStrictEqual({
         active: false,
         invertedBy: blockPosition(4, 4, 6),
+        kind: 'torch',
+        position,
+      })
+      expect(componentWithState(missingLookup, 'redstone_wall_torch', position, { facing: 'north', lit: false })).toStrictEqual({
+        active: false,
+        invertedBy: blockPosition(4, 5, 7),
         kind: 'torch',
         position,
       })
@@ -735,6 +763,179 @@ describe('componentForBlock', () => {
         powered: false,
       })
     }),
+  )
+
+  it.effect('keeps arbitrary sticky piston and wall torch states typed or schema-decoded', () =>
+    Effect.sync(() => {
+      const position = blockPosition(0, 0, 0)
+      fc.assert(fc.property(
+        fc.constantFrom('sticky_piston', 'redstone_wall_torch'),
+        fc.anything({ maxDepth: 3 }),
+        (blockType, encodedState) => {
+          const result = componentForBlock(missingLookup, blockType, { position, encodedState })
+          if (Result.isFailure(result)) {
+            expect(result.failure).toHaveProperty('_tag')
+            return
+          }
+          const component = result.success
+          if (blockType === 'sticky_piston') {
+            if (component?.kind !== 'piston') {
+              throw new Error('A decoded sticky piston must produce a piston component')
+            }
+            expect(component).toMatchObject({
+              kind: 'piston',
+              pistonKind: 'sticky',
+              position,
+            })
+            expect(['down', 'east', 'north', 'south', 'up', 'west']).toContain(component.pistonFacing)
+            expect(['extended', 'retracted']).toContain(component.pistonState)
+            return
+          }
+          if (component?.kind !== 'torch') {
+            throw new Error('A decoded wall torch must produce a torch component')
+          }
+          expect(component).toMatchObject({ kind: 'torch', position })
+          expect(typeof component.active).toBe('boolean')
+          expect([
+            blockPosition(1, 0, 0),
+            blockPosition(-1, 0, 0),
+            blockPosition(0, 0, 1),
+            blockPosition(0, 0, -1),
+          ]).toContainEqual(component.invertedBy)
+        },
+      ))
+    }),
+  )
+
+  it.effect('commits piston state through mc-sim block edits and preserves kernel defaults and typed invalid-state failures', () =>
+    Effect.gen(function* () {
+      const dimension = dimensionId('overworld')
+      const chunkStore = yield* makeChunkStore(
+        (coord) => Effect.succeed({
+          biomes: Array.from({ length: CHUNK_BIOME_COUNT }, () => 'PLAINS' as const),
+          blocks: emptyBlocks(),
+          coord,
+        }),
+        ChunkCapacity(1),
+      )
+      const pistonPosition = blockPosition(1, 0, 1)
+      const defaultPosition = blockPosition(2, 0, 1)
+      yield* chunkStore.load(chunkCoordOfBlock(pistonPosition))
+      const coordinator = yield* makeWorldCommitCoordinator({
+        chunkStores: { forDimension: () => chunkStore },
+        dimensions: [dimension],
+        owners: [containerStorageOwnerRegistration(), hopperOwnerRegistration()],
+        world: testWorldId,
+      })
+      const expectedRevision = yield* coordinator.revision
+      const expectedDimensionRevision = yield* coordinator.dimensionRevision(dimension)
+      const lookup: RedstoneHostLookup = {
+        ...missingLookup,
+        readPistonCell: (position) => position.x === pistonPosition.x + 2
+          ? { block: 'stone', kind: 'block' }
+          : { kind: 'empty' },
+      }
+      const { realm, port: basePort } = recordingRealm(dimension, lookup)
+      let writtenPistonPlans: ReadonlyArray<PistonMovementPlan> = []
+      let writtenState: unknown
+      const port: RedstoneHostWritePort<string> = {
+        ...basePort,
+        buildCommitRequest: (_events, pistonPlans) => {
+          const plan = pistonPlans[0]
+          if (plan === undefined) {
+            return Result.fail('Expected a piston movement plan')
+          }
+          writtenPistonPlans = pistonPlans
+          const blockWrite = Schema.decodeUnknownSync(WorldWriteBatchSchema)({
+            dimension,
+            edits: [{
+              block: plan.kind === 'sticky' ? STICKY_PISTON_BLOCK_ID : PISTON_BLOCK_ID,
+              position: plan.piston,
+              state: { extended: plan.toState === 'extended', facing: plan.facing },
+            }],
+            expectedDimensionRevision,
+            expectedWorldRevision: expectedRevision,
+            world: testWorldId,
+          })
+          writtenState = blockWrite.edits[0]?.state
+          return Result.succeed({
+            blockWrite,
+            changes: [],
+            expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
+            expectedRevision,
+          })
+        },
+        coordinator,
+      }
+      const runtime = yield* RedstoneWorldRuntime
+      yield* runtime.restoreEvents(emptyEvents({ piston: [{
+        dimension,
+        facing: 'east',
+        kind: 'sticky',
+        piston: pistonPosition,
+        powered: false,
+        state: 'extended',
+      }] }))
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+
+      expect(writtenPistonPlans).toMatchObject([{
+        facing: 'east',
+        fromState: 'extended',
+        kind: 'sticky',
+        moves: [{ from: blockPosition(3, 0, 1), to: defaultPosition }],
+        piston: pistonPosition,
+        toState: 'retracted',
+      }])
+      expect(writtenState).toStrictEqual({ extended: false, facing: 'east' })
+      expect(yield* chunkStore.getBlockWithState(pistonPosition)).toMatchObject({
+        _tag: 'Block',
+        block: STICKY_PISTON_BLOCK_ID,
+        state: { extended: false, facing: 'east' },
+      })
+
+      const commitBlockWrite = (edits: unknown) => Effect.gen(function* () {
+        const revision = yield* coordinator.revision
+        const dimensionRevision = yield* coordinator.dimensionRevision(dimension)
+        const blockWrite = Schema.decodeUnknownSync(WorldWriteBatchSchema)({
+          dimension,
+          edits,
+          expectedDimensionRevision: dimensionRevision,
+          expectedWorldRevision: revision,
+          world: testWorldId,
+        })
+        return yield* coordinator.commit({
+          blockWrite,
+          changes: [],
+          expectedDimensions: [{ dimension, expectedRevision: dimensionRevision }],
+          expectedRevision: revision,
+        })
+      })
+      yield* commitBlockWrite([{ block: PISTON_BLOCK_ID, position: defaultPosition }])
+      expect(yield* chunkStore.getBlockWithState(defaultPosition)).toMatchObject({
+        _tag: 'Block',
+        block: PISTON_BLOCK_ID,
+        state: { extended: false, facing: 'north' },
+      })
+
+      const invalidStateWrite = yield* Effect.result(commitBlockWrite([{
+        block: PISTON_BLOCK_ID,
+        position: defaultPosition,
+        state: { lit: true },
+      }]))
+      expect(invalidStateWrite).toMatchObject({
+        _tag: 'Failure',
+        failure: {
+          _tag: 'WorldWriteInvalidBatch',
+          position: defaultPosition,
+          reason: 'invalid-block-state',
+        },
+      })
+      expect(yield* chunkStore.getBlockWithState(defaultPosition)).toMatchObject({
+        _tag: 'Block',
+        block: PISTON_BLOCK_ID,
+        state: { extended: false, facing: 'north' },
+      })
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
   it.effect('arbitrary encoded repeater values return a typed failure or a complete component without throwing', () =>
@@ -834,6 +1035,8 @@ describe('invariant: component snapshots only include blocks with redstone behav
     'door_open',
     'trapdoor',
     'piston',
+    'sticky_piston',
+    'redstone_wall_torch',
   ]
   const NON_COMPONENT_BLOCKS: ReadonlyArray<RedstoneHostBlockType | null> = ['stone', 'dirt', 'air', 'chest', null]
   const ALL_BLOCKS: ReadonlyArray<RedstoneHostBlockType | null> = [...KNOWN_BLOCKS, ...NON_COMPONENT_BLOCKS]
