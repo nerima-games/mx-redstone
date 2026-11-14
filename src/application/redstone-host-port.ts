@@ -480,11 +480,18 @@ const pistonStateFor = (extended: boolean): 'extended' | 'retracted' => {
   return 'retracted'
 }
 
+const pistonKindFor = (block: 'piston' | 'sticky_piston'): 'normal' | 'sticky' => {
+  if (block === 'sticky_piston') {
+    return 'sticky'
+  }
+  return 'normal'
+}
+
 const pistonComponentFor = (block: 'piston' | 'sticky_piston'): ComponentBuilder => (input) =>
   Result.map(decodeRequiredBlockState(block, input.encodedState, pistonBlockStateSchema), (state) => ({
     kind: 'piston',
     pistonFacing: state.facing,
-    pistonKind: block === 'sticky_piston' ? 'sticky' : 'normal',
+    pistonKind: pistonKindFor(block),
     pistonState: pistonStateFor(state.extended),
     position: input.position,
   }))
@@ -659,7 +666,6 @@ const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, Compone
   note_block: fixedKindComponent('note-block'),
   observer: observerComponent,
   piston: pistonComponentFor('piston'),
-  sticky_piston: pistonComponentFor('sticky_piston'),
   powered_rail: poweredRailComponent,
   redstone_lamp: fixedKindComponent('lamp'),
   redstone_lamp_lit: fixedKindComponent('lamp'),
@@ -667,6 +673,7 @@ const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, Compone
   redstone_wall_torch: torchComponentFor('redstone_wall_torch'),
   redstone_wire: fixedKindComponent('wire'),
   repeater: repeaterComponent,
+  sticky_piston: pistonComponentFor('sticky_piston'),
   stone_button: buttonComponent,
   trapdoor: fixedKindComponent('trapdoor'),
 }

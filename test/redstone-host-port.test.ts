@@ -837,7 +837,7 @@ describe('componentForBlock', () => {
       }
       const { realm, port: basePort } = recordingRealm(dimension, lookup)
       let writtenPistonPlans: ReadonlyArray<PistonMovementPlan> = []
-      let writtenState: unknown
+      let writtenState: unknown = undefined
       const port: RedstoneHostWritePort<string> = {
         ...basePort,
         buildCommitRequest: (_events, pistonPlans) => {
