@@ -51,4 +51,17 @@ Invariant checker は source provenance を完全には復元できません。r
 
 solid-block conduction を mc-compose の実 world で使うには、mc-compose が `isRedstoneConductiveAt` を `syncSnapshot` に渡し、適用対象の source component に `strongPowerTo` を設定する必要があります。この mc-compose 側の接続作業は今回の mx-redstone 実装範囲外です。
 
-The host adapter decodes supported stateful blocks with mc-kernel schemas: comparator (`facing`, `mode`, `powered`), dispenser and dropper (`facing`, `triggered`), hopper (`facing`, `enabled`), observer (`facing`, `powered`), piston and sticky piston (`facing`, `extended`), floor redstone torch (`lit`), wall redstone torch (`facing`, `lit`), and repeater (`facing`, `delay`, `locked`, `powered`). Kernel 0.17.0 defines `sticky_piston` and `redstone_wall_torch`; sticky pistons use the existing sticky piston planner, and a wall torch uses the block opposite its `facing` state as support. Missing or invalid state still returns a typed failure. Button input and observed block identity arrive through host lookups. Pressure-plate occupancy and target hit coordinates are not available in the current host contract, so those scenarios remain deterministic snapshot fixtures.
+host adapter は mc-kernel の decoder と block 別 schema で、次の状態を読み取ります。
+
+| ブロック | 読み取る状態 |
+| --- | --- |
+| `comparator` | `facing`、`mode`、`powered` |
+| `dispenser`、`dropper` | `facing`、`triggered` |
+| `hopper` | `facing`、`enabled` |
+| `observer` | `facing`、`powered` |
+| `piston`、`sticky_piston` | `facing`、`extended` |
+| `redstone_torch` | `lit` |
+| `redstone_wall_torch` | `facing`、`lit` |
+| `repeater` | `facing`、`delay`、`locked`、`powered` |
+
+mc-kernel 0.17.0 では `sticky_piston` と `redstone_wall_torch` の block type と状態が定義されています。sticky piston は既存の planner に渡し、wall torch の support cell は `facing` の反対側です。状態不足は `RedstoneHostEncodedBlockStateMissing`、schema 不一致は `RedstoneHostBlockStateSchemaFailure` で区別されます。ボタンの入力状態と observer が監視する block ID は host lookup から受け取ります。現在の host contract は pressure plate の占有数と target hit の座標を渡さないため、これらの scenario は決定的な snapshot fixture のままです。
