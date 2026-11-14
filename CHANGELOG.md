@@ -1,5 +1,11 @@
 # @nerima-games/mx-redstone
 
+## 0.7.0
+
+### Minor Changes
+
+- [#55](https://github.com/nerima-games/mx-redstone/pull/55) [`0879699`](https://github.com/nerima-games/mx-redstone/commit/0879699b265201d2f9c7a8cdfcea8795789a8b2e) Thanks [@takeokunn](https://github.com/takeokunn)! - Read redstone component facing, delay, mode, and powered state from encoded block state, and advance the runtime on simulation ticks.
+
 ## 0.6.1
 
 ### Patch Changes
