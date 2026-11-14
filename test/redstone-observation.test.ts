@@ -1,13 +1,13 @@
 import { describe, expect, it } from '@effect/vitest'
 import {
   BlockPositionSchema,
-  DeltaTimeSecs,
   DimensionIdSchema,
   NonNegativeTickCount,
   type BlockPosition,
   type FrameServices,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
+import { runStagesForTicks, type RunStagesForTicksFailure } from '@nerima-games/mc-sim'
 import { Effect, Ref, Schema } from 'effect'
 import {
   RedstoneWorldRuntime,
@@ -34,12 +34,16 @@ type RuntimeError =
   | RedstoneWorldRuntimeStateError
   | RedstoneWorldSnapshotDuplicatePositionError
   | Schema.SchemaError
+  | RunStagesForTicksFailure
 
 const dimensionId = (value: string): DimensionId =>
   Schema.decodeUnknownSync(DimensionIdSchema)(value)
 
 const blockPosition = (x: number, y = 0, z = 0): BlockPosition =>
   Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
+
+const ZERO_TICK = 0
+const ONE_TICK = 1
 
 const component = (
   x: number,
@@ -74,7 +78,7 @@ const stageById = (
 const runPowerTick = (
   stages: ReadonlyArray<StageRegistration>,
 ): Effect.Effect<void, RuntimeError, FrameServices> =>
-  stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.1))
+  runStagesForTicks([stageById(stages, REDSTONE_STAGE_IDS.power)], NonNegativeTickCount(2))
 
 const runtimeProgram = <A>(
   use: (
@@ -107,7 +111,6 @@ const runtimeStateValues = (state: RedstoneWorldState) =>
     pendingPoweredComponentTransitions: Ref.get(state.pendingPoweredComponentTransitions),
     pendingTriggerEvents: Ref.get(state.pendingTriggerEvents),
     power: Ref.get(state.power),
-    tickAccumulatorSecs: Ref.get(state.tickAccumulatorSecs),
     tickCount: Ref.get(state.tickCount),
     timedCircuit: Ref.get(state.timedCircuit),
   }, { concurrency: 1 })
@@ -214,6 +217,68 @@ describe('observeRedstoneFrame', () => {
           }],
           pendingButtonPresses: new Set(),
           tick: 1,
+        })
+      }),
+    ),
+  )
+
+  it.effect('projects observer output and one-tick pulse from each stage tick', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        // BUG: An observer snapshot's stale active flag hides a pulse produced by the tick stage.
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'observer', {
+            active: false,
+            observedBlock: 'stone',
+            pulseTicks: NonNegativeTickCount(ZERO_TICK),
+          }),
+        ]))
+        const runtimeState = yield* redstoneWorldStateFor(runtime)
+        const observerNode = redstoneNodeId(dimensionId('overworld'), blockPosition(0))
+        yield* runPowerTick(stages)
+
+        const armed = yield* observeRedstoneFrame(runtime)
+        expect(armed.dimensions[0]?.cells[0]?.dynamicState).toStrictEqual({
+          active: false,
+          pulseTicks: ZERO_TICK,
+          timers: {},
+        })
+        expect((yield* Ref.get(runtimeState.timedCircuit)).observers?.get(observerNode)).toStrictEqual({
+          output: false,
+          remainingTicks: ZERO_TICK,
+        })
+
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'observer', {
+            active: false,
+            observedBlock: 'dirt',
+            pulseTicks: NonNegativeTickCount(ZERO_TICK),
+          }),
+        ]))
+        yield* runPowerTick(stages)
+
+        const pulsing = yield* observeRedstoneFrame(runtime)
+        expect(pulsing.dimensions[0]?.cells[0]?.dynamicState).toStrictEqual({
+          active: true,
+          pulseTicks: ONE_TICK,
+          timers: {},
+        })
+        expect((yield* Ref.get(runtimeState.timedCircuit)).observers?.get(observerNode)).toStrictEqual({
+          output: true,
+          remainingTicks: ONE_TICK,
+        })
+
+        yield* runPowerTick(stages)
+
+        const cleared = yield* observeRedstoneFrame(runtime)
+        expect(cleared.dimensions[0]?.cells[0]?.dynamicState).toStrictEqual({
+          active: false,
+          pulseTicks: ZERO_TICK,
+          timers: {},
+        })
+        expect((yield* Ref.get(runtimeState.timedCircuit)).observers?.get(observerNode)).toStrictEqual({
+          output: false,
+          remainingTicks: ZERO_TICK,
         })
       }),
     ),
@@ -327,7 +392,6 @@ describe('observeRedstoneFrame', () => {
           state.pendingPoweredComponentTransitions,
           state.pendingTriggerEvents,
           state.power,
-          state.tickAccumulatorSecs,
           state.tickCount,
           state.timedCircuit,
         ])

@@ -7,6 +7,7 @@ import {
   DomainEventSchema,
   DimensionIdSchema,
   DimensionRevisionSchema,
+  encodeBlockState,
   SimulationTickSchema,
   WorldIdSchema,
   WorldRevisionSchema,
@@ -79,7 +80,6 @@ const hopperLookup: RedstoneHostLookup = {
   readHopperBlockId: () => hopperBlockId,
   readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
   readPistonCell: () => ({ kind: 'empty' }),
-  readPistonFacing: () => 'east',
 }
 
 const hopperRealm = (dimension: DimensionId): RedstoneHostRealm => ({ dimension, lookup: hopperLookup })
@@ -201,8 +201,23 @@ describe('redstone boundary inputs', () => {
   it.effect('accepts the last safe derived host position and reports the next one as a Result failure', () =>
     Effect.sync(() => {
       // An unchecked neighbor offset would turn the last safe host coordinate into an invalid position.
-      const lastSafe = componentForBlock(hopperLookup, 'piston', blockPosition(Number.MAX_SAFE_INTEGER - 1))
-      const outOfRange = componentForBlock(hopperLookup, 'piston', blockPosition(Number.MAX_SAFE_INTEGER))
+      const encodedState = encodeBlockState(Option.getOrThrow(blockIdOf('repeater')), {
+        delay: 1,
+        facing: 'east',
+        locked: false,
+        powered: false,
+      })
+      if (Result.isFailure(encodedState)) {
+        throw new Error('Expected a valid piston state fixture')
+      }
+      const lastSafe = componentForBlock(hopperLookup, 'repeater', {
+        position: blockPosition(Number.MAX_SAFE_INTEGER - 1),
+        encodedState: encodedState.success,
+      })
+      const outOfRange = componentForBlock(hopperLookup, 'repeater', {
+        position: blockPosition(Number.MAX_SAFE_INTEGER),
+        encodedState: encodedState.success,
+      })
 
       expect(Result.isSuccess(lastSafe)).toBe(true)
       expect(outOfRange).toStrictEqual(Result.fail({ _tag: 'RedstoneHostPositionOutOfRange' }))

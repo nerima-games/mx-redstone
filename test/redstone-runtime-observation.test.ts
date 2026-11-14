@@ -2,13 +2,13 @@ import { afterEach, vi } from 'vitest'
 import { describe, expect, it } from '@effect/vitest'
 import {
   BlockPositionSchema,
-  DeltaTimeSecs,
   DimensionIdSchema,
   NonNegativeTickCount,
   type BlockPosition,
   type FrameServices,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
+import { runStagesForTicks, type RunStagesForTicksFailure } from '@nerima-games/mc-sim'
 import { Effect, Exit, Ref, Schema } from 'effect'
 import * as powerGraph from '../src/domain/power-graph.js'
 import { ContainerSlotSchema } from '../src/domain/comparator.js'
@@ -40,6 +40,7 @@ type RuntimeError =
   | RedstoneWorldRuntimeStateError
   | RedstoneWorldSnapshotDuplicatePositionError
   | Schema.SchemaError
+  | RunStagesForTicksFailure
 
 const dimensionId = (value: string): Schema.Schema.Type<typeof DimensionIdSchema> =>
   Schema.decodeUnknownSync(DimensionIdSchema)(value)
@@ -74,12 +75,12 @@ const stageById = (
 const runPowerTick = (
   stages: ReadonlyArray<StageRegistration>,
 ): Effect.Effect<void, RuntimeError, FrameServices> =>
-  stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.1))
+  runStagesForTicks([stageById(stages, REDSTONE_STAGE_IDS.power)], NonNegativeTickCount(2))
 
 const runEffectsStage = (
   stages: ReadonlyArray<StageRegistration>,
 ): Effect.Effect<void, RuntimeError, FrameServices> =>
-  stageById(stages, REDSTONE_STAGE_IDS.effects).run(DeltaTimeSecs(0.1))
+  runStagesForTicks([stageById(stages, REDSTONE_STAGE_IDS.effects)], NonNegativeTickCount(1))
 
 const runtimeProgram = <A>(
   use: (
@@ -112,7 +113,6 @@ const runtimeStateValues = (state: RedstoneWorldState) =>
     pendingPoweredComponentTransitions: Ref.get(state.pendingPoweredComponentTransitions),
     pendingTriggerEvents: Ref.get(state.pendingTriggerEvents),
     power: Ref.get(state.power),
-    tickAccumulatorSecs: Ref.get(state.tickAccumulatorSecs),
     tickCount: Ref.get(state.tickCount),
     timedCircuit: Ref.get(state.timedCircuit),
   }, { concurrency: 1 })
@@ -276,7 +276,7 @@ describe('runtime tick observation', () => {
     ),
   )
 
-  it.effect('refreshes conductivity answers for each tick in a multi-tick frame', () =>
+  it.effect('refreshes conductivity answers for both redstone ticks across four game ticks', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {
         // BUG: reusing the first-tick lookup cache would freeze host conductivity across a two-tick frame.
@@ -286,7 +286,7 @@ describe('runtime tick observation', () => {
           component(2, 'wire'),
         ]), { isRedstoneConductiveAt: conductivity })
 
-        yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.2))
+        yield* runStagesForTicks([stageById(stages, REDSTONE_STAGE_IDS.power)], NonNegativeTickCount(4))
         const state = yield* redstoneWorldStateFor(runtime)
         const [power, tickCount] = yield* Effect.all([
           Ref.get(state.power),
@@ -635,6 +635,8 @@ describe('runtime tick observation', () => {
           component(29, 'lever', { active: true }),
           component(30, 'comparator', { inputFrom: blockPosition(29), outputTo: blockPosition(31) }),
           component(31, 'wire'),
+          component(40, 'observer', { observedBlock: 'stone[lit=false]', outputTo: blockPosition(41) }),
+          component(41, 'wire'),
         ]))
         yield* runtime.pressButton(dimension, blockPosition(10))
         yield* setRedstoneObservationEnabled(runtime, true)
@@ -658,6 +660,7 @@ describe('runtime tick observation', () => {
         const buttonKey = redstoneNodeId(dimension, blockPosition(10))
         const torchKey = redstoneNodeId(dimension, blockPosition(20))
         const comparatorWireKey = redstoneNodeId(dimension, blockPosition(31))
+        const observerKey = redstoneNodeId(dimension, blockPosition(40))
         expect(history).toHaveLength(3)
         expect(history[0]?.provenance.get(redstoneNodeId(dimension, blockPosition(1)))?.[0]?.source)
           .toBe(redstoneNodeId(dimension, blockPosition(0)))
@@ -668,6 +671,10 @@ describe('runtime tick observation', () => {
           .toBe(redstoneNodeId(dimension, blockPosition(30)))
         expect(history[1]?.timedCircuit.repeaters.get(repeaterKey)?.output).toBe(true)
         expect(history[0]?.timedCircuit.buttons.get(buttonKey)?.remainingTicks).toBe(2)
+        const observerTimer = history[0]?.timedCircuit.observers?.get(observerKey)
+        const copiedObserverTimer = (yield* redstoneTickObservationsFor(runtime))[0]?.timedCircuit.observers?.get(observerKey)
+        expect(observerTimer).toStrictEqual({ output: false, remainingTicks: 0 })
+        expect(copiedObserverTimer).not.toBe(observerTimer)
       }),
     ),
   )
@@ -787,7 +794,7 @@ describe('runtime tick observation', () => {
         const firstRepeater = first.dimensions[0]?.cells.find((cell) => cell.kind === 'repeater')
         expect(firstHopper?.dynamicState.containerSlots).toStrictEqual([slot])
         expect(firstTorch?.dynamicState.timers.torch).toStrictEqual({
-          burnoutRemainingTicks: 0,
+          burnedOut: false,
           output: true,
           recentOffTicks: [],
         })

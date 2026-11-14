@@ -11,6 +11,10 @@ const OVERWORLD = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
 const position = (x: number, y = 0, z = 0) =>
   Schema.decodeUnknownSync(BlockPositionSchema)({ x, y, z })
 
+const observerPosition = { x: 0, y: 0, z: 0 }
+const observerBlockBeforeChange = 'stone'
+const observerBlockAfterChange = 'dirt'
+
 const snapshot = (components: ReadonlyArray<RedstoneComponentSnapshot>): RedstoneWorldSnapshot => ({
   components,
   dimension: OVERWORLD,
@@ -22,14 +26,14 @@ export const sensorScenarios: ReadonlyArray<BrowserScenario> = [
     displayName: 'Observer change detection and pulse',
     fixture: () => ({
       path: 'fixture-only',
-      reason: 'The raw-host builder has no observer mapping or watched-cell change stream; the fixture supplies a block change for the harness caller to sample and count down.',
+      reason: 'The first runtime sample records stone; the fixture changes that cell to dirt before the next redstone-tick sample.',
       observerChange: {
-        current: 'dirt',
-        position: { x: 0, y: 0, z: 0 },
-        previous: 'stone',
+        current: observerBlockAfterChange,
+        position: observerPosition,
+        previous: observerBlockBeforeChange,
       },
       snapshot: snapshot([
-        { active: false, kind: 'observer', position: position(0) },
+        { active: false, kind: 'observer', observedBlock: observerBlockBeforeChange, position: position(0) },
         { active: false, kind: 'observer', position: position(2) },
       ]),
     }),

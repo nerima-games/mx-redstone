@@ -355,25 +355,22 @@ const pistonBench: Scenario = {
 
 
 /**
- * Two comparators in a row, each reading the dust the last one drove.
+ * A comparator ladder whose stages preserve the level they emit into adjacent dust.
  *
- * The claim: in vanilla a comparator passes a LEVEL through unchanged, and here
- * it loses one per stage. That is `MAX_POWER_LEVEL`'s recorded divergence — a
- * source decays into its first neighbour — arriving in the one component whose
- * output is a number other components do arithmetic on. For a lever it costs a
- * cell of reach; here it corrupts the value.
+ * The preview first exposed an old one-level loss between comparator stages.
+ * The implementation now passes comparator output to adjacent dust unchanged,
+ * matching vanilla and preserving values used by downstream comparators.
  *
- * Read it in the `power` view: the comparators show 15, 14, 13 rather than
- * 15, 15, 15.
+ * Read it in the `power` view: all three comparators show 15, as the regression
+ * in `test/power-graph.test.ts` asserts for one through four stages.
  */
 const comparatorLadder: Scenario = {
   name: 'comparator-ladder',
-  title: 'a comparator loses one level per stage — vanilla loses none',
+  title: 'comparator stages preserve the signal level — as in vanilla',
   notes: [
     't the lever, s to settle, then v to the power view and read the C cells left to right',
-    'they read 15 14 13: each comparator emits what it READ, and the dust in front decays once more',
-    'in vanilla all three are 15, because a comparator drives the dust at its own output strength',
-    'this is the same divergence as "a signal crosses 14 cells, not 15" — recorded, not fixed (DN-RS-13)',
+    'all three read 15: comparator output reaches the adjacent dust at the same strength',
+    'the earlier 15, 14, 13 result was fixed; regression coverage requires 15 at every stage (DN-RS-13)',
   ],
   minWidth: 16,
   minHeight: 6,
@@ -442,7 +439,7 @@ const comparatorSides: Scenario = {
  * An observer watching a cell you can edit, wired to a lamp.
  *
  * The one scenario in this preview whose input is not a switch. Place or erase
- * a block in the watched cell and the observer pulses for exactly two ticks —
+ * a block in the watched cell and the observer pulses for one redstone tick —
  * `OBSERVER_PULSE_TICKS` — then goes dark on its own. A test that asserts a
  * final state cannot see any of that: the final state is dark either way.
  *
@@ -457,7 +454,7 @@ const observerEdge: Scenario = {
     '. once: the observer arms on what it sees and stays dark (e). Placement is not a change',
     'move the cursor onto the block at its eye (the # to its left) and press e to mine it',
     '. again: the observer goes E and the lamp lights. . twice more and it is dark by itself',
-    'the two-tick pulse is counted by the PREVIEW, not by domain/ — remaining time is state',
+    'the one-redstone-tick pulse is counted by the PREVIEW — remaining time is state',
   ],
   minWidth: 14,
   minHeight: 6,

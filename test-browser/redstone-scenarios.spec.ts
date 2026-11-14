@@ -32,6 +32,7 @@ const HOST_BLOCK_KINDS: Readonly<Partial<Record<RedstoneHostBlockType, string>>>
   redstone_lamp_lit: 'lamp',
   redstone_torch: 'torch',
   redstone_wire: 'wire',
+  repeater: 'repeater',
   sticky_piston: 'piston',
   stone_button: 'button',
   trapdoor: 'trapdoor',
@@ -155,7 +156,12 @@ const expectSnapshotComponentState = async (
   dimension: string,
   component: SnapshotFixture['snapshot']['components'][number],
 ): Promise<void> => {
-  const { kind, position, ...state } = component
+  const { kind, position } = component
+  const state = Object.fromEntries(Object.entries(component).filter(([key]) =>
+    key !== 'kind'
+    && key !== 'position'
+    && !(kind === 'observer' && key === 'observedBlock'),
+  ))
   const coordinate = `${dimension} (${coordinateText(position)})`
   const row = rows.getByRole('listitem').filter({ hasText: `${kind} @ ${coordinate}` })
   await expect(row).toHaveCount(SINGLE_MATCH)
@@ -191,20 +197,65 @@ const expectFixtureOnly = async (page: Page, scenarioId: string, fixture: Snapsh
   await expectSnapshotComponentStates(page, fixture)
 }
 
-const expectHostFixture = async (page: Page, scenarioId: string, fixture: HostFixture): Promise<void> => {
+const repeaterStateFragments = (fixture: HostFixture): ReadonlyArray<string> => {
+  if (!fixture.input.blocks.some(({ block }) => block === 'repeater')) {
+    return []
+  }
+  return ['"delayTicks":4', '"delayTicks":2', '"locked":true']
+}
+
+const comparatorStateFragments = (fixture: HostFixture): ReadonlyArray<string> => {
+  const comparator = fixture.input.blocks.find(({ block }) => block === 'comparator')
+  const fragments: Array<string> = []
+  if (typeof comparator?.state?.facing === 'string') {
+    fragments.push(`"facing":"${comparator.state.facing}"`)
+  }
+  if (typeof comparator?.state?.mode === 'string') {
+    fragments.push(`"mode":"${comparator.state.mode}"`)
+  }
+  return fragments
+}
+
+const torchStateFragments = (fixture: HostFixture): ReadonlyArray<string> => {
+  const torch = fixture.input.blocks.find(({ block }) => block === 'redstone_torch')
+  if (typeof torch?.state?.lit === 'boolean') {
+    return [`"active":${torch.state.lit}`]
+  }
+  return []
+}
+
+const hostStateFragments = (fixture: HostFixture): ReadonlyArray<string> => [
+  ...repeaterStateFragments(fixture),
+  ...comparatorStateFragments(fixture),
+  ...torchStateFragments(fixture),
+]
+
+const expectHostRequests = async (page: Page, expected: HostFixture['expectedRequests']): Promise<void> => {
+  const actual = await page.getByTestId('host-requests').textContent()
+  if (actual === null) {
+    throw new Error('Rendered host requests are missing')
+  }
+  expect(JSON.parse(actual)).toStrictEqual(expected)
+}
+
+const expectHostFixture = async (page: Page, fixture: HostFixture): Promise<void> => {
   const components = page.getByRole('region', { name: 'Components and decisions' })
   const allLayers = page.getByRole('button', { name: 'All layers' })
   await allLayers.click()
-  await expect(allLayers).toHaveAttribute('aria-pressed', 'true')
-  await expect(components).toContainText(
-    `Scenario fixture: host; ${fixture.input.blocks.length} configured blocks; ${fixture.expectedRequests.length} expected host requests.`,
-  )
-  await expectFixtureCells(page, expectedHostCells(fixture))
-  if (scenarioId === 'rs.sticky-piston.retract-pull') {
-    await expect(components.getByRole('list', { name: 'Observed component state and timers' }))
-      .toContainText('"pistonKind":"sticky"')
-  }
+  await Promise.all([
+    expect(allLayers).toHaveAttribute('aria-pressed', 'true'),
+    expect(components).toContainText(
+      `Scenario fixture: host; ${fixture.input.blocks.length} configured blocks; ${fixture.expectedRequests.length} expected host requests.`,
+    ),
+    expectFixtureCells(page, expectedHostCells(fixture)),
+    expect(page.getByRole('region', { name: 'Host boundary' })).toContainText('Host apply reached.'),
+  ])
+  await expectHostRequests(page, fixture.expectedRequests)
+
+  const hostState = page.getByTestId('host-realm-state')
+  await Promise.all(hostStateFragments(fixture).map((fragment) => expect(hostState).toContainText(fragment)))
 }
+
 
 const expectScenarioFixture = async (page: Page, scenario: (typeof scenarioRegistry)[number]): Promise<void> => {
   const fixture = scenario.fixture()
@@ -215,14 +266,14 @@ const expectScenarioFixture = async (page: Page, scenario: (typeof scenarioRegis
     return expectFixtureOnly(page, scenario.id, fixture)
   }
   if (fixture.path === 'host') {
-    return expectHostFixture(page, scenario.id, fixture)
+    return expectHostFixture(page, fixture)
   }
   throw new Error('Unsupported browser scenario fixture path')
 }
 
 const expectScenarioId = async (page: Page, scenarioId: string): Promise<void> => {
   await expect(page.getByLabel('Scenario')).toHaveValue(scenarioId)
-  const timeline = page.getByRole('region', { name: 'Timeline and frame' })
+  const timeline = page.getByRole('region', { name: 'Timeline and simulation ticks' })
   await timeline.getByRole('button', { name: 'Show JSON state' }).click()
   await expect(timeline.locator('pre')).toContainText(`"id": "${scenarioId}"`)
 }

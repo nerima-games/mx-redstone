@@ -211,6 +211,47 @@ describe('positioned piston movement', () => {
     }),
   )
 
+  it.effect('a sticky piston can extend through twelve blocks but refuses a thirteenth', () =>
+    Effect.sync(() => {
+      const VANILLA_STICKY_PUSH_LIMIT = 12
+      const request = {
+        piston: position(0, 0, 0),
+        facing: 'east' as const,
+        kind: 'sticky' as const,
+        state: 'retracted' as const,
+        powered: true,
+      }
+      const atLimit = planPistonTransition(
+        request,
+        cells(Array.from(
+          { length: VANILLA_STICKY_PUSH_LIMIT },
+          (_, index) => [index + 1, `BLOCK_${String(index)}`] as const,
+        )),
+        NOTHING_IS_IMMOVABLE,
+      )
+      expect(atLimit.kind).toBe('move')
+      if (atLimit.kind === 'move') {
+        expect(atLimit.plan.moves).toHaveLength(VANILLA_STICKY_PUSH_LIMIT)
+        expect(atLimit.plan.moves.map(({ from }) => from.x)).toStrictEqual(
+          Array.from({ length: VANILLA_STICKY_PUSH_LIMIT }, (_, index) => VANILLA_STICKY_PUSH_LIMIT - index),
+        )
+      }
+
+      const overLimit = planPistonTransition(
+        request,
+        cells(Array.from(
+          { length: VANILLA_STICKY_PUSH_LIMIT + 1 },
+          (_, index) => [index + 1, 'STONE'] as const,
+        )),
+        NOTHING_IS_IMMOVABLE,
+      )
+      expect(overLimit).toStrictEqual({
+        kind: 'refused',
+        refusal: { position: position(VANILLA_STICKY_PUSH_LIMIT + 1, 0, 0), reason: 'too-long' },
+      })
+    }),
+  )
+
   it.effect('a sticky piston pulls one movable block into the vacated head cell', () =>
     Effect.sync(() => {
       const outcome = planPistonTransition(

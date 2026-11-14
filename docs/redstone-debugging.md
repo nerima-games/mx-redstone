@@ -19,7 +19,7 @@ Scenario でシナリオを選び、`Step frame` で redstone tick を 1 回進�
 ## パネル
 
 - **Power and provenance**: 現在と直前の power map、各セルの電力、記録された電力の出所候補と経路を表示します。観測に値がない診断項目は unavailable として表示します。
-- **Timeline and frame**: redstone tick、frame の tick accumulator、消費・破棄 tick 数、frame あたりの上限、直近 2 tick の電力差、記録された最新 20 tick の電力テープを表示します。現在の観測は JSON でも確認できます。
+- **Timeline and simulation ticks**: Shows integer redstone ticks supplied by mc-sim, the power difference between the latest two recorded ticks, and a tape of the latest 20 power samples. It does not accumulate frame delta or cap redstone catch-up ticks. The current observation is also available as JSON.
 - **Components and decisions**: fixture と入力注入の状態、部品の状態と timer、保留中の button press、host fixture が実行した plan と拒否理由、invariant checker の結果を表示します。host 入力や部品状態が提供されない項目は unavailable または blocked として表示します。
 - **Events and transitions**: 選択中の scenario と tick、直近に drain した event batch、fixture 入力、保留中の button press を表示します。event と入力の因果関係は現在記録していないため unavailable と表示します。
 - **Host boundary**: host fixture が組み立てた realm snapshot、host apply に到達したか、適用された request、host failure を表示します。
@@ -51,4 +51,17 @@ Invariant checker は source provenance を完全には復元できません。r
 
 solid-block conduction を mc-compose の実 world で使うには、mc-compose が `isRedstoneConductiveAt` を `syncSnapshot` に渡し、適用対象の source component に `strongPowerTo` を設定する必要があります。この mc-compose 側の接続作業は今回の mx-redstone 実装範囲外です。
 
-当初の実行計画は button、repeater、observer、pressure plate、target の 5 種を本番 builder / host lookup 拡張の対象外としていました。現在の source では `stone_button` builder と optional な `isButtonActive` lookup が追加され、callback を省略した場合は inactive として扱います。button の実 host 入力を渡す接続は必要です。repeater、observer、pressure plate、target の 4 種は引き続き builder / lookup 拡張の対象外で、scenario は domain fixture と snapshot で表示・検証します。実 world の block を取り込むには、必要な host input とそれを提供する repository / host を決める必要があるため、残る production integration はその決定後の作業です。
+host adapter は mc-kernel の decoder と block 別 schema で、次の状態を読み取ります。
+
+| ブロック | 読み取る状態 |
+| --- | --- |
+| `comparator` | `facing`、`mode`、`powered` |
+| `dispenser`、`dropper` | `facing`、`triggered` |
+| `hopper` | `facing`、`enabled` |
+| `observer` | `facing`、`powered` |
+| `piston`、`sticky_piston` | `facing`、`extended` |
+| `redstone_torch` | `lit` |
+| `redstone_wall_torch` | `facing`、`lit` |
+| `repeater` | `facing`、`delay`、`locked`、`powered` |
+
+mc-kernel 0.17.0 では `sticky_piston` と `redstone_wall_torch` の block type と状態が定義されています。sticky piston は既存の planner に渡し、wall torch の support cell は `facing` の反対側です。状態不足は `RedstoneHostEncodedBlockStateMissing`、schema 不一致は `RedstoneHostBlockStateSchemaFailure` で区別されます。ボタンの入力状態と observer が監視する block ID は host lookup から受け取ります。現在の host contract は pressure plate の占有数と target hit の座標を渡さないため、これらの scenario は決定的な snapshot fixture のままです。

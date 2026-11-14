@@ -20,6 +20,7 @@ import {
   advanceTimedCircuitWithContext,
   emptyTimedCircuitState,
   type TimedCircuitState,
+  type TorchTimer,
 } from '../src/domain/power-timing'
 import { observeChanges, type Sightings } from '../src/domain/observer'
 import {
@@ -35,6 +36,13 @@ import { selectHopperTransferCandidates } from '../src/domain/hopper'
 const SIGNAL_LEVELS = Array.from({ length: 16 }, (_, level) => level)
 const COMPARATOR_MODES: ReadonlyArray<ComparatorMode> = ['compare', 'subtract']
 const BOOLEAN_STATES: ReadonlyArray<boolean> = [false, true]
+// Java Edition burns a torch out after more than eight forced-off changes in the last 60 game ticks.
+// One redstone tick is two game ticks. Source: https://minecraft.wiki/w/Redstone_Torch
+const JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT = 8
+const JAVA_TORCH_BURNOUT_WINDOW_GAME_TICKS = 60
+const GAME_TICKS_PER_REDSTONE_TICK = 2
+const JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS =
+  JAVA_TORCH_BURNOUT_WINDOW_GAME_TICKS / GAME_TICKS_PER_REDSTONE_TICK
 const PISTON_FACINGS: ReadonlyArray<{
   readonly facing: PistonFacing
   readonly offset: Readonly<{ x: number; y: number; z: number }>
@@ -180,7 +188,7 @@ describe('finite redstone states', () => {
     }),
   )
 
-  it.effect('all torch input levels, outputs, and burnout countdown states obey inversion', () =>
+  it.effect('all torch input levels, outputs, and rolling burnout states obey inversion', () =>
     Effect.sync(() => {
       // This catches torches that ignore an input level, prior output, or remaining cooldown tick.
       const board: CircuitBoard = {
@@ -202,12 +210,12 @@ describe('finite redstone states', () => {
             ]),
             torches: new Map([[
               'torch',
-              { burnoutRemainingTicks: 0, output: previousOutput, recentOffTicks: [] },
+              { burnedOut: false, output: previousOutput, recentOffTicks: [] },
             ]]),
           }
           const next = advanceTimedCircuit(board, previous)
           const expectedTimer = {
-            burnoutRemainingTicks: 0,
+            burnedOut: false,
             output: requestedOutput,
             recentOffTicks: previousOutput && !requestedOutput ? [0] : [],
           }
@@ -217,27 +225,47 @@ describe('finite redstone states', () => {
           )
         }
 
-        for (let burnoutRemainingTicks = 1; burnoutRemainingTicks <= 80; burnoutRemainingTicks += 1) {
-          const previous: TimedCircuitState = {
-            ...emptyTimedCircuitState,
-            power: new Map([['input', inputLevel], ['torch', 0]]),
-            torches: new Map([[
-              'torch',
-              { burnoutRemainingTicks, output: false, recentOffTicks: [] },
-            ]]),
-          }
-          const next = advanceTimedCircuit(board, previous)
-          const expectedOutput = burnoutRemainingTicks > 1 ? false : requestedOutput
-          const expectedRemaining = burnoutRemainingTicks > 1 ? burnoutRemainingTicks - 1 : 0
-          expect(next.torches?.get('torch'), `input=${inputLevel}, burnout=${burnoutRemainingTicks}`).toStrictEqual({
-            burnoutRemainingTicks: expectedRemaining,
-            output: expectedOutput,
-            recentOffTicks: [],
-          })
-          expect(powerAt(next.power, 'torch'), `input=${inputLevel}, burnout=${burnoutRemainingTicks}`).toBe(
-            expectedOutput ? 15 : 0,
-          )
+      }
+
+      const recentToggles = Array.from({ length: JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT }, () => 0)
+      const oneExpiringToggle = [
+        ...Array.from({ length: JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT - 1 }, () => 0),
+        JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS - 1,
+      ]
+      const burnoutCases: ReadonlyArray<Readonly<{
+        inputLevel: number
+        previous: TorchTimer
+        expected: TorchTimer
+      }>> = [
+        {
+          inputLevel: 1,
+          previous: { burnedOut: false, output: true, recentOffTicks: recentToggles },
+          expected: { burnedOut: true, output: false, recentOffTicks: [...recentToggles.map((age) => age + 1), 0] },
+        },
+        {
+          inputLevel: 0,
+          previous: { burnedOut: true, output: false, recentOffTicks: recentToggles },
+          expected: { burnedOut: true, output: false, recentOffTicks: recentToggles.map((age) => age + 1) },
+        },
+        {
+          inputLevel: 0,
+          previous: { burnedOut: true, output: false, recentOffTicks: oneExpiringToggle },
+          expected: {
+            burnedOut: false,
+            output: true,
+            recentOffTicks: Array.from({ length: JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT - 1 }, () => 1),
+          },
+        },
+      ]
+      for (const { expected, inputLevel, previous: torch } of burnoutCases) {
+        const previous: TimedCircuitState = {
+          ...emptyTimedCircuitState,
+          power: new Map([['input', inputLevel], ['torch', torch.output ? 15 : 0]]),
+          torches: new Map([['torch', torch]]),
         }
+        const next = advanceTimedCircuit(board, previous)
+        expect(next.torches?.get('torch'), `input=${inputLevel}, recent=${torch.recentOffTicks.length}`).toStrictEqual(expected)
+        expect(powerAt(next.power, 'torch')).toBe(expected.output ? 15 : 0)
       }
     }),
   )

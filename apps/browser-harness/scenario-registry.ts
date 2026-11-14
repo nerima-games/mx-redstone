@@ -1,9 +1,8 @@
 import type { RedstoneWorldSnapshot } from '../../src/application/world-runtime.js'
 import type { RedstoneHostBlockType } from '../../src/application/redstone-host-port.js'
 import type { ContainerSlot } from '../../src/domain/comparator.js'
-import type { PistonFacing } from '../../src/domain/piston.js'
 import type { BlockRef } from '../../src/domain/block-ref.js'
-import type { ItemType } from '@nerima-games/mc-kernel'
+import type { BlockStateValues, ItemType } from '@nerima-games/mc-kernel'
 import { circuitScenarios } from './scenarios/regions/circuits.js'
 import { effectScenarios } from './scenarios/regions/effects.js'
 import { hostStageScenarios } from './scenarios/regions/host-stage.js'
@@ -69,16 +68,21 @@ export type ObserverFixtureChange = Readonly<{
 
 export type HostFixtureInput = Readonly<{
   dimension: string
-  blocks: ReadonlyArray<Readonly<{ block: RedstoneHostBlockType | null; position: FixturePosition }>>
+  blocks: ReadonlyArray<Readonly<{
+    block: RedstoneHostBlockType | null
+    position: FixturePosition
+    state?: BlockStateValues
+    strongPowerTo?: FixturePosition
+  }>>
   failureCase?: HostFailureCase
   containers?: ReadonlyArray<HostFixtureContainer>
   hopperContexts?: ReadonlyArray<HostFixtureHopperContext>
   lookups?: Readonly<{
     containerSlots?: ReadonlyArray<ContainerSlot>
+    conductivePositions?: ReadonlyArray<FixturePosition>
     hopperPowered?: boolean
     leverActive?: boolean
     poweredRailPowered?: boolean
-    pistonFacing?: PistonFacing
   }>
 }>
 

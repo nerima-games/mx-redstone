@@ -3,8 +3,8 @@ import { keyOf, makePart } from '../apps/preview-circuit-board/board'
 import { makeSandbox, stepOnce } from '../apps/preview-circuit-board/sandbox'
 
 describe('observer pulse timing', () => {
-  it("counts an observer's change pulse for exactly two ticks", () => {
-    // Fails if the caller starts or shortens an observer pulse instead of holding it for two ticks.
+  it("counts an observer's change pulse for one redstone tick", () => {
+    // The preview advances one redstone tick per step, equivalent to two simulation game ticks.
     const observer = { x: 1, y: 2 }
     const watched = { x: 2, y: 2 }
     const observerKey = keyOf(observer)
@@ -18,16 +18,13 @@ describe('observer pulse timing', () => {
     )
 
     stepOnce(sandbox)
-    expect(sandbox.parts.get(observerKey)).toMatchObject({ active: false })
+    expect(sandbox.parts.get(observerKey)?.active).toBe(false)
 
     sandbox.parts.set(watchedKey, makePart('obsidian'))
     stepOnce(sandbox)
-    expect(sandbox.parts.get(observerKey)).toMatchObject({ active: true })
+    expect(sandbox.parts.get(observerKey)?.active).toBe(true)
 
     stepOnce(sandbox)
-    expect(sandbox.parts.get(observerKey)).toMatchObject({ active: true })
-
-    stepOnce(sandbox)
-    expect(sandbox.parts.get(observerKey)).toMatchObject({ active: false })
+    expect(sandbox.parts.get(observerKey)?.active).toBe(false)
   })
 })

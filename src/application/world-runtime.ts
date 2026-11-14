@@ -3,8 +3,9 @@ import {
   BlockAxis,
   type BlockPosition,
   BlockPositionSchema,
+  type BlockStateFacing,
+  BlockStateFacingSchema,
   DimensionIdSchema,
-  FixedDurationSecs,
   NonNegativeTickCount,
 } from '@nerima-games/mc-kernel'
 import {
@@ -42,6 +43,7 @@ import {
   type TimedCircuitState,
   emptyTimedCircuitState,
 } from '../domain/power-timing.js'
+import type { BlockRef } from '../domain/block-ref.js'
 import type { PositionKey } from '../domain/position-key.js'
 
 type DimensionId = BlockAddress['dimension']
@@ -68,6 +70,11 @@ export type RedstoneComponentSnapshot = {
   readonly position: RedstonePosition
   readonly kind: ComponentKind
   readonly active?: boolean
+  readonly facing?: BlockStateFacing
+  readonly locked?: boolean
+  readonly enabled?: boolean
+  readonly triggered?: boolean
+  readonly observedBlock?: BlockRef
   readonly emits?: PowerLevel
   readonly delayTicks?: NonNegativeTickCount
   readonly pulseTicks?: NonNegativeTickCount
@@ -113,6 +120,7 @@ export type RedstoneTriggerEvent = {
   readonly dimension: DimensionId
   readonly position: RedstonePosition
   readonly kind: TriggeredComponentKind
+  readonly facing?: BlockStateFacing
 }
 
 export type HopperTransferEvent = {
@@ -170,7 +178,7 @@ export type RedstoneWorldState = {
   readonly pendingHopperTransferEvents: Ref.Ref<ReadonlyArray<HopperTransferEvent>>
   readonly observedPoweredComponents: Ref.Ref<ReadonlyMap<PositionKey, boolean>>
   readonly pendingPoweredComponentTransitions: Ref.Ref<ReadonlyArray<PoweredComponentTransition>>
-  readonly tickAccumulatorSecs: Ref.Ref<FixedDurationSecs>
+  readonly firstGameTickSeen: Ref.Ref<boolean>
   readonly tickCount: Ref.Ref<NonNegativeTickCount>
 }
 
@@ -182,10 +190,8 @@ export type RedstoneEventBatch = {
   readonly trigger: ReadonlyArray<RedstoneTriggerEvent>
 }
 
-const ZERO_DURATION_SECS = 0
 const ZERO_TICK_COUNT = 0
 const ONE_TICK = 1
-const fixedDurationSecsSchema = Schema.Number.pipe(Schema.fromBrand('FixedDurationSecs', FixedDurationSecs))
 const nonNegativeTickCountSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(ZERO_TICK_COUNT))
   .pipe(Schema.fromBrand('NonNegativeTickCount', NonNegativeTickCount))
 const powerLevelSchema = Schema.Int.check(Schema.isBetween({ maximum: 15, minimum: 0 }))
@@ -201,6 +207,8 @@ export const RedstoneComponentSnapshotSchema: Schema.Codec<RedstoneComponentSnap
   containerSlots: Schema.optionalKey(arraySchema(ContainerSlotSchema)),
   delayTicks: Schema.optionalKey(nonNegativeTickCountSchema),
   emits: Schema.optionalKey(powerLevelSchema),
+  enabled: Schema.optionalKey(Schema.Boolean),
+  facing: Schema.optionalKey(BlockStateFacingSchema),
   inputFrom: Schema.optionalKey(BlockPositionSchema),
   invertedBy: Schema.optionalKey(BlockPositionSchema),
   kind: literalsSchema([
@@ -208,7 +216,9 @@ export const RedstoneComponentSnapshotSchema: Schema.Codec<RedstoneComponentSnap
     'observer', 'pressure-plate', 'target', 'piston', 'hopper', 'dispenser',
     'dropper', 'note-block', 'powered-rail', 'door', 'trapdoor',
   ]),
+  locked: Schema.optionalKey(Schema.Boolean),
   mode: Schema.optionalKey(literalsSchema(['compare', 'subtract'])),
+  observedBlock: Schema.optionalKey(Schema.String),
   outputTo: Schema.optionalKey(BlockPositionSchema),
   pistonFacing: Schema.optionalKey(PistonFacingSchema),
   pistonKind: Schema.optionalKey(PistonKindSchema),
@@ -218,6 +228,7 @@ export const RedstoneComponentSnapshotSchema: Schema.Codec<RedstoneComponentSnap
   pulseTicks: Schema.optionalKey(nonNegativeTickCountSchema),
   sideInputs: Schema.optionalKey(arraySchema(BlockPositionSchema)),
   strongPowerTo: Schema.optionalKey(BlockPositionSchema),
+  triggered: Schema.optionalKey(Schema.Boolean),
 })
 
 export const RedstoneWorldSnapshotSchema: Schema.Codec<RedstoneWorldSnapshot, unknown> = structSchema({
@@ -260,6 +271,7 @@ export const RedstoneEventBatchSchema: Schema.Codec<RedstoneEventBatch, unknown>
   })),
   trigger: arraySchema(structSchema({
     dimension: DimensionIdSchema,
+    facing: Schema.optionalKey(BlockStateFacingSchema),
     kind: literalsSchema(['dispenser', 'dropper', 'note-block']),
     position: BlockPositionSchema,
   })),
@@ -350,11 +362,15 @@ const copyComponentSnapshot = (component: RedstoneComponentSnapshot): RedstoneCo
   ...withOptional('containerSignal', component.containerSignal),
   ...withOptionalMapped('containerSlots', component.containerSlots, (slots) => slots.map((slot) => ({ ...slot }))),
   ...withOptional('delayTicks', component.delayTicks),
+  ...withOptional('enabled', component.enabled),
   ...withOptional('emits', component.emits),
+  ...withOptional('facing', component.facing),
   ...withOptionalMapped('inputFrom', component.inputFrom, copyPosition),
   kind: component.kind,
   ...withOptionalMapped('invertedBy', component.invertedBy, copyPosition),
+  ...withOptional('locked', component.locked),
   ...withOptional('mode', component.mode),
+  ...withOptional('observedBlock', component.observedBlock),
   ...withOptionalMapped('outputTo', component.outputTo, copyPosition),
   ...withOptionalMapped('strongPowerTo', component.strongPowerTo, copyPosition),
   ...withOptional('pistonFacing', component.pistonFacing),
@@ -364,6 +380,7 @@ const copyComponentSnapshot = (component: RedstoneComponentSnapshot): RedstoneCo
   ...withOptional('powered', component.powered),
   ...withOptional('pulseTicks', component.pulseTicks),
   ...withOptionalMapped('sideInputs', component.sideInputs, (positions) => positions.map(copyPosition)),
+  ...withOptional('triggered', component.triggered),
 })
 
 const copyDimensions = (
@@ -377,6 +394,10 @@ const copyDimensions = (
 
 const copyTimedCircuit = (timedCircuit: TimedCircuitState): TimedCircuitState => ({
   buttons: new Map([...timedCircuit.buttons].map(([key, timer]) => [key, { ...timer }])),
+  ...withOptionalMapped('observerSeen', timedCircuit.observerSeen, (seen) => new Map(seen)),
+  ...withOptionalMapped('observers', timedCircuit.observers, (observers) => new Map(
+    [...observers].map(([key, timer]) => [key, { ...timer }]),
+  )),
   power: new Map(timedCircuit.power),
   repeaters: new Map([...timedCircuit.repeaters].map(([key, timer]) => [key, { ...timer }])),
   ...withOptionalMapped('torches', timedCircuit.torches, (torches) => new Map(
@@ -452,8 +473,13 @@ const componentAt = (
   return {
     kind: component.kind,
     ...withOptional('active', component.active),
+    ...withOptional('enabled', component.enabled),
     ...withOptional('emits', component.emits),
     ...withOptional('delayTicks', component.delayTicks),
+    ...withOptional('facing', component.facing),
+    ...withOptional('locked', component.locked),
+    ...withOptional('triggered', component.triggered),
+    ...withOptional('observedBlock', component.observedBlock),
     ...withOptional('pulseTicks', component.pulseTicks),
     ...withOptionalMapped('invertedBy', component.invertedBy, positionToNodeId),
     ...withOptionalMapped('inputFrom', component.inputFrom, positionToNodeId),
@@ -1004,7 +1030,6 @@ const circuitReadoutFor = (state: RedstoneWorldState): Effect.Effect<CircuitRead
   },
 )
 
-const INITIAL_TICK_ACCUMULATOR_SECS = Schema.decodeUnknownSync(fixedDurationSecsSchema)(ZERO_DURATION_SECS)
 const INITIAL_TICK_COUNT = Schema.decodeUnknownSync(nonNegativeTickCountSchema)(ZERO_TICK_COUNT)
 
 export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.gen(
@@ -1026,7 +1051,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       pendingHopperTransferEvents,
       observedPoweredComponents,
       pendingPoweredComponentTransitions,
-      tickAccumulatorSecs,
+      firstGameTickSeen,
       tickCount,
     ] = yield* Effect.all([
       Ref.make(EMPTY_DIMENSIONS),
@@ -1045,7 +1070,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       Ref.make<ReadonlyArray<HopperTransferEvent>>([]),
       Ref.make<ReadonlyMap<PositionKey, boolean>>(new Map()),
       Ref.make<ReadonlyArray<PoweredComponentTransition>>([]),
-      Ref.make(INITIAL_TICK_ACCUMULATOR_SECS),
+      Ref.make(false),
       Ref.make(INITIAL_TICK_COUNT),
     ])
     const state: RedstoneWorldState = {
@@ -1053,6 +1078,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       board,
       conductivityLookups,
       dimensions,
+      firstGameTickSeen,
       observedLamps,
       observedPistonStates,
       observedPoweredComponents,
@@ -1064,7 +1090,6 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       pendingPoweredComponentTransitions,
       pendingTriggerEvents,
       power,
-      tickAccumulatorSecs,
       tickCount,
       timedCircuit,
     }
@@ -1276,7 +1301,7 @@ const pistonTransitionEntry = (
     desired,
     transitions: [[nodeId, {
       dimension,
-      facing: component.pistonFacing ?? 'north',
+      facing: component.pistonFacing ?? component.facing ?? 'north',
       kind: component.pistonKind ?? 'normal',
       piston: copyPosition(component.position),
       powered,
@@ -1335,24 +1360,34 @@ type TriggerEventResult = {
   readonly triggered: ReadonlyArray<readonly [PositionKey, RedstoneTriggerEvent]>
 }
 
+const triggerEventFacing = (
+  component: Pick<RedstoneComponentSnapshot, 'kind' | 'facing'>,
+): Partial<Record<'facing', BlockStateFacing>> => {
+  if (component.kind === 'note-block') {
+    return {}
+  }
+  return withOptional('facing', component.facing)
+}
+
 const triggerEventEntry = (
   entry: SnapshotEntry,
   circuit: CircuitReadout,
   previous: ReadonlyMap<PositionKey, boolean>,
 ): { readonly events: ReadonlyArray<readonly [PositionKey, RedstoneTriggerEvent]>; readonly powered: boolean } => {
   const { component, dimension, nodeId } = entry
-  const powered = isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId })
-  const wasPowered = previous.get(nodeId) ?? false
-  if (wasPowered || !powered || !isTriggeredComponentKind(component.kind)) {
-    return { events: [], powered }
+  const powerInput = isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId })
+  const wasTriggered = previous.get(nodeId) ?? component.triggered ?? false
+  if (wasTriggered || !powerInput || !isTriggeredComponentKind(component.kind)) {
+    return { events: [], powered: powerInput }
   }
   return {
     events: [[nodeId, {
       dimension,
       kind: component.kind,
       position: copyPosition(component.position),
+      ...triggerEventFacing(component),
     }]],
-    powered,
+    powered: powerInput,
   }
 }
 
@@ -1401,7 +1436,8 @@ const computeHopperTransfers = (
     dimension,
     elapsedRedstoneTicks,
     position: copyPosition(component.position),
-    powered: isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId }),
+    powered: component.enabled === false
+      || isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId }),
   }] as const
   const [first, ...rest] = entries
   return [eventFor(first), ...rest.map(eventFor)]

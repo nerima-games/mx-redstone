@@ -1,4 +1,4 @@
-import { BlockPositionSchema, DimensionIdSchema } from '@nerima-games/mc-kernel'
+import { BlockPositionSchema, DimensionIdSchema, type BlockStateValues } from '@nerima-games/mc-kernel'
 import { Schema } from 'effect'
 import type {
   RedstoneComponentSnapshot,
@@ -38,7 +38,13 @@ const hostBlock = (
   x: number,
   y: number,
   z: number,
-): HostFixtureInput['blocks'][number] => ({ block, position: hostPosition(x, y, z) })
+  state?: BlockStateValues,
+): HostFixtureInput['blocks'][number] => {
+  if (typeof state === 'undefined') {
+    return { block, position: hostPosition(x, y, z) }
+  }
+  return { block, position: hostPosition(x, y, z), state }
+}
 
 export const hostStageScenarios: ReadonlyArray<BrowserScenario> = [
   fixtureOnlyScenario(
@@ -68,7 +74,7 @@ export const hostStageScenarios: ReadonlyArray<BrowserScenario> = [
           hostBlock('redstone_lamp', 2, 0, 0),
           hostBlock('dispenser', 0, 1, 0),
           hostBlock('door', -1, 0, 0),
-          hostBlock('piston', 0, 0, -1),
+          hostBlock('piston', 0, 0, -1, { extended: false, facing: 'east' }),
           hostBlock('hopper', 0, 0, 1),
           hostBlock('lever', 10, 0, 0),
           hostBlock('redstone_wire', 11, 0, 0),
@@ -76,7 +82,7 @@ export const hostStageScenarios: ReadonlyArray<BrowserScenario> = [
           hostBlock('dropper', 10, 1, 0),
           hostBlock('trapdoor', 9, 0, 0),
           hostBlock('powered_rail', 10, 0, 1),
-          hostBlock('piston', 10, 0, -1),
+          hostBlock('piston', 10, 0, -1, { extended: false, facing: 'east' }),
           hostBlock('hopper', 10, 0, 4),
           hostBlock('chest', 0, 1, 1),
           hostBlock('chest', 1, 0, 1),
@@ -107,16 +113,16 @@ export const hostStageScenarios: ReadonlyArray<BrowserScenario> = [
             sourceAbove: { kind: 'chest', position: hostPosition(10, 1, 4) },
           },
         ],
-        lookups: { leverActive: true, pistonFacing: 'east' },
+        lookups: { leverActive: true },
       },
       path: 'host',
     }),
   },
   fixtureOnlyScenario(
     'rs.stage.frame-timeline',
-    'Frame accumulator and stage timeline',
+    'Simulation tick and stage timeline',
     'fixture-only',
-    'This deterministic board is the stage input; frame deltas, tick limits, settle, and drain/replay are driven by the timeline controls rather than host fixture data.',
+    'This deterministic board is the stage input; mc-sim simulation ticks advance redstone, while timeline controls select the recorded tick rather than supplying frame delta.',
     [
       { active: true, kind: 'lever', position: position(0, 0, 0) },
       { kind: 'wire', position: position(1, 0, 0) },

@@ -1,5 +1,4 @@
 import {
-  DeltaTimeSecs,
   EpochMillis,
   FixedClockLayer,
   MonotonicTimeSecs,
@@ -7,6 +6,7 @@ import {
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
 import { Effect, Ref } from 'effect'
+import { runStagesForTicks } from '@nerima-games/mc-sim'
 import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
@@ -24,13 +24,8 @@ import {
   observeRedstoneFrame,
   type RedstoneFrameObservation,
 } from '../../src/application/redstone-observation.js'
-import { OBSERVER_PULSE_TICKS, observeChanges, type Sightings } from '../../src/domain/observer.js'
 import type { PositionKey } from '../../src/domain/position-key.js'
-import {
-  MAX_TICKS_PER_FRAME,
-  REDSTONE_TICK_SECS,
-  makeRuntimeRedstoneStages,
-} from '../../src/stages/registration.js'
+import { makeRuntimeRedstoneStages } from '../../src/stages/registration.js'
 import {
   HOST_FAILURE_CASES,
   scenarioRegistry,
@@ -48,7 +43,8 @@ import { PANELS } from './panels/index.js'
 import type { PanelFrame } from './panel-contract.js'
 
 const ZERO_TICK = 0
-const TICK_SECONDS = 0.1
+const FIRST_REDSTONE_TICK = 1
+const GAME_TICKS_PER_REDSTONE_TICK = 2
 const START_MONOTONIC_SECS = 0
 const START_WALL_CLOCK_MILLIS = 0
 
@@ -63,8 +59,7 @@ type ObserverCallerState = {
   readonly snapshot: RedstoneWorldSnapshot
   readonly observerKey: PositionKey
   readonly currentBlock: string
-  sightings: Sightings
-  pulses: Map<PositionKey, number>
+  applied: boolean
 }
 
 const app = document.querySelector<HTMLElement>('#app')
@@ -108,7 +103,6 @@ const PENDING_BUTTON_PRESSES_UNAVAILABLE: PanelFrame['inputInjection']['pendingB
 }
 let previousPower: PanelFrame['previousPower'] = { unavailable: 'No stage tick has run yet.' }
 let consumedTicks: PanelFrame['stage']['consumedTicks'] = { unavailable: 'No stage tick has run yet.' }
-let discardedTicks: PanelFrame['stage']['discardedTicks'] = { unavailable: 'No stage frame has run yet.' }
 let lastDrainedEventBatch: PanelFrame['drainedEventBatch'] = DRAINED_EVENTS_UNAVAILABLE
 
 const shell = document.createElement('div')
@@ -265,10 +259,9 @@ const observerCallerFor = (fixture: BrowserScenarioFixture): ObserverCallerState
   }
   const observerKey = redstoneNodeId(fixture.snapshot.dimension, observer.position)
   return {
+    applied: false,
     currentBlock: observerChange.current,
     observerKey,
-    pulses: new Map(),
-    sightings: new Map([[observerKey, observerChange.previous]]),
     snapshot: fixture.snapshot,
   }
 }
@@ -277,49 +270,20 @@ const advanceObserverCaller = async (
   activeSimulation: Simulation,
   caller: ObserverCallerState | undefined,
 ): Promise<void> => {
-  if (caller === undefined) {
+  if (caller === undefined || caller.applied) {
     return
   }
-  const current: Sightings = new Map([[caller.observerKey, caller.currentBlock]])
-  const sweep = observeChanges(current, caller.sightings)
-  caller.sightings = sweep.seen
-
-  const pulses = new Map<PositionKey, number>()
-  for (const [key, remaining] of caller.pulses) {
-    if (current.has(key) && remaining > 1) {
-      pulses.set(key, remaining - 1)
-    }
+  const simulationTickCount = await Effect.runPromise(Ref.get(activeSimulation.state.tickCount))
+  if (simulationTickCount < NonNegativeTickCount(FIRST_REDSTONE_TICK)) {
+    return
   }
-  for (const key of sweep.fired) {
-    pulses.set(key, OBSERVER_PULSE_TICKS)
-  }
-  caller.pulses = pulses
-
-  const pulseTicks = NonNegativeTickCount(pulses.get(caller.observerKey) ?? ZERO_TICK)
-  const active = pulseTicks > ZERO_TICK
-  const dimensions = await Effect.runPromise(Ref.get(activeSimulation.state.dimensions))
-  const dimension = dimensions.get(caller.snapshot.dimension)
-  if (dimension === undefined) {
-    throw new Error('Observer fixture dimension is unavailable in the runtime snapshot.')
-  }
-  const snapshotComponent = dimension.get(caller.observerKey)
-  if (snapshotComponent === undefined) {
-    throw new Error('Observer fixture component is unavailable in the runtime snapshot.')
-  }
-  const runtimeBoard = await Effect.runPromise(Ref.get(activeSimulation.state.board))
-  const boardComponent = runtimeBoard.components.get(caller.observerKey)
-  if (boardComponent === undefined) {
-    throw new Error('Observer fixture component is unavailable in the runtime board.')
-  }
-  const updatedDimension = new Map(dimension)
-  updatedDimension.set(caller.observerKey, { ...snapshotComponent, active, pulseTicks })
-  const updatedDimensions = new Map(dimensions)
-  updatedDimensions.set(caller.snapshot.dimension, updatedDimension)
-  await Effect.runPromise(Ref.set(activeSimulation.state.dimensions, updatedDimensions))
-
-  const updatedComponents = new Map(runtimeBoard.components)
-  updatedComponents.set(caller.observerKey, { ...boardComponent, active, pulseTicks })
-  await Effect.runPromise(Ref.set(activeSimulation.state.board, { ...runtimeBoard, components: updatedComponents }))
+  const components = caller.snapshot.components.map((component) =>
+    redstoneNodeId(caller.snapshot.dimension, component.position) === caller.observerKey
+      ? { ...component, observedBlock: caller.currentBlock }
+      : component,
+  )
+  await Effect.runPromise(activeSimulation.runtime.syncSnapshot({ ...caller.snapshot, components }))
+  caller.applied = true
 }
 
 const drainFrameEvents = (runtime: RedstoneWorldRuntimeService): Promise<RedstoneEventBatch> =>
@@ -355,27 +319,19 @@ const initialiseSimulation = async (
 const runStageFrame = async (activeSimulation: Simulation): Promise<void> => {
   const tickBefore = await Effect.runPromise(Ref.get(activeSimulation.state.tickCount))
   const powerBefore = await Effect.runPromise(Ref.get(activeSimulation.state.power))
-  const accumulatorBefore = await Effect.runPromise(Ref.get(activeSimulation.state.tickAccumulatorSecs))
   previousPower = new Map(powerBefore)
   await advanceObserverCaller(activeSimulation, activeSimulation.observerCaller)
   const clock = FixedClockLayer({
     monotonicSecs: MonotonicTimeSecs(START_MONOTONIC_SECS),
     wallClockEpochMillis: EpochMillis(START_WALL_CLOCK_MILLIS),
   })
-  await activeSimulation.stages.reduce(
-    (pending, stage) => pending.then(() =>
-      Effect.runPromise(stage.run(DeltaTimeSecs(TICK_SECONDS)).pipe(Effect.provide(clock))),
-    ),
-    Promise.resolve(),
+  await Effect.runPromise(
+    runStagesForTicks(activeSimulation.stages, NonNegativeTickCount(GAME_TICKS_PER_REDSTONE_TICK))
+      .pipe(Effect.provide(clock)),
   )
   const tickAfter = await Effect.runPromise(Ref.get(activeSimulation.state.tickCount))
   const ticksConsumed = NonNegativeTickCount(tickAfter - tickBefore)
   consumedTicks = ticksConsumed
-  const accumulatorAfter = await Effect.runPromise(Ref.get(activeSimulation.state.tickAccumulatorSecs))
-  const availableSecs = accumulatorBefore + TICK_SECONDS
-  const accountedSecs = ticksConsumed * REDSTONE_TICK_SECS + accumulatorAfter
-  const discardedSecs = Math.max(ZERO_TICK, availableSecs - accountedSecs)
-  discardedTicks = NonNegativeTickCount(Math.floor(discardedSecs / REDSTONE_TICK_SECS))
   const batch = await drainFrameEvents(activeSimulation.runtime)
   if (simulation === activeSimulation) {
     lastDrainedEventBatch = batch
@@ -411,9 +367,6 @@ const panelFrame = async (): Promise<PanelFrame | undefined> => {
   const history = simulation === undefined
     ? []
     : await Effect.runPromise(redstoneTickObservationsFor(simulation.runtime))
-  const tickAccumulatorSecs = simulation === undefined
-    ? { unavailable: 'No runtime exists to expose its tick accumulator.' }
-    : await Effect.runPromise(Ref.get(simulation.state.tickAccumulatorSecs))
   const pendingButtonPresses = observation?.pendingButtonPresses ?? PENDING_BUTTON_PRESSES_UNAVAILABLE
   const drainedEventBatch = 'unavailable' in lastDrainedEventBatch
     ? hostFixtureResult?.drainedEventBatch ?? lastDrainedEventBatch
@@ -448,10 +401,7 @@ const panelFrame = async (): Promise<PanelFrame | undefined> => {
     scenarioFixture: selectedFixture,
     stage: {
       consumedTicks,
-      maxTicksPerFrame: MAX_TICKS_PER_FRAME,
-      tickAccumulatorSecs,
-      tickDurationSecs: REDSTONE_TICK_SECS,
-      discardedTicks,
+      gameTicksPerRedstoneTick: NonNegativeTickCount(GAME_TICKS_PER_REDSTONE_TICK),
     },
     tick: observation?.tick ?? NonNegativeTickCount(ZERO_TICK),
   }
@@ -554,7 +504,6 @@ const loadScenario = async (
   remainderMs = 0
   previousPower = { unavailable: 'No stage tick has run for the selected scenario.' }
   consumedTicks = { unavailable: 'No stage tick has run for the selected scenario.' }
-  discardedTicks = { unavailable: 'No stage frame has run for the selected scenario.' }
   lastDrainedEventBatch = DRAINED_EVENTS_UNAVAILABLE
   if (options.pause && frameRequest !== undefined) {
     cancelFrameRequest()

@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import * as fc from 'fast-check'
 import { Effect } from 'effect'
 import type { CircuitBoard, Component, PowerTickContext } from '../src/domain/power-graph'
 import { powerAt } from '../src/domain/power-graph'
@@ -7,14 +8,19 @@ import {
   advanceTimedCircuitWithContext,
   advanceTimedCircuitWithProvenanceContext,
   emptyTimedCircuitState,
-  TORCH_BURNOUT_COOLDOWN_TICKS,
-  TORCH_BURNOUT_TOGGLE_LIMIT,
   type TimedCircuitState,
 } from '../src/domain/power-timing'
 
 const NEXT_TICK = 1
-const NO_TICKS = 0
 const TORCH_CLOCK_PHASES = 2
+// Java Edition burns a torch out after more than eight forced-off changes in the last 60 game ticks.
+// One redstone tick is two game ticks. Source: https://minecraft.wiki/w/Redstone_Torch
+const JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT = 8
+const JAVA_TORCH_BURNOUT_WINDOW_GAME_TICKS = 60
+const GAME_TICKS_PER_REDSTONE_TICK = 2
+const JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS =
+  JAVA_TORCH_BURNOUT_WINDOW_GAME_TICKS / GAME_TICKS_PER_REDSTONE_TICK
+const JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS = JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT + 1
 
 const line = (cells: ReadonlyArray<readonly [string, Component]>): CircuitBoard => ({
   components: new Map(cells),
@@ -31,27 +37,6 @@ const line = (cells: ReadonlyArray<readonly [string, Component]>): CircuitBoard 
 const ticks = (board: CircuitBoard, count: number, initial = emptyTimedCircuitState) => {
   let state: TimedCircuitState = initial
   for (let tick = 0; tick < count; tick += 1) state = advanceTimedCircuit(board, state)
-  return state
-}
-
-const burnOutSelfInvertingTorch = (): TimedCircuitState => {
-  const board: CircuitBoard = {
-    adjacency: new Map([['torch', []]]),
-    components: new Map([['torch', { invertedBy: 'torch', kind: 'torch' }]]),
-  }
-  let state = emptyTimedCircuitState
-  let offTransitions = NO_TICKS
-  let previousOutput = false
-
-  while (offTransitions < TORCH_BURNOUT_TOGGLE_LIMIT) {
-    state = advanceTimedCircuit(board, state)
-    const output = state.torches?.get('torch')?.output ?? false
-    if (previousOutput && !output) {
-      offTransitions += NEXT_TICK
-    }
-    previousOutput = output
-  }
-
   return state
 }
 
@@ -191,6 +176,103 @@ describe('timed redstone', () => {
         expect(powerAt(after.power, 'repeater')).toBe(15)
         expect(powerAt(after.power, 'out')).toBe(15)
       }
+    }),
+  )
+
+  it.effect('repeater delay output matches an independent tick-count oracle', () =>
+    Effect.sync(() => {
+      fc.assert(
+        fc.property(fc.integer({ min: 1, max: 4 }), (delayTicks) => {
+          const board = line([
+            ['lever', { kind: 'lever', active: true }],
+            ['rear', { kind: 'wire' }],
+            ['repeater', { delayTicks, inputFrom: 'rear', kind: 'repeater' }],
+          ])
+          let state = emptyTimedCircuitState
+          for (let tick = 1; tick <= delayTicks + 1; tick += 1) {
+            state = advanceTimedCircuit(board, state)
+            const expected = tick > delayTicks ? 15 : 0
+            expect(powerAt(state.power, 'repeater')).toBe(expected)
+          }
+        }),
+      )
+    }),
+  )
+
+  it.effect('decoded locked state holds output and explicit unlocked state ignores side power', () =>
+    Effect.sync(() => {
+      const poweredInputs = new Map([
+        ['rear', 15],
+        ['side', 15],
+      ])
+      const base = line([
+        ['rear', { active: false, kind: 'lever' }],
+        ['side', { active: true, kind: 'lever' }],
+        ['repeater', { delayTicks: 1, inputFrom: 'rear', kind: 'repeater', locked: false, sideInputs: ['side'] }],
+      ])
+      const powered = advanceTimedCircuit(base, { ...emptyTimedCircuitState, power: poweredInputs })
+      expect(powered.repeaters.get('repeater')?.output).toBe(true)
+
+      const outputOn = {
+        ...emptyTimedCircuitState,
+        power: new Map([
+          ['rear', 0],
+          ['side', 15],
+          ['repeater', 15],
+        ]),
+        repeaters: new Map([['repeater', { output: true, remainingTicks: 0 }]]),
+      }
+      const explicitlyLocked = {
+        ...base,
+        components: new Map(base.components).set('repeater', {
+          ...base.components.get('repeater'),
+          kind: 'repeater' as const,
+          locked: true,
+        }),
+      }
+      expect(advanceTimedCircuit(explicitlyLocked, outputOn).repeaters.get('repeater')?.output).toBe(true)
+      expect(advanceTimedCircuit(base, outputOn).repeaters.get('repeater')?.output).toBe(false)
+    }),
+  )
+
+  it.effect('observer detects a state identity change and holds output for exactly one redstone tick', () =>
+    Effect.sync(() => {
+      const board = line([
+        ['observer', { kind: 'observer', observedBlock: 'stone[lit=false]', outputTo: 'out' }],
+        ['out', { kind: 'wire' }],
+      ])
+      let state = advanceTimedCircuit(board, emptyTimedCircuitState)
+      expect(powerAt(state.power, 'out')).toBe(0)
+
+      const changedBoard: CircuitBoard = {
+        ...board,
+        components: new Map(board.components).set('observer', {
+          kind: 'observer',
+          observedBlock: 'stone[lit=true]',
+          outputTo: 'out',
+        }),
+      }
+      state = advanceTimedCircuit(changedBoard, state)
+      expect(state.observers?.get('observer')).toStrictEqual({ output: true, remainingTicks: 1 })
+      expect(powerAt(state.power, 'out')).toBe(15)
+
+      state = advanceTimedCircuit(changedBoard, state)
+      expect(state.observers?.get('observer')).toStrictEqual({ output: false, remainingTicks: 0 })
+      expect(powerAt(state.power, 'out')).toBe(0)
+    }),
+  )
+
+  it.effect('does not track an observer whose watched block identity is unavailable', () =>
+    Effect.sync(() => {
+      const board = line([
+        ['observer', { kind: 'observer', outputTo: 'out' }],
+        ['out', { kind: 'wire' }],
+      ])
+      const state = advanceTimedCircuit(board, emptyTimedCircuitState)
+
+      expect(state.observerSeen).toStrictEqual(new Map())
+      expect(state.observers?.get('observer')).toStrictEqual({ output: false, remainingTicks: 0 })
+      expect(powerAt(state.power, 'out')).toBe(0)
     }),
   )
 
@@ -389,21 +471,125 @@ describe('timed redstone', () => {
     }),
   )
 
-  it.effect('burns out a rapid torch clock and relights after the cooldown', () =>
+  it.effect('a two-torch loop with a one-tick repeater repeats every three redstone ticks', () =>
+    Effect.sync(() => {
+      const board = line([
+        ['torch-a', { invertedBy: 'torch-b', kind: 'torch' }],
+        ['torch-b', { invertedBy: 'repeater', kind: 'torch' }],
+        ['repeater', { delayTicks: 1, inputFrom: 'torch-a', kind: 'repeater' }],
+      ])
+      const expectedTorchA = [true, false, false, true, false, false, true, false, false]
+      const expectedTorchB = [true, true, false, true, true, false, true, true, false]
+      const expectedRepeater = [false, true, false, false, true, false, false, true, false]
+      let state = emptyTimedCircuitState
+
+      for (let tick = 0; tick < expectedTorchA.length; tick += 1) {
+        state = advanceTimedCircuit(board, state)
+        expect(state.torches?.get('torch-a')?.output).toBe(expectedTorchA[tick])
+        expect(state.torches?.get('torch-b')?.output).toBe(expectedTorchB[tick])
+        expect(state.repeaters.get('repeater')?.output).toBe(expectedRepeater[tick])
+      }
+    }),
+  )
+
+  it.effect('burns out only on the ninth forced-off transition and resumes once fewer than eight remain', () =>
     Effect.sync(() => {
       const board: CircuitBoard = {
         adjacency: new Map([['torch', []]]),
         components: new Map([['torch', { invertedBy: 'torch', kind: 'torch' }]]),
       }
-      let state = burnOutSelfInvertingTorch()
-
-      expect(state.torches?.get('torch')).toMatchObject({
-        burnoutRemainingTicks: TORCH_BURNOUT_COOLDOWN_TICKS,
+      const eightOffs = ticks(board, JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT * TORCH_CLOCK_PHASES)
+      expect(eightOffs.torches?.get('torch')).toMatchObject({
+        burnedOut: false,
         output: false,
       })
-      state = ticks(board, TORCH_BURNOUT_COOLDOWN_TICKS - NEXT_TICK, state)
+      expect(eightOffs.torches?.get('torch')?.recentOffTicks).toHaveLength(
+        JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT,
+      )
+
+      let state = ticks(board, TORCH_CLOCK_PHASES, eightOffs)
+      expect(
+        JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS * TORCH_CLOCK_PHASES * GAME_TICKS_PER_REDSTONE_TICK,
+      ).toBeLessThan(JAVA_TORCH_BURNOUT_WINDOW_GAME_TICKS)
+
+      expect(state.torches?.get('torch')).toMatchObject({
+        burnedOut: true,
+        output: false,
+      })
+      expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(
+        JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS,
+      )
+
+      state = ticks(board, JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS / TORCH_CLOCK_PHASES, state)
+      expect(state.torches?.get('torch')).toMatchObject({ burnedOut: true, output: false })
+      expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(
+        JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT,
+      )
       expect(state.torches?.get('torch')?.output).toBe(false)
+
       state = advanceTimedCircuit(board, state)
+      expect(state.torches?.get('torch')).toMatchObject({ burnedOut: false, output: true })
+      expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(
+        JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT - NEXT_TICK,
+      )
+    }),
+  )
+
+  it.effect('keeps an eighth change at 58 game ticks old and removes it at 60', () =>
+    Effect.sync(() => {
+      const board: CircuitBoard = {
+        adjacency: new Map([['torch', []]]),
+        components: new Map([['torch', { kind: 'torch' }]]),
+      }
+      const edgeState: TimedCircuitState = {
+        ...emptyTimedCircuitState,
+        torches: new Map([['torch', {
+          burnedOut: true,
+          output: false,
+          recentOffTicks: [
+            ...Array.from({ length: JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT - NEXT_TICK }, () => 0),
+            JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS - 2,
+          ],
+        }]]),
+      }
+
+      const oneTickBeforeExpiry = advanceTimedCircuit(board, edgeState)
+      expect(oneTickBeforeExpiry.torches?.get('torch')).toStrictEqual({
+        burnedOut: true,
+        output: false,
+        recentOffTicks: [
+          ...Array.from({ length: JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT - NEXT_TICK }, () => NEXT_TICK),
+          JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS - NEXT_TICK,
+        ],
+      })
+
+      const atExpiry = advanceTimedCircuit(board, oneTickBeforeExpiry)
+      expect(atExpiry.torches?.get('torch')).toStrictEqual({
+        burnedOut: false,
+        output: true,
+        recentOffTicks: Array.from(
+          { length: JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT - NEXT_TICK },
+          () => 2,
+        ),
+      })
+    }),
+  )
+
+  it.effect('does not schedule the optional 160-game-tick relight attempt', () =>
+    Effect.sync(() => {
+      const board: CircuitBoard = {
+        adjacency: new Map([['torch', []]]),
+        components: new Map([['torch', { kind: 'torch' }]]),
+      }
+      let state: TimedCircuitState = {
+        ...emptyTimedCircuitState,
+        torches: new Map([['torch', {
+          burnedOut: true,
+          output: false,
+          recentOffTicks: Array.from({ length: JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT }, () => 0),
+        }]]),
+      }
+      state = ticks(board, JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS, state)
       expect(state.torches?.get('torch')?.output).toBe(true)
     }),
   )
@@ -418,14 +604,14 @@ describe('timed redstone', () => {
         adjacency: new Map(entries.map(([key]) => [key, []])),
         components: new Map(entries),
       })
-      const count = TORCH_BURNOUT_TOGGLE_LIMIT * TORCH_CLOCK_PHASES
+      const count = JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS * TORCH_CLOCK_PHASES
       const forward = ticks(makeBoard(cells), count)
       const reverse = ticks(makeBoard([...cells].reverse()), count)
 
       expect([...forward.power].sort()).toStrictEqual([...reverse.power].sort())
       expect([...forward.torches ?? []].sort()).toStrictEqual([...reverse.torches ?? []].sort())
-      expect(forward.torches?.get('a')?.burnoutRemainingTicks).toBeGreaterThan(NO_TICKS)
-      expect(forward.torches?.get('b')?.burnoutRemainingTicks).toBeGreaterThan(NO_TICKS)
+      expect(forward.torches?.get('a')?.burnedOut).toBe(true)
+      expect(forward.torches?.get('b')?.burnedOut).toBe(true)
     }),
   )
 
@@ -440,7 +626,7 @@ describe('timed redstone', () => {
       }
       const state = advanceTimedCircuit(board, emptyTimedCircuitState)
       expect(state.torches?.get('torch')).toStrictEqual({
-        burnoutRemainingTicks: NO_TICKS,
+        burnedOut: false,
         output: true,
         recentOffTicks: [],
       })

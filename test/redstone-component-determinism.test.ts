@@ -2,13 +2,13 @@ import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref, Result, Schema } from 'effect'
 import {
   BlockPositionSchema,
-  DeltaTimeSecs,
   DimensionIdSchema,
   NonNegativeTickCount,
   type BlockPosition,
   type FrameServices,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
+import { runStagesForTicks, type RunStagesForTicksFailure } from '@nerima-games/mc-sim'
 import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
@@ -30,7 +30,6 @@ import {
 } from '../src/domain/piston'
 import { type PowerLevel, type PowerMap } from '../src/domain/power-graph'
 import { makeRuntimeRedstoneStages } from '../src/stages/registration'
-import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 // eslint-disable-next-line sort-imports
 import { FrameServicesLayer } from './frame-services'
 
@@ -39,6 +38,7 @@ type RuntimeError =
   | RedstoneWorldRuntimeStateError
   | RedstoneWorldSnapshotDuplicatePositionError
   | Schema.SchemaError
+  | RunStagesForTicksFailure
 type TickObservation = {
   readonly power: ReadonlyArray<readonly [string, PowerLevel]>
   readonly events: RedstoneEventBatch
@@ -90,22 +90,10 @@ const makeSnapshot = (
   components: reverse ? [...components].reverse() : [...components],
 })
 
-const stageById = (
-  stages: ReadonlyArray<StageRegistration>,
-  id: string,
-): StageRegistration => {
-  const stage = stages.find((candidate) => candidate.id === id)
-  if (stage === undefined) throw new Error(`missing stage ${id}`)
-  return stage
-}
-
 const runFrame = (
   stages: ReadonlyArray<StageRegistration>,
 ): Effect.Effect<void, RuntimeError, FrameServices> =>
-  Effect.gen(function* () {
-    yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.1))
-    yield* stageById(stages, REDSTONE_STAGE_IDS.effects).run(DeltaTimeSecs(0.1))
-  })
+  runStagesForTicks(stages, NonNegativeTickCount(2))
 
 const runtimeProgram = <A>(
   use: (

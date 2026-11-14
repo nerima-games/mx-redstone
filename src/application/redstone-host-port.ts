@@ -33,6 +33,10 @@ import {
   type BlockId,
   type BlockPosition,
   type BlockRegistryResolutionFailure,
+  type BlockStateCodecFailure,
+  type BlockStateFacing,
+  BlockStateFacingSchema,
+  type BlockStateValues,
   type BlockType,
   type Dimension,
   type WorldWriteBatch,
@@ -40,7 +44,9 @@ import {
   blockIdOf,
   blockPositionKeyOf,
   capabilityOfBlockId,
+  decodeBlockState,
   isBlockType,
+  NonNegativeTickCount as nonNegativeTickCount,
 } from '@nerima-games/mc-kernel'
 import {
   type BlockCapabilityLookup,
@@ -96,6 +102,7 @@ import {
 import type { ContainerSlot } from '../domain/comparator.js'
 
 const blockAxis = BlockAxis
+const structSchema = Schema.Struct
 const schemaLiterals = Schema.Literals
 const NO_COMPONENT = Option.getOrUndefined(Option.none<RedstoneComponentSnapshot>())
 
@@ -139,14 +146,10 @@ const ZERO_ELAPSED_TICKS = 0
 /** The mc-kernel capability name `kernelPistonCapabilities` reads. */
 const PISTON_IMMOVABLE_CAPABILITY = 'pistonImmovable'
 
-/** The block id an extended piston's head cell holds. */
-const PISTON_HEAD_BLOCK = 'piston_head'
-
-/** How far behind a comparator its rear (input) cell sits, and how far in front its output cell sits. */
-const COMPARATOR_REAR_DISTANCE = 1
-
 /** How far to either side of a comparator its two side-input cells sit. */
 const COMPARATOR_SIDE_DISTANCE = 1
+/** A floor redstone torch is attached to, and inverted by, the block below it. */
+const TORCH_SUPPORT_Y_OFFSET = -1
 
 /**
  * `BlockCapabilityLookup` backed by mc-kernel's own capability table
@@ -166,17 +169,73 @@ export const kernelPistonCapabilities: BlockCapabilityLookup = {
 }
 
 /** One decoded host block address and the block occupying it. */
-const REDSTONE_HOST_BLOCK_TYPES = [...BLOCK_TYPES, 'note_block', 'sticky_piston', 'trapdoor'] as const
+const REDSTONE_HOST_BLOCK_TYPES = [...BLOCK_TYPES, 'note_block', 'trapdoor'] as const
 
-export type RedstoneHostBlockType = BlockType | 'note_block' | 'sticky_piston' | 'trapdoor'
+export type RedstoneHostBlockType = BlockType | 'note_block' | 'trapdoor'
 export const RedstoneHostBlockTypeSchema: Schema.Codec<RedstoneHostBlockType, RedstoneHostBlockType> =
   schemaLiterals(REDSTONE_HOST_BLOCK_TYPES)
+
+type BlockStateRequiredFields = Readonly<{
+  comparator: readonly ['facing', 'mode', 'powered']
+  dispenser: readonly ['facing', 'triggered']
+  dropper: readonly ['facing', 'triggered']
+  hopper: readonly ['facing', 'enabled']
+  observer: readonly ['facing', 'powered']
+  piston: readonly ['facing', 'extended']
+  sticky_piston: readonly ['facing', 'extended']
+  redstone_torch: readonly ['lit']
+  redstone_wall_torch: readonly ['facing', 'lit']
+  repeater: readonly ['facing', 'delay', 'locked', 'powered']
+}>
+
+type StatefulHostBlockType = keyof BlockStateRequiredFields
+type HorizontalFacing = Extract<BlockStateFacing, 'north' | 'east' | 'south' | 'west'>
+type RequiredBlockState = {
+  readonly [Block in StatefulHostBlockType]: Required<
+    Pick<BlockStateValues, BlockStateRequiredFields[Block][number]>
+  > & (Block extends 'comparator' | 'repeater' | 'redstone_wall_torch' ? Readonly<{ facing: HorizontalFacing }> : unknown)
+}
+const horizontalFacingSchema = schemaLiterals(['east', 'north', 'south', 'west'] as const)
+const comparatorModeSchema = schemaLiterals(['compare', 'subtract'] as const)
+const ONE_TICK_DELAY = 1
+const TWO_TICK_DELAY = 2
+const THREE_TICK_DELAY = 3
+const FOUR_TICK_DELAY = 4
+const REPEATER_DELAY_VALUES = [ONE_TICK_DELAY, TWO_TICK_DELAY, THREE_TICK_DELAY, FOUR_TICK_DELAY] as const
+const repeaterDelaySchema = schemaLiterals(REPEATER_DELAY_VALUES)
+const comparatorBlockStateSchema: Schema.Codec<RequiredBlockState['comparator'], BlockStateValues> =
+  structSchema({ facing: horizontalFacingSchema, mode: comparatorModeSchema, powered: Schema.Boolean })
+const dispenserBlockStateSchema: Schema.Codec<RequiredBlockState['dispenser'], BlockStateValues> =
+  structSchema({ facing: BlockStateFacingSchema, triggered: Schema.Boolean })
+const hopperBlockStateSchema: Schema.Codec<RequiredBlockState['hopper'], BlockStateValues> =
+  structSchema({ enabled: Schema.Boolean, facing: BlockStateFacingSchema })
+const observerBlockStateSchema: Schema.Codec<RequiredBlockState['observer'], BlockStateValues> =
+  structSchema({ facing: BlockStateFacingSchema, powered: Schema.Boolean })
+const pistonBlockStateSchema: Schema.Codec<RequiredBlockState['piston'], BlockStateValues> =
+  structSchema({ extended: Schema.Boolean, facing: BlockStateFacingSchema })
+const torchBlockStateSchema: Schema.Codec<RequiredBlockState['redstone_torch'], BlockStateValues> =
+  structSchema({ lit: Schema.Boolean })
+const wallTorchBlockStateSchema: Schema.Codec<RequiredBlockState['redstone_wall_torch'], BlockStateValues> =
+  structSchema({ facing: horizontalFacingSchema, lit: Schema.Boolean })
+const repeaterBlockStateSchema: Schema.Codec<RequiredBlockState['repeater'], BlockStateValues> = structSchema({
+  delay: repeaterDelaySchema,
+  facing: horizontalFacingSchema,
+  locked: Schema.Boolean,
+  powered: Schema.Boolean,
+})
 
 export type RedstoneHostBlock = {
   readonly address: BlockAddress
   readonly block: RedstoneHostBlockType | null
+  readonly encodedState?: unknown
   readonly strongPowerTo?: BlockPosition
 }
+
+/** A block and its packed state read from an observer's watched position. */
+export type RedstoneHostObservedBlock = Readonly<{
+  readonly block: RedstoneHostBlockType
+  readonly encodedState: unknown
+}>
 
 /**
  * Peripheral reads `componentForBlock` needs beyond the bare block string —
@@ -195,8 +254,8 @@ export type RedstoneHostLookup = {
     sourceAbove: HopperAdjacentContainer | null
     destinationFacing: HopperAdjacentContainer | null
   }>
+  readonly readObservedBlock?: (position: BlockPosition) => RedstoneHostObservedBlock | undefined
   readonly readPistonCell: (position: BlockPosition) => PistonCellRead
-  readonly readPistonFacing: (position: BlockPosition) => PistonFacing
 }
 
 type ExpectedHopperDimensionRevision = WorldCommitRequest['expectedDimensions'][number]['expectedRevision']
@@ -245,6 +304,12 @@ export type RedstoneHostEventFailure =
 
 export type RedstoneHostPositionFailure = Readonly<{ _tag: 'RedstoneHostPositionOutOfRange' }>
 
+export type RedstoneHostBlockStateFailure =
+  | BlockStateCodecFailure
+  | Readonly<{ _tag: 'RedstoneHostEncodedBlockStateMissing'; block: StatefulHostBlockType }>
+  | Readonly<{ _tag: 'RedstoneHostBlockStateSchemaFailure'; block: StatefulHostBlockType }>
+  | Readonly<{ _tag: 'RedstoneHostObservedBlockUnavailable'; position: BlockPosition }>
+
 export type RedstoneHostHopperFailure =
   | Readonly<{ _tag: 'RedstoneHostHopperSelectionInvalid'; event: HopperTransferEvent }>
   | Readonly<{ _tag: 'RedstoneHostHopperBlockMissing'; event: HopperTransferEvent }>
@@ -265,23 +330,48 @@ const withContainerSlots = (
   return { containerSlots }
 }
 
-/** Whether a read piston head cell shows the piston currently extended. */
-const isPistonHeadExtended = (head: PistonCellRead): boolean =>
-  head.kind === 'block' && head.block === PISTON_HEAD_BLOCK
-
-/** `isPistonHeadExtended`, named for the component snapshot field it fills. */
-const pistonStateFromHead = (head: PistonCellRead): 'extended' | 'retracted' => {
-  if (isPistonHeadExtended(head)) {
-    return 'extended'
+const encodedBlockStateBlockId = <Block extends StatefulHostBlockType>(
+  block: Block,
+  encodedState: unknown,
+): Result.Result<BlockId, RedstoneHostBlockStateFailure> => {
+  if (typeof encodedState === 'undefined') {
+    return Result.fail({ _tag: 'RedstoneHostEncodedBlockStateMissing', block })
   }
-  return 'retracted'
+  return Result.fromOption(blockIdOf(block), () => ({ _tag: 'BlockStateCodecFailure', reason: 'unknown-block-id' }))
 }
 
-const pistonKindFromBlock = (block: RedstoneHostBlockType): 'normal' | 'sticky' => {
-  if (block === 'sticky_piston') {
-    return 'sticky'
+/**
+ * The kernel decoder emits every slot declared for the selected block ID.
+ * Decode that complete value against a block-specific schema to recover the
+ * required fields and horizontal facings without an unchecked assertion.
+ */
+const decodeRequiredBlockState = <State>(
+  block: StatefulHostBlockType,
+  encodedState: unknown,
+  stateSchema: Schema.Codec<State, BlockStateValues>,
+): Result.Result<State, RedstoneHostBlockStateFailure> => {
+  const blockId = encodedBlockStateBlockId(block, encodedState)
+  if (Result.isFailure(blockId)) {
+    return Result.fail(blockId.failure)
   }
-  return 'normal'
+  const decoded = decodeBlockState(blockId.success, encodedState)
+  if (Result.isFailure(decoded)) {
+    return Result.fail(decoded.failure)
+  }
+  const state = Schema.decodeUnknownResult(stateSchema)(decoded.success)
+  if (Result.isFailure(state)) {
+    return Result.fail({ _tag: 'RedstoneHostBlockStateSchemaFailure', block })
+  }
+  return Result.succeed(state.success)
+}
+
+const oppositeFacing: Readonly<Record<BlockStateFacing, BlockStateFacing>> = {
+  down: 'up',
+  east: 'west',
+  north: 'south',
+  south: 'north',
+  up: 'down',
+  west: 'east',
 }
 
 const blockPositionAt = (x: number, y: number, z: number): Result.Result<BlockPosition, RedstoneHostPositionFailure> => {
@@ -315,61 +405,208 @@ const safePistonPositionAt = (
 
 type ComponentBuilderInput = Readonly<{
   block: RedstoneHostBlockType
+  encodedState?: unknown
   lookup: RedstoneHostLookup
   position: BlockPosition
   strongPowerTo?: BlockPosition
 }>
 
-const comparatorComponent = (
-  input: ComponentBuilderInput,
-): Result.Result<RedstoneComponentSnapshot, RedstoneHostPositionFailure> =>
+type RedstoneHostComponentFailure = RedstoneHostPositionFailure | RedstoneHostBlockStateFailure
+
+const directionalCells = (
+  position: BlockPosition,
+  facing: BlockStateFacing,
+): Result.Result<Readonly<{ inputFrom: BlockPosition; outputTo: BlockPosition }>, RedstoneHostPositionFailure> =>
+  Result.gen(function* directionalCellsGenerator() {
+    const inputFrom = yield* safePistonPositionAt(position, oppositeFacing[facing], PISTON_HEAD_DISTANCE)
+    const outputTo = yield* safePistonPositionAt(position, facing, PISTON_HEAD_DISTANCE)
+    return { inputFrom, outputTo }
+  })
+
+const comparatorSideInputs = (
+  position: BlockPosition,
+  facing: HorizontalFacing,
+): Result.Result<ReadonlyArray<BlockPosition>, RedstoneHostComponentFailure> => {
+  if (facing === 'north' || facing === 'south') {
+    return Result.all([
+      blockPositionAt(position.x - COMPARATOR_SIDE_DISTANCE, position.y, position.z),
+      blockPositionAt(position.x + COMPARATOR_SIDE_DISTANCE, position.y, position.z),
+    ])
+  }
+  return Result.all([
+    blockPositionAt(position.x, position.y, position.z - COMPARATOR_SIDE_DISTANCE),
+    blockPositionAt(position.x, position.y, position.z + COMPARATOR_SIDE_DISTANCE),
+  ])
+}
+
+const comparatorComponent: ComponentBuilder = (input) =>
   Result.gen(function* comparatorComponentGenerator() {
-    const { lookup, position } = input
-    const inputFrom = yield* blockPositionAt(position.x, position.y, position.z + COMPARATOR_REAR_DISTANCE)
-    const outputTo = yield* blockPositionAt(position.x, position.y, position.z - COMPARATOR_REAR_DISTANCE)
-    const west = yield* blockPositionAt(position.x - COMPARATOR_SIDE_DISTANCE, position.y, position.z)
-    const east = yield* blockPositionAt(position.x + COMPARATOR_SIDE_DISTANCE, position.y, position.z)
+    const state = yield* decodeRequiredBlockState('comparator', input.encodedState, comparatorBlockStateSchema)
+    const cells = yield* directionalCells(input.position, state.facing)
+    const sideInputs = yield* comparatorSideInputs(input.position, state.facing)
     return {
-      inputFrom,
+      facing: state.facing,
+      inputFrom: cells.inputFrom,
       kind: 'comparator',
-      mode: 'compare',
-      outputTo,
-      position,
-      sideInputs: [west, east],
-      ...withContainerSlots(lookup.readContainerSlots(inputFrom)),
+      mode: state.mode,
+      outputTo: cells.outputTo,
+      position: input.position,
+      powered: state.powered,
+      sideInputs,
+      ...withContainerSlots(input.lookup.readContainerSlots(cells.inputFrom)),
     }
   })
 
-const pistonComponent = (
-  input: ComponentBuilderInput,
-): Result.Result<RedstoneComponentSnapshot, RedstoneHostPositionFailure> => {
-  const { lookup, position, block } = input
-  const facing = lookup.readPistonFacing(position)
-  return Result.map(
-    safePistonPositionAt(position, facing, PISTON_HEAD_DISTANCE),
-    (safeHeadPosition) => {
-      const head = lookup.readPistonCell(safeHeadPosition)
-      return {
-        kind: 'piston',
-        pistonFacing: facing,
-        pistonKind: pistonKindFromBlock(block),
-        pistonState: pistonStateFromHead(head),
-        position,
-      }
-    },
-  )
+const repeaterComponent: ComponentBuilder = (input) =>
+  Result.gen(function* repeaterComponentGenerator() {
+    const state = yield* decodeRequiredBlockState('repeater', input.encodedState, repeaterBlockStateSchema)
+    const cells = yield* directionalCells(input.position, state.facing)
+    return {
+      delayTicks: nonNegativeTickCount(state.delay),
+      facing: state.facing,
+      inputFrom: cells.inputFrom,
+      kind: 'repeater',
+      locked: state.locked,
+      outputTo: cells.outputTo,
+      position: input.position,
+      powered: state.powered,
+    }
+  })
+
+const pistonStateFor = (extended: boolean): 'extended' | 'retracted' => {
+  if (extended) {
+    return 'extended'
+  }
+  return 'retracted'
 }
+
+const pistonKindFor = (block: 'piston' | 'sticky_piston'): 'normal' | 'sticky' => {
+  if (block === 'sticky_piston') {
+    return 'sticky'
+  }
+  return 'normal'
+}
+
+const pistonComponentFor = (block: 'piston' | 'sticky_piston'): ComponentBuilder => (input) =>
+  Result.map(decodeRequiredBlockState(block, input.encodedState, pistonBlockStateSchema), (state) => ({
+    kind: 'piston',
+    pistonFacing: state.facing,
+    pistonKind: pistonKindFor(block),
+    pistonState: pistonStateFor(state.extended),
+    position: input.position,
+  }))
+
+const observedBlockId = (block: RedstoneHostBlockType): Result.Result<BlockId, RedstoneHostBlockStateFailure> => {
+  if (!isBlockType(block)) {
+    return Result.fail({ _tag: 'BlockStateCodecFailure', reason: 'unknown-block-id' })
+  }
+  return Result.fromOption(blockIdOf(block), () => ({ _tag: 'BlockStateCodecFailure', reason: 'unknown-block-id' }))
+}
+
+const observerIdentityFromState = (
+  block: RedstoneHostBlockType,
+  encodedState: unknown,
+): Result.Result<string, RedstoneHostBlockStateFailure> => {
+  const blockId = observedBlockId(block)
+  if (Result.isFailure(blockId)) {
+    return Result.fail(blockId.failure)
+  }
+  const state = decodeBlockState(blockId.success, encodedState)
+  if (Result.isFailure(state)) {
+    return Result.fail(state.failure)
+  }
+  return Result.succeed(`${block}:${encodedState}`)
+}
+
+const observerIdentityAt = (
+  lookup: RedstoneHostLookup,
+  position: BlockPosition,
+): Result.Result<string, RedstoneHostBlockStateFailure> => {
+  const observed = lookup.readObservedBlock?.(position)
+  if (typeof observed === 'undefined') {
+    return Result.fail({ _tag: 'RedstoneHostObservedBlockUnavailable', position })
+  }
+  return observerIdentityFromState(observed.block, observed.encodedState)
+}
+
+const observerComponent: ComponentBuilder = (input) =>
+  Result.gen(function* observerComponentGenerator() {
+    const state = yield* decodeRequiredBlockState('observer', input.encodedState, observerBlockStateSchema)
+    const inputFrom = yield* safePistonPositionAt(input.position, state.facing, PISTON_HEAD_DISTANCE)
+    const outputTo = yield* safePistonPositionAt(input.position, oppositeFacing[state.facing], PISTON_HEAD_DISTANCE)
+    const observedBlock = yield* observerIdentityAt(input.lookup, inputFrom)
+    return {
+      active: state.powered,
+      facing: state.facing,
+      inputFrom,
+      kind: 'observer',
+      observedBlock,
+      outputTo,
+      position: input.position,
+      powered: state.powered,
+    }
+  })
+
+const hopperComponent: ComponentBuilder = (input) =>
+  Result.map(decodeRequiredBlockState('hopper', input.encodedState, hopperBlockStateSchema), (state) => ({
+    enabled: state.enabled,
+    facing: state.facing,
+    kind: 'hopper',
+    position: input.position,
+  }))
+
+const dispenserComponent = (kind: 'dispenser' | 'dropper'): ComponentBuilder => (input) =>
+  Result.map(decodeRequiredBlockState(kind, input.encodedState, dispenserBlockStateSchema), (state) => ({
+    facing: state.facing,
+    kind,
+    position: input.position,
+    triggered: state.triggered,
+  }))
+
+const torchComponentFor = (block: 'redstone_torch' | 'redstone_wall_torch'): ComponentBuilder => (input) =>
+  Result.gen(function* torchComponentGenerator() {
+    if (block === 'redstone_torch') {
+      const state = yield* decodeRequiredBlockState(block, input.encodedState, torchBlockStateSchema)
+      const invertedBy = yield* blockPositionAt(
+        input.position.x,
+        input.position.y + TORCH_SUPPORT_Y_OFFSET,
+        input.position.z,
+      )
+      return {
+        active: state.lit,
+        invertedBy,
+        kind: 'torch',
+        position: input.position,
+      }
+    }
+    const state = yield* decodeRequiredBlockState(block, input.encodedState, wallTorchBlockStateSchema)
+    const invertedBy = yield* safePistonPositionAt(input.position, oppositeFacing[state.facing], PISTON_HEAD_DISTANCE)
+    return {
+      active: state.lit,
+      invertedBy,
+      kind: 'torch',
+      position: input.position,
+    }
+  })
 
 type ComponentPlacement = BlockPosition | Readonly<{
   position: BlockPosition
+  encodedState?: unknown
   strongPowerTo?: BlockPosition
 }>
 
 const componentPlacement = (
   position: BlockPosition,
   strongPowerTo?: BlockPosition,
+  encodedState?: unknown,
 ): ComponentPlacement => {
-  if (strongPowerTo) {
+  if (typeof encodedState !== 'undefined') {
+    if (typeof strongPowerTo !== 'undefined') {
+      return { encodedState, position, strongPowerTo }
+    }
+    return { encodedState, position }
+  }
+  if (typeof strongPowerTo !== 'undefined') {
     return { position, strongPowerTo }
   }
   return position
@@ -377,7 +614,7 @@ const componentPlacement = (
 
 type ComponentBuilder = (
   input: ComponentBuilderInput,
-) => Result.Result<RedstoneComponentSnapshot, RedstoneHostPositionFailure>
+) => Result.Result<RedstoneComponentSnapshot, RedstoneHostComponentFailure>
 
 /** A builder for the block kinds whose component needs no host lookup at all. */
 const fixedKindComponent = (kind: RedstoneComponentSnapshot['kind']): ComponentBuilder => ({ position }) =>
@@ -388,7 +625,9 @@ const poweredRailComponent: ComponentBuilder = ({ lookup, position }) =>
 
 const strongPowerTarget = (strongPowerTo: BlockPosition | undefined): Partial<Pick<RedstoneComponentSnapshot, 'strongPowerTo'>> => {
   if (strongPowerTo) {
-    return { strongPowerTo }
+    return {
+      strongPowerTo,
+    }
   }
   return {}
 }
@@ -418,34 +657,57 @@ const buttonComponent: ComponentBuilder = ({ lookup, position, strongPowerTo }) 
  */
 const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, ComponentBuilder>>> = {
   comparator: comparatorComponent,
-  dispenser: fixedKindComponent('dispenser'),
+  dispenser: dispenserComponent('dispenser'),
   door: fixedKindComponent('door'),
   door_open: fixedKindComponent('door'),
-  dropper: fixedKindComponent('dropper'),
-  hopper: fixedKindComponent('hopper'),
+  dropper: dispenserComponent('dropper'),
+  hopper: hopperComponent,
   lever: leverComponent,
   note_block: fixedKindComponent('note-block'),
-  piston: pistonComponent,
+  observer: observerComponent,
+  piston: pistonComponentFor('piston'),
   powered_rail: poweredRailComponent,
   redstone_lamp: fixedKindComponent('lamp'),
   redstone_lamp_lit: fixedKindComponent('lamp'),
-  redstone_torch: fixedKindComponent('torch'),
+  redstone_torch: torchComponentFor('redstone_torch'),
+  redstone_wall_torch: torchComponentFor('redstone_wall_torch'),
   redstone_wire: fixedKindComponent('wire'),
-  sticky_piston: pistonComponent,
+  repeater: repeaterComponent,
+  sticky_piston: pistonComponentFor('sticky_piston'),
   stone_button: buttonComponent,
   trapdoor: fixedKindComponent('trapdoor'),
 }
 
+const componentBuilderInput = (
+  lookup: RedstoneHostLookup,
+  block: RedstoneHostBlockType,
+  placement: ComponentPlacement,
+): ComponentBuilderInput => {
+  if (!('position' in placement)) {
+    return { block, lookup, position: placement }
+  }
+  const input: ComponentBuilderInput = {
+    block,
+    lookup,
+    position: placement.position,
+    ...strongPowerTarget(placement.strongPowerTo),
+  }
+  if (typeof placement.encodedState === 'undefined') {
+    return input
+  }
+  return { ...input, encodedState: placement.encodedState }
+}
+
 /**
  * Classifies one host block into this repository's component roster, or
- * `undefined` when the block plays no redstone role. Piston facing and kind
- * come from host reads; see the file header for the event batch boundary.
+ * `undefined` when the block plays no redstone role. Stateful components use
+ * their packed kernel state; dynamic world facts remain host reads.
  */
 export const componentForBlock = (
   lookup: RedstoneHostLookup,
   block: RedstoneHostBlockType | null,
   placement: ComponentPlacement,
-): Result.Result<RedstoneComponentSnapshot | undefined, RedstoneHostPositionFailure> => {
+): Result.Result<RedstoneComponentSnapshot | undefined, RedstoneHostComponentFailure> => {
   if (block === null) {
     return Result.succeed(NO_COMPONENT)
   }
@@ -453,10 +715,7 @@ export const componentForBlock = (
   if (!builder) {
     return Result.succeed(NO_COMPONENT)
   }
-  if ('position' in placement) {
-    return builder({ block, lookup, position: placement.position, ...strongPowerTarget(placement.strongPowerTo) })
-  }
-  return builder({ block, lookup, position: placement })
+  return builder(componentBuilderInput(lookup, block, placement))
 }
 
 /**
@@ -467,10 +726,10 @@ export const componentForBlock = (
 export const redstoneSnapshotFromRealm = (
   realm: RedstoneHostRealm,
   blocks: ReadonlyArray<RedstoneHostBlock>,
-): Result.Result<RedstoneWorldSnapshot, RedstoneHostPositionFailure> =>
+): Result.Result<RedstoneWorldSnapshot, RedstoneHostComponentFailure> =>
   Result.gen(function* redstoneSnapshotFromRealmGenerator() {
-    const components = yield* Result.all(blocks.map(({ address, block, strongPowerTo }) =>
-      componentForBlock(realm.lookup, block, componentPlacement(address.position, strongPowerTo)),
+    const components = yield* Result.all(blocks.map(({ address, block, strongPowerTo, encodedState }) =>
+      componentForBlock(realm.lookup, block, componentPlacement(address.position, strongPowerTo, encodedState)),
     ))
     return {
       components: components.filter((component): component is RedstoneComponentSnapshot => Boolean(component)),

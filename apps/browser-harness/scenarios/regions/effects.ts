@@ -17,7 +17,13 @@ const hostBlock = (
   x: number,
   y: number,
   z: number,
-): HostFixtureInput['blocks'][number] => ({ block, position: hostPosition(x, y, z) })
+  state?: HostFixtureInput['blocks'][number]['state'],
+): HostFixtureInput['blocks'][number] => {
+  if (typeof state === 'undefined') {
+    return { block, position: hostPosition(x, y, z) }
+  }
+  return { block, position: hostPosition(x, y, z), state }
+}
 
 const hostScenario = (
   id: string,
@@ -49,26 +55,26 @@ export const effectScenarios: ReadonlyArray<BrowserScenario> = [
     'Piston push refusal',
     [
       hostBlock('lever', 0, 0, 0),
-      hostBlock('piston', 1, 0, 0),
+      hostBlock('piston', 1, 0, 0, { extended: false, facing: 'east' }),
       ...pistonLongColumn,
       hostBlock('lever', 0, 0, 2),
-      hostBlock('piston', 1, 0, 2),
+      hostBlock('piston', 1, 0, 2, { extended: false, facing: 'east' }),
       ...Array.from({ length: 12 }, (_, index) => hostBlock('stone', index + 2, 0, 2)),
       hostBlock('obsidian', 14, 0, 2),
     ],
     [],
-    { leverActive: true, pistonFacing: 'east' },
+    { leverActive: true },
   ),
   hostScenario(
     'rs.sticky-piston.retract-pull',
     'Sticky piston retract pull',
     [
-      hostBlock('sticky_piston', 0, 0, 0),
-      hostBlock('piston_head', 1, 0, 0),
-      hostBlock('stone', 2, 0, 0),
+      hostBlock('lever', 0, 0, 0),
+      hostBlock('sticky_piston', 1, 0, 0, { extended: true, facing: 'east' }),
+      hostBlock('stone', 3, 0, 0),
     ],
-    [{ dimension: dimensionName, kind: 'piston', position: hostPosition(0, 0, 0) }],
-    { leverActive: false, pistonFacing: 'east' },
+    [{ kind: 'piston', dimension: dimensionName, position: hostPosition(1, 0, 0) }],
+    { leverActive: false },
   ),
   hostScenario(
     'rs.hopper.lock-transfer',

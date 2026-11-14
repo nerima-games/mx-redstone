@@ -221,10 +221,6 @@ describe('public API surface', () => {
         'PISTON_PUSH_LIMIT',
         'planPush',
         'isPistonMovable',
-        // fixed-rate ticking
-        'REDSTONE_TICK_SECS',
-        'MAX_TICKS_PER_FRAME',
-        'ticksForFrame',
         'emptyCircuitBoard',
         'EXPERIENCE_MODULE_STAGE_PREFIXES',
         'OWN_STAGE_PREFIX',

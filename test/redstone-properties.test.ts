@@ -3,8 +3,8 @@ import * as fc from 'fast-check'
 import { Effect, Layer, Result, Schema } from 'effect'
 import {
   BlockPositionSchema,
-  DeltaTimeSecs,
   DimensionIdSchema,
+  NonNegativeTickCount,
   WorldIdSchema,
   WorldWriteBatchSchema,
   type BlockAddress,
@@ -18,6 +18,7 @@ import {
   WorldCommitResultSchema,
   containerStorageOwnerRegistration,
   hopperOwnerRegistration,
+  runStagesForTicks,
   type WorldCommitRequest,
 } from '@nerima-games/mc-sim'
 import {
@@ -34,14 +35,12 @@ import {
   type RedstoneWorldRuntimeService,
 } from '../src/application/world-runtime'
 import { makeRuntimeRedstoneStages } from '../src/stages/registration'
-import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
 
 const strictDecode = { onExcessProperty: 'error' } as const
 const zero = 0
 const one = 1
 const two = 2
-const frameSeconds = 0.1
 const PROPERTY_RUN_COUNT = 50
 const testWorldId = Schema.decodeUnknownSync(WorldIdSchema)('redstone-properties')
 type RedstoneDimensionId = BlockAddress['dimension']
@@ -73,19 +72,8 @@ const drainEventBatch = (runtime: RedstoneWorldRuntimeService) =>
     }
   })
 
-const stageById = (stages: ReadonlyArray<StageRegistration>, id: string): StageRegistration => {
-  const stage = stages.find((candidate) => candidate.id === id)
-  if (typeof stage === 'undefined') {
-    throw new Error(`Missing redstone stage ${id}`)
-  }
-  return stage
-}
-
 const runFrame = (stages: ReadonlyArray<StageRegistration>) =>
-  Effect.gen(function* runFrameGenerator() {
-    yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(frameSeconds))
-    yield* stageById(stages, REDSTONE_STAGE_IDS.effects).run(DeltaTimeSecs(frameSeconds))
-  })
+  runStagesForTicks(stages, NonNegativeTickCount(2))
 
 const makeUnregisteredRuntime = (calls: { count: number }): RedstoneWorldRuntimeService => {
   const mark = () => Effect.sync(() => {
@@ -182,7 +170,6 @@ const runHostBatch = (positionX: number, mixedDimensions: boolean) => {
       readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
       readContainerSlots: () => undefined,
       readPistonCell: () => ({ kind: 'empty' }),
-      readPistonFacing: () => 'north',
     },
   }
   const coordinatorResult = Effect.runSync(Effect.result(makeWorldCommitCoordinator({

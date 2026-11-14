@@ -1,5 +1,9 @@
-import { BlockPositionSchema, type NonNegativeTickCount } from '@nerima-games/mc-kernel'
-import type { ButtonTimer, RepeaterTimer, TorchTimer } from '../domain/power-timing.js'
+import {
+  BlockPositionSchema,
+  type NonNegativeTickCount,
+  NonNegativeTickCount as nonNegativeTickCount,
+} from '@nerima-games/mc-kernel'
+import type { ButtonTimer, ObserverTimer, RepeaterTimer, TorchTimer } from '../domain/power-timing.js'
 import {
   type CircuitBoard,
   type Component,
@@ -582,6 +586,19 @@ const copySnapshotDynamicState = (
   ...withOptionalMapped('sideInputs', component.sideInputs, (positions) => positions.map(copyPosition)),
 })
 
+const copyObserverDynamicState = (
+  component: RedstoneComponentSnapshot,
+  timer: ObserverTimer | undefined,
+): Partial<Pick<RedstoneCellDynamicState, 'active' | 'pulseTicks'>> => {
+  if (component.kind !== 'observer' || typeof timer === 'undefined') {
+    return {}
+  }
+  return {
+    active: timer.output,
+    pulseTicks: nonNegativeTickCount(timer.remainingTicks),
+  }
+}
+
 const copyCellTimers = (
   nodeId: PositionKey,
   timedCircuit: {
@@ -618,9 +635,11 @@ export const observeRedstoneFrame = (
       dimensions: [...dimensions].map(([dimension, snapshots]) => ({
         cells: [...snapshots.values()].map((component) => {
           const nodeId = redstoneNodeId(dimension, component.position)
+          const observerTimer = timedCircuit.observers?.get(nodeId)
           return {
             dynamicState: {
               ...copySnapshotDynamicState(component),
+              ...copyObserverDynamicState(component, observerTimer),
               timers: copyCellTimers(nodeId, timedCircuit),
             },
             kind: component.kind,

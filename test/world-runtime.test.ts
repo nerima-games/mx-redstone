@@ -16,13 +16,13 @@ import {
 } from '../src/application/world-runtime'
 import {
   BlockPositionSchema,
-  DeltaTimeSecs,
   DimensionIdSchema,
   NonNegativeTickCount,
   type BlockPosition,
   type FrameServices,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
+import { runStagesForTicks, type RunStagesForTicksFailure } from '@nerima-games/mc-sim'
 import { makeRuntimeRedstoneStages } from '../src/stages/registration'
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 import { ContainerSlotSchema } from '../src/domain/comparator'
@@ -34,6 +34,7 @@ type RuntimeError =
   | RedstoneWorldRuntimeStateError
   | RedstoneWorldSnapshotDuplicatePositionError
   | Schema.SchemaError
+  | RunStagesForTicksFailure
 
 const dimensionId = (value: string): DimensionId =>
   Schema.decodeUnknownSync(DimensionIdSchema)(value)
@@ -101,10 +102,7 @@ const stageById = (
 const runFrame = (
   stages: ReadonlyArray<StageRegistration>,
 ): Effect.Effect<void, RuntimeError, FrameServices> =>
-  Effect.gen(function* () {
-    yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.1))
-    yield* stageById(stages, REDSTONE_STAGE_IDS.effects).run(DeltaTimeSecs(0.1))
-  })
+  runStagesForTicks(stages, NonNegativeTickCount(2))
 
 const runtimeProgram = <A>(
   use: (
@@ -583,7 +581,7 @@ describe('RedstoneWorldRuntime', () => {
     ),
   )
 
-  it.effect('preserves hopper power changes within a multi-tick frame', () =>
+  it.effect('preserves hopper power changes across two redstone ticks', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {
         yield* runtime.syncSnapshot(snapshot('overworld', [
@@ -592,7 +590,7 @@ describe('RedstoneWorldRuntime', () => {
         ]))
         yield* runtime.pressButton(dimensionId('overworld'), blockPosition(0, 0, 0))
 
-        yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.2))
+        yield* runStagesForTicks([stageById(stages, REDSTONE_STAGE_IDS.power)], NonNegativeTickCount(4))
         expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
           hopperTransferEvent('overworld', blockPosition(1, 0, 0), 1, true),
           hopperTransferEvent('overworld', blockPosition(1, 0, 0), 1, false),
@@ -615,7 +613,7 @@ describe('RedstoneWorldRuntime', () => {
           component(3, 'hopper'),
         ]))
 
-        yield* stageById(stages, REDSTONE_STAGE_IDS.power).run(DeltaTimeSecs(0.2))
+        yield* runStagesForTicks([stageById(stages, REDSTONE_STAGE_IDS.power)], NonNegativeTickCount(4))
 
         expect(yield* runtime.drainHopperTransferEvents).toStrictEqual([
           hopperTransferEvent('overworld', blockPosition(3, 0, 0), 1, false),
