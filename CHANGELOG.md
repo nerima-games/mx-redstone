@@ -1,5 +1,13 @@
 # @nerima-games/mx-redstone
 
+## 0.7.1
+
+### Patch Changes
+
+- Pin `@nerima-games/mc-sim` to 0.11.1 and `@nerima-games/mc-worldgen` to 0.9.1.
+
+- Document the 0.7.0 release details omitted from its notes: `@nerima-games/mc-kernel` 0.17.0, `@nerima-games/mc-sim` 0.11.0, and `@nerima-games/mc-worldgen` 0.9.0 pins. The adapter maps `sticky_piston` to a sticky piston component using its `facing` and `extended` state, and `redstone_wall_torch` to a torch component using its `lit` state and `facing` to locate its inversion source.
+
 ## 0.7.0
 
 ### Minor Changes
