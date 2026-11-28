@@ -3,7 +3,7 @@ import {
   type NonNegativeTickCount,
   NonNegativeTickCount as nonNegativeTickCount,
 } from '@nerima-games/mc-kernel'
-import type { ButtonTimer, ObserverTimer, RepeaterTimer, TorchTimer } from '../domain/power-timing.js'
+import type { ButtonTimer, ObserverTimer, RepeaterTimer, TargetTimer, TorchTimer } from '../domain/power-timing.js'
 import {
   type CircuitBoard,
   type Component,
@@ -29,6 +29,7 @@ import type { PositionKey } from '../domain/position-key.js'
 export type RedstoneCellTimers = {
   readonly button?: ButtonTimer
   readonly repeater?: RepeaterTimer
+  readonly target?: TargetTimer
   readonly torch?: TorchTimer
 }
 
@@ -604,16 +605,19 @@ const copyCellTimers = (
   timedCircuit: {
     readonly buttons: ReadonlyMap<PositionKey, ButtonTimer>
     readonly repeaters: ReadonlyMap<PositionKey, RepeaterTimer>
+    readonly targets?: ReadonlyMap<PositionKey, TargetTimer>
     readonly torches?: ReadonlyMap<PositionKey, TorchTimer>
   },
 ): RedstoneCellTimers => {
   const button = timedCircuit.buttons.get(nodeId)
   const repeater = timedCircuit.repeaters.get(nodeId)
+  const target = timedCircuit.targets?.get(nodeId)
   const torch = timedCircuit.torches?.get(nodeId)
 
   return {
     ...withOptionalMapped('button', button, (timer) => ({ ...timer })),
     ...withOptionalMapped('repeater', repeater, (timer) => ({ ...timer })),
+    ...withOptionalMapped('target', target, (timer) => ({ ...timer })),
     ...withOptionalMapped('torch', torch, (timer) => ({ ...timer, recentOffTicks: [...timer.recentOffTicks] })),
   }
 }

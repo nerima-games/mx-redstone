@@ -110,6 +110,7 @@ plan、merge、commit が失敗または中断した場合、古い fragment を
 ボタンは `pressButton(dimension, position)` で次tickのパルスを予約する。`pulseTicks` の既定値は
 10で、パルス中の再入力は残り時間を設定値へ戻す。リピーターの `delayTicks` は1–4に丸められ、
 入力のONとOFFの双方へ同じtick遅延を適用する。
+ターゲットは `hitTarget(dimension, position, hit)` で命中を次tickへ予約する。`hit.projectile` は host が決める区分（`'arrow'`、`'trident'`、`'other'`）で、省略時は `'other'` である。保持は矢とトライデントが10 redstone tick、それ以外が4 redstone tickで、保持中の命中は信号の強さも解除の時刻も変えない（vanilla の `TargetBlock` と同じ）。
 
 ## 5. `index.ts` の全エクスポート
 
@@ -203,12 +204,12 @@ event batchにはnote-block triggerとtrapdoor transitionも含めてrequestへ�
 ### `domain/power-timing.ts`（すべて内部で可視）
 
 `DEFAULT_BUTTON_PULSE_TICKS` / `TORCH_BURNOUT_TOGGLE_LIMIT` / `TORCH_BURNOUT_WINDOW_TICKS` /
-`TORCH_BURNOUT_COOLDOWN_TICKS` / `RepeaterTimer` / `ButtonTimer` / `TorchTimer` / `TimedCircuitState` /
+`TORCH_BURNOUT_COOLDOWN_TICKS` / `RepeaterTimer` / `ButtonTimer` / `TargetTimer` / `TorchTimer` / `TimedCircuitState` /
 `emptyTimedCircuitState` / `advanceTimedCircuit`
 
 ### `domain/target-block.ts`（すべて内部で可視）
 
-`TargetHit` / `targetSignal`
+`TargetProjectile` / `TargetHit` / `targetSignal` / `targetHoldTicks`
 
 ### `domain/piston.ts`
 
@@ -357,6 +358,7 @@ host adapter は登録済み block 名を kernel の `BlockId` に解決して `
 | `TORCH_BURNOUT_COOLDOWN_TICKS` | `domain/power-timing.ts` | 内部（可視） |
 | `RepeaterTimer` | `domain/power-timing.ts` | 内部（可視） |
 | `ButtonTimer` | `domain/power-timing.ts` | 内部（可視） |
+| `TargetTimer` | `domain/power-timing.ts` | 内部（可視） |
 | `TorchTimer` | `domain/power-timing.ts` | 内部（可視） |
 | `TimedCircuitState` | `domain/power-timing.ts` | 内部（可視） |
 | `emptyTimedCircuitState` | `domain/power-timing.ts` | 内部（可視） |
@@ -365,8 +367,10 @@ host adapter は登録済み block 名を kernel の `BlockId` に解決して `
 | `LIGHT_PLATE_CAPACITY` | `domain/pressure-plate.ts` | 内部（可視） |
 | `HEAVY_PLATE_CAPACITY` | `domain/pressure-plate.ts` | 内部（可視） |
 | `plateSignal` | `domain/pressure-plate.ts` | 内部（可視） |
+| `TargetProjectile` | `domain/target-block.ts` | 内部（可視） |
 | `TargetHit` | `domain/target-block.ts` | 内部（可視） |
 | `targetSignal` | `domain/target-block.ts` | 内部（可視） |
+| `targetHoldTicks` | `domain/target-block.ts` | 内部（可視） |
 | `emptyCircuitBoard` | `stages/registration.ts` | 内部（可視） |
 | `RedstoneFrameState` | `stages/registration.ts` | 内部（可視） |
 | `makeRedstoneFrameState` | `stages/registration.ts` | 内部（可視） |

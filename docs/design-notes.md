@@ -1,6 +1,6 @@
 # 設計ノート
 
-plan.md §3.12 has one design note, but the reference implementation contains more observations than fit in one line. This document numbers them `DN-RS-1`–`DN-RS-18`.
+plan.md §3.12 has one design note, but the reference implementation contains more observations than fit in one line. This document numbers them `DN-RS-1`–`DN-RS-19`.
 
 Each note records its evidence and impact and points to a related test or verification method. Not every note has a regression test; some claims require a different verification method, and unreachable branches cannot be exercised by tests.
 
@@ -953,3 +953,30 @@ powered pauseとunpowered countdownを`https://minecraft.wiki/w/Hopper`のfixtur
 **回帰テスト**: `test/world-runtime.test.ts` の `describe('lamp switch-off delay')` と
 `describe('dispenser and dropper action delay')`、`test/redstone-component-properties.test.ts` の
 `fires droppers and dispensers two redstone ticks after each rising edge`（独立した小さなモデルとの比較）。
+
+---
+
+## DN-RS-19 ターゲットの保持は命中が決め、保持中の命中は無視する
+
+### 規則
+
+host は `hitTarget(dimension, position, hit)` で命中を渡す。`hit.projectile`（`'arrow'` / `'trident'` / `'other'`）は host が決める。
+省略した命中は `'other'` として扱う。保持の長さは矢とトライデントが 10 redstone tick（20 game tick）、
+それ以外が 4 redstone tick（8 game tick）である。信号の強さは最初の命中の位置から `targetSignal` で決める。
+
+保持中の命中は信号の強さも解除の時刻も変えない。保持が終わる tick に来た命中は、新しい保持を始める。
+同じ tick に複数の命中が来たときは、最初の 1 つだけを使う。命中を受けていないターゲットはこれまでどおり
+スナップショットの `active` と `emits` をそのまま使う。
+
+### 出典
+
+保持の長さと、保持中の命中を無視する扱いは、Java Edition 1.16.5 の `TargetBlock` のソース
+（矢は `AbstractArrowEntity` として 20、それ以外は 8。予約済みの tick があれば何もしない）で確かめた。
+1.17.1、1.19.3、1.21 の javadoc の定数値も 20 と 8 である。これらのバージョンでの処理の本体は読んでいない。
+トライデントは `AbstractArrow` を継承するので矢と同じ扱いにした。
+
+### 命中ごとに保持を数え直す案との違い
+
+保持を命中のたびに数え直す案がある。1.16.5 のソースでは、予約済みの tick があるあいだの命中は
+信号も時刻も変えないので、本リポジトリは数え直さない。数え直しに変えるなら、
+`advanceTarget`（`domain/power-timing.ts`）の最初の分岐を外す。

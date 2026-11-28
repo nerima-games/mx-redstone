@@ -126,6 +126,8 @@ $ npm install --global pnpm@12.14.0
   以外では世界を変更しない。
   ボタン入力は `pressButton(dimension, position)` でキューへ積み、次の redstone tick から
   `pulseTicks`（既定 10 tick）だけ通電する。再入力は残り時間を設定値へ戻す。
+  ターゲットへの命中は `hitTarget(dimension, position, hit)` で積み、`hit.projectile`（省略時は `'other'`）に応じて
+  4 tick（矢とトライデントは 10 tick）通電する。保持中の命中は無視する。
   ピストン遷移、部品の trigger / powered 遷移、ホッパー移送は runtime event として蓄積する。
   `applyRedstoneHostEvents` はホストが渡す `RedstoneHostWritePort` と coordinator を通じて適用し、
   ホッパー移送では mc-sim の `HopperService` が作る plan も同じ commit に含める。

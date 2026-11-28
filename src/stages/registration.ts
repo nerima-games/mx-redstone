@@ -43,10 +43,11 @@ import {
 import {
   type TimedCircuitState,
   type TimedCircuitWithBlockPower,
-  advanceTimedCircuit,
   advanceTimedCircuitWithContext,
+  advanceTimedCircuitWithInputs,
   advanceTimedCircuitWithProvenanceContext,
 } from '../domain/power-timing.js'
+import type { TargetHit } from '../domain/target-block.js'
 
 type CircuitBoard = import('../domain/power-graph.js').CircuitBoard
 type PowerTickWithProvenance = import('../domain/power-graph.js').PowerTickWithProvenance
@@ -110,6 +111,7 @@ const timedCircuitWithoutBlockPower = (timedCircuit: TimedCircuitWithBlockPower)
   observers: timedCircuit.observers,
   power: timedCircuit.power,
   repeaters: timedCircuit.repeaters,
+  targets: timedCircuit.targets,
   torches: timedCircuit.torches,
 })
 
@@ -118,6 +120,7 @@ const advancePowerTick = (input: Readonly<{
   board: CircuitBoard
   timedCircuit: TimedCircuitState
   pressedButtons: ReadonlySet<PositionKey>
+  targetHits: ReadonlyMap<PositionKey, TargetHit>
 }>, context: RedstonePowerTickContextBundle): AdvancedPowerTick => {
   if (context.captureProvenance) {
     const advanced = advanceTimedCircuitWithProvenanceContext({
@@ -125,6 +128,7 @@ const advancePowerTick = (input: Readonly<{
       context: context.context,
       pressedButtons: input.pressedButtons,
       previous: input.timedCircuit,
+      targetHits: input.targetHits,
     })
     return {
       blockPower: advanced.blockPower,
@@ -138,6 +142,7 @@ const advancePowerTick = (input: Readonly<{
     context: context.context,
     pressedButtons: input.pressedButtons,
     previous: input.timedCircuit,
+    targetHits: input.targetHits,
   })
   return {
     blockPower: advanced.blockPower,
@@ -158,7 +163,11 @@ const isTimedOnlyContext = (
 const advancePower = (input: Readonly<{
   state: RedstoneFrameState
   board: CircuitBoard
-  seed: Readonly<{ timed: TimedCircuitState; pressedButtons: ReadonlySet<PositionKey> }>
+  seed: Readonly<{
+    timed: TimedCircuitState
+    pressedButtons: ReadonlySet<PositionKey>
+    targetHits: ReadonlyMap<PositionKey, TargetHit>
+  }>
 }>): Effect.Effect<AdvancedPowerTickResult> => Effect.gen(function* advancePowerGenerator() {
   const previousBlockPower = yield* Ref.get(input.state.blockPower)
   const contextForTick = yield* redstonePowerTickContextFactoryFor(input.state)
@@ -166,7 +175,10 @@ const advancePower = (input: Readonly<{
   if (isTimedOnlyContext(context, previousBlockPower)) {
     return {
       mode: 'timed-only',
-      timedCircuit: advanceTimedCircuit(input.board, input.seed.timed, input.seed.pressedButtons),
+      timedCircuit: advanceTimedCircuitWithInputs(input.board, input.seed.timed, {
+        pressedButtons: input.seed.pressedButtons,
+        targetHits: input.seed.targetHits,
+      }),
     }
   }
   return {
@@ -175,6 +187,7 @@ const advancePower = (input: Readonly<{
       board: input.board,
       pressedButtons: input.seed.pressedButtons,
       state: input.state,
+      targetHits: input.seed.targetHits,
       timedCircuit: input.seed.timed,
     }, context),
   }
@@ -234,8 +247,9 @@ export const redstoneStages = (state: RedstoneFrameState): ReadonlyArray<StageRe
         // Torch invert and therefore what makes every clock circuit work. See
         // `domain/power-graph.ts`.
         const pressedButtons = yield* Ref.getAndSet(state.pendingButtonPresses, new Set())
+        const targetHits = yield* Ref.getAndSet(state.pendingTargetHits, new Map())
         const timed = yield* Ref.get(state.timedCircuit)
-        const advanced = yield* advancePower({ board, seed: { pressedButtons, timed }, state })
+        const advanced = yield* advancePower({ board, seed: { pressedButtons, targetHits, timed }, state })
         yield* commitAdvancedPowerTick(state, advanced)
       }),
   },

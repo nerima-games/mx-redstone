@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import { MAX_POWER_LEVEL } from '../src/domain/signal-level'
-import { targetSignal } from '../src/domain/target-block'
+import { targetHoldTicks, targetSignal } from '../src/domain/target-block'
 
 const CENTRE = 0.5
 const EDGE = 0
@@ -9,6 +9,9 @@ const OPPOSITE_EDGE = 1
 const MID_SIGNAL = 8
 const MIN_SIGNAL = 1
 const MISS_SIGNAL = 0
+// Java Edition TargetBlock: 20 game ticks for an arrow or trident, 8 otherwise; two game ticks per redstone tick.
+const ARROW_HOLD_REDSTONE_TICKS = 10
+const OTHER_HOLD_REDSTONE_TICKS = 4
 
 describe('target block signal', () => {
   it.effect('a miss emits nothing and the bullseye emits full power', () =>
@@ -55,6 +58,21 @@ describe('target block signal', () => {
       ]) {
         expect(targetSignal(hit)).toBe(MIN_SIGNAL)
       }
+    }),
+  )
+
+  it.effect('holds a hit for 20 game ticks for arrows and tridents and 8 for anything else', () =>
+    Effect.sync(() => {
+      const hit = { horizontal: CENTRE, vertical: CENTRE }
+      expect(targetHoldTicks({ ...hit, projectile: 'arrow' })).toBe(ARROW_HOLD_REDSTONE_TICKS)
+      expect(targetHoldTicks({ ...hit, projectile: 'trident' })).toBe(ARROW_HOLD_REDSTONE_TICKS)
+      expect(targetHoldTicks({ ...hit, projectile: 'other' })).toBe(OTHER_HOLD_REDSTONE_TICKS)
+    }),
+  )
+
+  it.effect('a hit that names no projectile counts as any other projectile', () =>
+    Effect.sync(() => {
+      expect(targetHoldTicks({ horizontal: CENTRE, vertical: CENTRE })).toBe(OTHER_HOLD_REDSTONE_TICKS)
     }),
   )
 })

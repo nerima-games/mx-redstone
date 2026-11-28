@@ -27,6 +27,7 @@ import { runStagesForTicks, type RunStagesForTicksFailure } from '@nerima-games/
 import { makeRuntimeRedstoneStages } from '../src/stages/registration'
 import { REDSTONE_STAGE_IDS } from '../src/stages/stage-ids'
 import { ContainerSlotSchema } from '../src/domain/comparator'
+import { powerAt } from '../src/domain/power-graph'
 // eslint-disable-next-line sort-imports
 import { FrameServicesLayer } from './frame-services'
 
@@ -150,6 +151,23 @@ const drainTriggersPerFrame = (
       drained.push([...(yield* runtime.drainTriggerEvents)])
     }
     return drained
+  })
+
+/** Power on the wire at `x` after each of `count` redstone ticks. */
+const wirePowerPerFrame = (
+  runtime: RedstoneWorldRuntimeService,
+  stages: ReadonlyArray<StageRegistration>,
+  options: { readonly count: number; readonly dimension?: string; readonly x?: number },
+) =>
+  Effect.gen(function* () {
+    const state = yield* redstoneWorldStateFor(runtime)
+    const key = redstoneNodeId(options.dimension ?? 'overworld', { x: options.x ?? 1, y: 0, z: 0 })
+    const readings: Array<number> = []
+    for (let frame = 0; frame < options.count; frame += 1) {
+      yield* runFrame(stages)
+      readings.push(powerAt(yield* Ref.get(state.power), key))
+    }
+    return readings
   })
 
 const runtimeProgram = <A>(
@@ -633,6 +651,82 @@ describe('RedstoneWorldRuntime', () => {
     )
   })
 
+  describe('target hits', () => {
+    const targetCircuit = (dimension = 'overworld') => snapshot(dimension, [
+      component(0, 'target'),
+      component(1, 'wire'),
+    ])
+    const centre = { horizontal: 0.5, vertical: 0.5 }
+    const offCentre = { horizontal: 0.25, vertical: 0.5 }
+
+    it.effect('holds a hit for the projectile hold time and then releases the target', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(targetCircuit())
+          yield* runtime.hitTarget(dimensionId('overworld'), blockPosition(0), { ...centre, projectile: 'arrow' })
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 12 })).toStrictEqual(
+            [15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 0, 0],
+          )
+
+          yield* runtime.hitTarget(dimensionId('overworld'), blockPosition(0), centre)
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 6 })).toStrictEqual([15, 15, 15, 15, 0, 0])
+        }),
+      ),
+    )
+
+    it.effect('ignores a hit while the target is still held, as the first hit sets signal and release', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(targetCircuit())
+          yield* runtime.hitTarget(dimensionId('overworld'), blockPosition(0), offCentre)
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 2 })).toStrictEqual([8, 8])
+
+          yield* runtime.hitTarget(dimensionId('overworld'), blockPosition(0), { ...centre, projectile: 'arrow' })
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 4 })).toStrictEqual([8, 8, 0, 0])
+        }),
+      ),
+    )
+
+    it.effect('takes the first hit queued for a tick', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(targetCircuit())
+          yield* runtime.hitTarget(dimensionId('overworld'), blockPosition(0), offCentre)
+          yield* runtime.hitTarget(dimensionId('overworld'), blockPosition(0), { ...centre, projectile: 'arrow' })
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 5 })).toStrictEqual([8, 8, 8, 8, 0])
+        }),
+      ),
+    )
+
+    it.effect('drops a hit that finds no target and does not keep it for a target that appears later', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(snapshot('overworld', [component(0, 'wire'), component(1, 'wire')]))
+          yield* runtime.hitTarget(dimensionId('overworld'), blockPosition(0), centre)
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 1 })).toStrictEqual([0])
+
+          yield* runtime.syncSnapshot(targetCircuit())
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 2 })).toStrictEqual([0, 0])
+        }),
+      ),
+    )
+
+    it.effect('keeps a hit to its own dimension', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(targetCircuit('overworld'))
+          yield* runtime.syncSnapshot(targetCircuit('nether'))
+          yield* runtime.hitTarget(dimensionId('nether'), blockPosition(0), centre)
+          yield* runFrame(stages)
+          const state = yield* redstoneWorldStateFor(runtime)
+          const power = yield* Ref.get(state.power)
+          expect(powerAt(power, redstoneNodeId('nether', { x: 1, y: 0, z: 0 }))).toBe(15)
+          expect(powerAt(power, redstoneNodeId('overworld', { x: 1, y: 0, z: 0 }))).toBe(0)
+        }),
+      ),
+    )
+  })
+
   it.effect('keeps identical coordinates isolated between dimensions', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {
@@ -1019,6 +1113,7 @@ describe('RedstoneWorldRuntime', () => {
         drainPistonTransitions: Effect.succeed([]),
         drainPoweredComponentTransitions: Effect.succeed([]),
         drainTriggerEvents: Effect.succeed([]),
+        hitTarget: () => Effect.void,
         pressButton: () => Effect.void,
         restoreEvents: () => Effect.void,
         syncSnapshot: () => Effect.void,
