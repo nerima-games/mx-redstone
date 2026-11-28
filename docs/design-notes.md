@@ -1,6 +1,6 @@
 # 設計ノート
 
-plan.md §3.12 has one design note, but the reference implementation contains more observations than fit in one line. This document numbers them `DN-RS-1`–`DN-RS-20`.
+plan.md §3.12 has one design note, but the reference implementation contains more observations than fit in one line. This document numbers them `DN-RS-1`–`DN-RS-21`.
 
 Each note records its evidence and impact and points to a related test or verification method. Not every note has a regression test; some claims require a different verification method, and unreachable branches cannot be exercised by tests.
 
@@ -1008,4 +1008,25 @@ Java Edition 1.16.5 の `AbstractPressurePlateBlock`、`PressurePlateBlock`、`W
 `tick` は強さが正のときに再計算して、まだ正なら再び予約する）で確かめた。
 1.21.1 のソース（`getPressedTime` が 20 と、重量板の 10。石の板は `MOBS`、木の板は `EVERYTHING`）でも同じである。
 資料によって周期の記述が異なるので、本リポジトリはこの 2 つのソースに合わせた。
+
+---
+
+## DN-RS-21 host の読みは vanilla の条件を写す
+
+### コンパレータは導体の後ろの容器を読む
+
+バニラのコンパレータは、直後ろのブロックが容器ならその信号を読む。容器でなく、レッドストーンを通す固体ブロックなら、
+その後ろのブロックを読む。`componentForBlock` は、直後ろに容器の読み取りが無く、
+`RedstoneHostLookup.isRedstoneConductiveAt` が直後ろを導体と答えたときに、1 ブロック先の容器を読む。
+`inputFrom` は直後ろのブロックのままである。`isRedstoneConductiveAt` を渡さない host はこれまでどおり直後ろだけを読む。
+
+バニラはこの読みを、直後ろのブロックが運ぶ電力が 15 未満のときに限る。host は snapshot を作る時点で電力を知らないので、
+この条件は写していない。導体が 15 を運んでいる場合、バニラは容器を読まず、本リポジトリは読む。
+フレームに入ったアイテムの読みも写していない。
+
+### 出典
+
+Java Edition 1.16.5 の `ComparatorBlock.calculateInputStrength` と、1.21.1 の `ComparatorBlock.getInputSignal` のソースで確かめた。
+どちらも、直後ろが比較器の入力を上書きするブロックならそれを使い、そうでなければ電力が 15 未満で固体の導体のときに
+1 ブロック先を読む。
 

@@ -439,11 +439,32 @@ const comparatorSideInputs = (
   ])
 }
 
+/**
+ * The container a comparator reads. Vanilla reads the block behind it, and when that block is
+ * not a container but conducts redstone it reads the block behind that one instead. The conduction
+ * answer needs the host's `isRedstoneConductiveAt`; without it only the block directly behind counts.
+ */
+const comparatorContainerSlots = (
+  lookup: RedstoneHostLookup,
+  inputFrom: BlockPosition,
+  facing: HorizontalFacing,
+): Result.Result<ReadonlyArray<ContainerSlot> | undefined, RedstoneHostPositionFailure> => {
+  const direct = lookup.readContainerSlots(inputFrom)
+  if (typeof direct !== 'undefined' || lookup.isRedstoneConductiveAt?.(inputFrom) !== true) {
+    return Result.succeed(direct)
+  }
+  return Result.map(
+    safePistonPositionAt(inputFrom, oppositeFacing[facing], PISTON_HEAD_DISTANCE),
+    (beyond) => lookup.readContainerSlots(beyond),
+  )
+}
+
 const comparatorComponent: ComponentBuilder = (input) =>
   Result.gen(function* comparatorComponentGenerator() {
     const state = yield* decodeRequiredBlockState('comparator', input.encodedState, comparatorBlockStateSchema)
     const cells = yield* directionalCells(input.position, state.facing)
     const sideInputs = yield* comparatorSideInputs(input.position, state.facing)
+    const containerSlots = yield* comparatorContainerSlots(input.lookup, cells.inputFrom, state.facing)
     return {
       facing: state.facing,
       inputFrom: cells.inputFrom,
@@ -453,7 +474,7 @@ const comparatorComponent: ComponentBuilder = (input) =>
       position: input.position,
       powered: state.powered,
       sideInputs,
-      ...withContainerSlots(input.lookup.readContainerSlots(cells.inputFrom)),
+      ...withContainerSlots(containerSlots),
     }
   })
 

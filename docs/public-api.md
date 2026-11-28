@@ -184,6 +184,7 @@ event batchにはnote-block triggerとtrapdoor transitionも含めてrequestへ�
 `RedstoneHostBlock.strongPowerTo`はレバーやボタンの配置先を表し、対応するcomponent snapshotへ渡す。配置先を強く給電するソースでは、この値を指定する。`RedstoneHostLookup.isButtonActive`はボタンの状態を読み取る任意の関数で、省略時はボタンを非アクティブとして扱う。
 
 `RedstoneHostLookup.isRedstoneConductiveAt`は、そのrealmのdimension内にある位置のredstone導電性を返す。固体ブロック経由の給電には、hostがこのcallbackを`syncSnapshot`に渡し、対象の`RedstoneHostBlock`に`strongPowerTo`を指定する。どちらかを省略した場合は、従来どおりの結果になる。
+コンパレータの snapshot を作るときは、直後ろのブロックが容器でなく、かつこのcallbackが導体と答えるなら、その後ろのブロックから容器を読む（[DN-RS-21](./design-notes.md#dn-rs-21-host-の読みは-vanilla-の条件を写す)）。callbackを省略すると、直後ろのブロックだけを読む。
 
 ### `stages/stage-ids.ts`
 

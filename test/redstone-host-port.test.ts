@@ -547,6 +547,91 @@ describe('componentForBlock', () => {
       }),
   )
 
+  describe('a comparator reading through a conductive block', () => {
+    const position = blockPosition(2, 0, 0)
+    const behind = blockPosition(2, 0, 1)
+    const beyond = blockPosition(2, 0, 2)
+    const slots = [Schema.decodeUnknownSync(ContainerSlotSchema)({ count: 32, maxStack: 64 })]
+    const lookupFor = (options: {
+      readonly conductive: boolean
+      readonly containers: ReadonlyArray<BlockPosition>
+    }): { readonly lookup: RedstoneHostLookup; readonly reads: Array<BlockPosition> } => {
+      const reads: Array<BlockPosition> = []
+      const lookup: RedstoneHostLookup = {
+        ...missingLookup,
+        isRedstoneConductiveAt: (at) => options.conductive && at.x === behind.x && at.y === behind.y && at.z === behind.z,
+        readContainerSlots: (at) => {
+          reads.push(at)
+          if (options.containers.some((container) => container.x === at.x && container.y === at.y && container.z === at.z)) {
+            return slots
+          }
+          return undefined
+        },
+      }
+      return { lookup, reads }
+    }
+
+    it.effect('reads the container behind a block that conducts redstone and keeps inputFrom on that block', () =>
+      Effect.sync(() => {
+        const { lookup, reads } = lookupFor({ conductive: true, containers: [beyond] })
+        const component = componentValue(lookup, 'comparator', position)
+        expect(component?.containerSlots).toStrictEqual(slots)
+        expect(component?.inputFrom).toStrictEqual(behind)
+        expect(reads).toStrictEqual([behind, beyond])
+      }),
+    )
+
+    it.effect('reads only the block directly behind when that block is itself a container', () =>
+      Effect.sync(() => {
+        const { lookup, reads } = lookupFor({ conductive: true, containers: [behind, beyond] })
+        expect(componentValue(lookup, 'comparator', position)?.containerSlots).toStrictEqual(slots)
+        expect(reads).toStrictEqual([behind])
+      }),
+    )
+
+    it.effect('does not read through a block that does not conduct redstone', () =>
+      Effect.sync(() => {
+        const { lookup, reads } = lookupFor({ conductive: false, containers: [beyond] })
+        expect(Object.keys(componentValue(lookup, 'comparator', position) ?? {})).not.toContain('containerSlots')
+        expect(reads).toStrictEqual([behind])
+      }),
+    )
+
+    it.effect('does not read through a host that cannot answer whether a block conducts', () =>
+      Effect.sync(() => {
+        const reads: Array<BlockPosition> = []
+        const lookup: RedstoneHostLookup = {
+          ...missingLookup,
+          readContainerSlots: (at) => {
+            reads.push(at)
+            return undefined
+          },
+        }
+        expect(Object.keys(componentValue(lookup, 'comparator', position) ?? {})).not.toContain('containerSlots')
+        expect(reads).toStrictEqual([behind])
+      }),
+    )
+
+    it.effect('reports no reading when a conductive block has nothing behind it', () =>
+      Effect.sync(() => {
+        const { lookup, reads } = lookupFor({ conductive: true, containers: [] })
+        expect(Object.keys(componentValue(lookup, 'comparator', position) ?? {})).not.toContain('containerSlots')
+        expect(reads).toStrictEqual([behind, beyond])
+      }),
+    )
+
+    it.effect('returns the typed range failure when the cell behind the conductive block is unrepresentable', () =>
+      Effect.sync(() => {
+        const edge = blockPosition(2, 0, Number.MAX_SAFE_INTEGER - 1)
+        const lookup: RedstoneHostLookup = { ...missingLookup, isRedstoneConductiveAt: () => true }
+        expect(componentForBlock(lookup, 'comparator', {
+          encodedState: encodedStateFor('comparator'),
+          position: edge,
+        })).toStrictEqual(Result.fail({ _tag: 'RedstoneHostPositionOutOfRange' }))
+      }),
+    )
+  })
+
   it.effect('a comparator omits containerSlots entirely when the host has no reading, rather than an empty array', () =>
     Effect.sync(() => {
       const component = componentValue(missingLookup, 'comparator', blockPosition(0, 0, 0))
