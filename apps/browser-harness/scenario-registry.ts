@@ -2,7 +2,7 @@ import type { RedstoneWorldSnapshot } from '../../src/application/world-runtime.
 import type { RedstoneHostBlockType } from '../../src/application/redstone-host-port.js'
 import type { ContainerSlot } from '../../src/domain/comparator.js'
 import type { BlockRef } from '../../src/domain/block-ref.js'
-import type { BlockStateValues, ItemType } from '@nerima-games/mc-kernel'
+import type { BlockStateValues, ItemType, NonNegativeTickCount } from '@nerima-games/mc-kernel'
 import { circuitScenarios } from './scenarios/regions/circuits.js'
 import { effectScenarios } from './scenarios/regions/effects.js'
 import { hostStageScenarios } from './scenarios/regions/host-stage.js'
@@ -75,6 +75,8 @@ export type HostFixtureInput = Readonly<{
     strongPowerTo?: FixturePosition
   }>>
   failureCase?: HostFailureCase
+  /** Redstone ticks to run before the host applies the drained events. Defaults to one. */
+  redstoneTicks?: NonNegativeTickCount
   containers?: ReadonlyArray<HostFixtureContainer>
   hopperContexts?: ReadonlyArray<HostFixtureHopperContext>
   lookups?: Readonly<{

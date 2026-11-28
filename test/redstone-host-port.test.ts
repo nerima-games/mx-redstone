@@ -2006,6 +2006,12 @@ describe('applyRedstoneHostEvents', () => {
       })
 
       yield* runtime.syncSnapshot(snapshot)
+      for (let tick = 0; tick < 2; tick += 1) {
+        // Dispensers and droppers act two redstone ticks after the rising edge.
+        yield* runRedstoneTick(stages)
+        yield* applyRedstoneHostEvents(runtime, [realm], port)
+        expect(buildCallsOf(calls)).toHaveLength(0)
+      }
       yield* runRedstoneTick(stages)
       yield* applyRedstoneHostEvents(runtime, [realm], port)
 

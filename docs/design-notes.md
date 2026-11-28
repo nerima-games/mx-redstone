@@ -1,6 +1,6 @@
 # 設計ノート
 
-plan.md §3.12 has one design note, but the reference implementation contains more observations than fit in one line. This document numbers them `DN-RS-1`–`DN-RS-17`.
+plan.md §3.12 has one design note, but the reference implementation contains more observations than fit in one line. This document numbers them `DN-RS-1`–`DN-RS-18`.
 
 Each note records its evidence and impact and points to a related test or verification method. Not every note has a regression test; some claims require a different verification method, and unreachable branches cannot be exercised by tests.
 
@@ -912,3 +912,44 @@ powered pauseとunpowered countdownを`https://minecraft.wiki/w/Hopper`のfixtur
 状態である。本リポジトリは同じ答えを 4 回出した——ボタンのパルス、リピーターの遅延、
 オブザーバのパルス、そしてこれ。電力マップに置く場所は無く、盤面は入力である。
 `stages/registration.ts` の tick カウンタの隣に行く。
+
+---
+
+## DN-RS-18 ランプの消灯とディスペンサ・ドロッパーの作動は、予約された tick である
+
+### 規則
+
+バニラはランプの消灯とディスペンサ・ドロッパーの作動を予約の tick（`scheduleTick(pos, block, 4)`）として扱う。
+4 game tick は 2 redstone tick である。本リポジトリは同じ形を 2 つの `Ref` で表す。
+
+- `scheduledLampOffTicks`: 点灯中で給電を失ったランプの、消灯が期限になる redstone tick。
+- `scheduledTriggerTicks`: 立ち上がりエッジを検出したディスペンサとドロッパーの、作動が期限になる redstone tick。
+
+期限は `tickCount + 2` である。effects stage は redstone tick を進めた tick にだけ走り、
+そのとき `tickCount` は加算済みなので、通知は検出の 2 tick 後になる。
+どちらの `Ref` も毎 tick、現在のスナップショットにある部品から作り直す。撤去された部品の予約は残らない。
+キーは dimension を含む node id である。
+
+### 期限の tick で給電を読み直す（ランプ）
+
+バニラの `RedstoneLampBlock` は、消灯の予約が期限になった tick で、そのときの給電を見て消す。
+そのため、窓の途中で給電が戻って再び失われても、元の期限が有効なまま残る。
+期限の tick に給電があれば、何も通知せず、予約だけが消える。次に給電を失えば、新しい 2 tick の予約になる。
+点灯は即時で、ランプの撤去による消灯も即時である（ブロックが無いので遅延は意味を持たない）。
+
+### 期限の tick では給電を見ない（ディスペンサ・ドロッパー）
+
+作動は立ち上がりエッジで予約され、期限になれば、その時点の給電にかかわらず通知される。
+窓の途中で給電が切れても、作動は失われない。通知の `facing` は期限の tick のスナップショットから読む。
+期限の tick に立ち上がりエッジが重なったときは、期限の作動を通知してから、新しい予約を作る。
+エッジは 2 tick 以上離れているので、予約が残っている間に次のエッジが来ることはない。
+ノートブロックは遅延せず、エッジのあった tick に通知する。
+
+### 決めていないこと
+
+期限の処理と、同じ tick の給電の変化のどちらが先になるかは、バニラの更新順に依存する。
+本リポジトリは期限の処理を先にする。この順序をバニラで確かめた記録は無い。
+
+**回帰テスト**: `test/world-runtime.test.ts` の `describe('lamp switch-off delay')` と
+`describe('dispenser and dropper action delay')`、`test/redstone-component-properties.test.ts` の
+`fires droppers and dispensers two redstone ticks after each rising edge`（独立した小さなモデルとの比較）。

@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import * as fc from 'fast-check'
 import { Effect, Ref, Result, Schema } from 'effect'
-import { BlockPositionSchema, DimensionIdSchema } from '@nerima-games/mc-kernel'
+import { BlockPositionSchema, DimensionIdSchema, NonNegativeTickCount } from '@nerima-games/mc-kernel'
 import {
   MAX_POWER_LEVEL,
   emptyPowerMap,
@@ -498,6 +498,7 @@ const runRuntimeSequence = (
   states: ReadonlyArray<boolean>,
   pistonFacing: PistonFacing = 'north',
   pistonKind: PistonKind = 'normal',
+  trailingTicks = 0,
 ): RuntimeEdgeEvents =>
   Effect.runSync(
     Effect.gen(function* () {
@@ -509,12 +510,15 @@ const runRuntimeSequence = (
       }
       let pistonState: PistonState = 'retracted'
 
-      for (const active of states) {
+      // The final level is held for `trailingTicks` more ticks so delayed actions can fire.
+      const levels = [...states, ...Array.from({ length: trailingTicks }, () => states.at(-1) === true)]
+      for (const [step, active] of levels.entries()) {
         const target: RedstoneComponentSnapshot = {
           kind,
           position: blockPosition(1),
           ...(kind === 'piston' ? { pistonFacing, pistonKind, pistonState } : {}),
         }
+        yield* Ref.set(state.tickCount, NonNegativeTickCount(step + 1))
         yield* installPowerFixture(state, [
           { active, kind: 'lever', position: blockPosition(0) },
           target,
@@ -547,6 +551,27 @@ const installPowerFixture = (
     yield* Ref.set(state.power, propagateTick(board, emptyPowerMap))
   })
 
+/** Independent model of vanilla's scheduled tick for a dispenser or dropper: a rising edge
+ * schedules one action two ticks ahead, and the action fires when due regardless of the power
+ * by then. The final level is held for the two trailing ticks. */
+const scheduledActionCount = (states: ReadonlyArray<boolean>): number => {
+  const levels = [...states, states.at(-1) === true, states.at(-1) === true]
+  let due: number | null = null
+  let wasPowered = false
+  let fired = 0
+  for (const [tick, powered] of levels.entries()) {
+    if (due !== null && tick >= due) {
+      fired += 1
+      due = null
+    }
+    if (powered && !wasPowered) {
+      due = tick + 2
+    }
+    wasPowered = powered
+  }
+  return fired
+}
+
 const edgeSequence = fc.array(fc.boolean(), { minLength: 1, maxLength: 12 }).map((toggles) => {
   let active = true
   return [active, ...toggles.map((toggle) => {
@@ -554,6 +579,17 @@ const edgeSequence = fc.array(fc.boolean(), { minLength: 1, maxLength: 12 }).map
     return active
   })]
 })
+
+const expectDelayedActionProperty = (kind: 'dispenser' | 'dropper'): void => {
+  fc.assert(
+    fc.property(edgeSequence, (states) => {
+      const events = runRuntimeSequence(kind, states, 'north', 'normal', 2)
+      expect(events.trigger.map((event) => event.kind)).toStrictEqual(
+        Array.from({ length: scheduledActionCount(states) }, () => kind),
+      )
+    }),
+  )
+}
 
 describe('component edge properties', () => {
   it('emits piston requests only when the powered state changes', () => {
@@ -576,17 +612,25 @@ describe('component edge properties', () => {
     )
   })
 
-  it('fires droppers and note blocks once on each rising power edge', () => {
-    // Fails if a held dropper or note block emits duplicate trigger events.
+  it('fires note blocks once on each rising power edge', () => {
+    // Fails if a held note block emits duplicate trigger events or waits for a tick.
     fc.assert(
       fc.property(edgeSequence, (states) => {
         const rising = states.filter((active, index) => active && (index === 0 || !states[index - 1]))
-        for (const kind of ['dropper', 'note-block'] as const) {
-          const events = runRuntimeSequence(kind, states)
-          expect(events.trigger.map((event) => event.kind)).toStrictEqual(Array.from({ length: rising.length }, () => kind))
-        }
+        const events = runRuntimeSequence('note-block', states)
+        expect(events.trigger.map((event) => event.kind)).toStrictEqual(Array.from({ length: rising.length }, () => 'note-block'))
       }),
     )
+  })
+
+  it('fires droppers two redstone ticks after each rising edge', () => {
+    // Fails if the action skips the delay, repeats while held, or is lost when power drops first.
+    expectDelayedActionProperty('dropper')
+  })
+
+  it('fires dispensers two redstone ticks after each rising edge', () => {
+    // Fails if the action skips the delay, repeats while held, or is lost when power drops first.
+    expectDelayedActionProperty('dispenser')
   })
 
   it('reports rising and falling transitions for rails, doors, and trapdoors', () => {

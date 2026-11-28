@@ -1,3 +1,4 @@
+import { NonNegativeTickCount } from '@nerima-games/mc-kernel'
 import type {
   BrowserScenario,
   HostFixtureInput,
@@ -5,6 +6,9 @@ import type {
 } from '../../scenario-registry.js'
 
 const dimensionName = 'overworld'
+
+// A dispenser or dropper acts two redstone ticks after its rising edge, so the host sees it on the third.
+const DELAYED_ACTION_TICKS = NonNegativeTickCount(3)
 
 const hostPosition = (
   x: number,
@@ -31,7 +35,7 @@ const hostScenario = (
   blocks: HostFixtureInput['blocks'],
   expectedRequests: ReadonlyArray<HostFixtureRequest>,
   lookups?: HostFixtureInput['lookups'],
-  extraInput?: Pick<HostFixtureInput, 'containers' | 'hopperContexts'>,
+  extraInput?: Pick<HostFixtureInput, 'containers' | 'hopperContexts' | 'redstoneTicks'>,
 ): BrowserScenario => ({
   displayName,
   fixture: () => ({
@@ -126,6 +130,7 @@ export const effectScenarios: ReadonlyArray<BrowserScenario> = [
       position: hostPosition(1, 0, 0),
     }],
     { leverActive: true },
+    { redstoneTicks: DELAYED_ACTION_TICKS },
   ),
   hostScenario(
     'rs.dropper.rising-edge',
@@ -138,6 +143,7 @@ export const effectScenarios: ReadonlyArray<BrowserScenario> = [
       position: hostPosition(1, 0, 0),
     }],
     { leverActive: true },
+    { redstoneTicks: DELAYED_ACTION_TICKS },
   ),
   hostScenario(
     'rs.note-block.trigger',

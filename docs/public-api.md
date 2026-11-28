@@ -99,6 +99,7 @@ mx-redstone の順序制約が意味を失う、あるいは実行時の順序�
 電力グラフの計算は world なしでテストできる。2 つの stage は「電力計算、その後に event 生成」の順序を固定する。
 
 host は stage 実行後に `applyRedstoneHostEvents` を呼び、5 つの queue をまとめて drain する。対象は lamp transition、piston transition、trigger、hopper transfer、powered-component transition である。
+ランプの消灯 transition は給電を失ってから 2 redstone tick 後に、ディスペンサとドロッパーの trigger は立ち上がりエッジから 2 redstone tick 後に届く（[DN-RS-18](./design-notes.md#dn-rs-18-ランプの消灯とディスペンサドロッパーの作動は予約された-tick-である)）。ノートブロックの trigger と、ランプの点灯は遅れない。
 adapter は同じ world revision と dimension revision から plan を作り、lamp・piston・hopper の fragment を統合して coordinator の `commit` を 1 回だけ呼ぶ。成功した移送の fragment には item owner、hopper cooldown、hopper block edit が含まれる。
 
 For events generated during one redstone tick, each drained event queue orders entries by dimension ID in deterministic string code-point order, then by numeric position in ascending `x`, `y`, and `z` order. This guarantee applies within each queue, does not define an order between queues, and does not depend on snapshot component enumeration or dimension sync order. The runtime's `restoreEvents` method requeues caller-supplied events in the order provided; restored events are outside this ordering guarantee. A snapshot containing multiple components at the same position is rejected with `RedstoneWorldSnapshotDuplicatePositionError` before runtime state changes.

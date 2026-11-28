@@ -560,7 +560,9 @@ export const buildHostFixture = (
     const stages = yield* makeRuntimeRedstoneStages
     yield* runtime.syncSnapshot(hostSnapshot.success, { isRedstoneConductiveAt: lookup.isRedstoneConductiveAt })
     yield* setRedstoneObservationEnabled(runtime, true)
-    yield* runStages(stages)
+    for (let tick = 0; tick < (input.redstoneTicks ?? 1); tick += 1) {
+      yield* runStages(stages)
+    }
     const services = yield* makeFixtureHopperServices(input, dimension)
     let drainedEventBatch = emptyEventBatch()
     const capturingRuntime = runtimeWithCapturedFixtureEvents(
