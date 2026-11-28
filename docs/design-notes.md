@@ -1041,9 +1041,9 @@ host の経路では `redstone_torch` と `redstone_wall_torch` を `torch` の 
 ### 出典
 
 Java Edition 1.16.5 の `ComparatorBlock.calculateInputStrength` と、1.21.1 の `ComparatorBlock.getInputSignal` のソースで確かめた。
-どちらも直後ろが比較器の入力を上書きするブロックならそれを使い、そうでなければ電力が 15 未満で固体の導体のときに
+どちらも直後ろが容器など比較器用の信号を出すブロックならそれを使い、そうでなければ電力が 15 未満で固体の導体のときに
 1 ブロック先を読む。
-トーチは 1.16.5 の `RedstoneTorchBlock.getStrongPower` と 1.21.1 の `getDirectSignal` で確かめた。どちらも下向きの問い合わせにだけ弱い給電の値（点灯中は 15）を返し、
+トーチは 1.16.5 の `RedstoneTorchBlock.getStrongPower` と 1.21.1 の `getDirectSignal` で確かめた。どちらも、下向きの強い給電の問い合わせには点灯中なら 15 を返し、ほかの向きには 0 を返す。
 壁のトーチも同じメソッドを継ぐ。
 ドアは 1.16.5 の `DoorBlock.neighborChanged` と 1.21.1 の同名のメソッドで確かめた。どちらも自分のセルと、下半分なら上、
 上半分なら下のセルのどちらかに給電されていれば通電として、`powered` と `open` を設定する。
