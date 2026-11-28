@@ -164,7 +164,13 @@ const runTwoTickScenario = (
       yield* runFrame(stages)
       const retracted = yield* observeTick(runtime)
 
-      return [powered, retracted]
+      // The lamp stays lit for two redstone ticks after the lever drops, then goes dark.
+      yield* runFrame(stages)
+      const lampHeld = yield* observeTick(runtime)
+      yield* runFrame(stages)
+      const lampOff = yield* observeTick(runtime)
+
+      return [powered, retracted, lampHeld, lampOff]
     }),
   )
 
@@ -237,9 +243,11 @@ describe('redstone component determinism', () => {
       const replay = yield* runTwoTickScenario()
 
       expect(replay).toStrictEqual(first)
-      expect(first).toHaveLength(2)
+      expect(first).toHaveLength(4)
       expect(first[0]?.events.lamp).toStrictEqual([{ dimension: 'overworld', position: { x: 1, y: 0, z: 1 }, lit: true }])
-      expect(first[1]?.events.lamp).toStrictEqual([{ dimension: 'overworld', position: { x: 1, y: 0, z: 1 }, lit: false }])
+      expect(first[1]?.events.lamp).toStrictEqual([])
+      expect(first[2]?.events.lamp).toStrictEqual([])
+      expect(first[3]?.events.lamp).toStrictEqual([{ dimension: 'overworld', position: { x: 1, y: 0, z: 1 }, lit: false }])
       expect(first[0]?.events.piston).toHaveLength(1)
       expect(first[1]?.pistonPlans[0]).toMatchObject({
         kind: 'move',

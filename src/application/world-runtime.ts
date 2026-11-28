@@ -170,6 +170,8 @@ export type RedstoneWorldState = {
   readonly timedCircuit: Ref.Ref<TimedCircuitState>
   readonly pendingButtonPresses: Ref.Ref<ReadonlySet<PositionKey>>
   readonly observedLamps: Ref.Ref<ReadonlyMap<PositionKey, ObservedLamp>>
+  /** Redstone tick at which a lit lamp that lost power is due to switch off. */
+  readonly scheduledLampOffTicks: Ref.Ref<ReadonlyMap<PositionKey, number>>
   readonly pendingLampTransitions: Ref.Ref<ReadonlyArray<LampTransition>>
   readonly observedPistonStates: Ref.Ref<ReadonlyMap<PositionKey, PistonState>>
   readonly pendingPistonTransitions: Ref.Ref<ReadonlyArray<PoweredPistonTransition>>
@@ -1043,6 +1045,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       timedCircuit,
       pendingButtonPresses,
       observedLamps,
+      scheduledLampOffTicks,
       pendingLampTransitions,
       observedPistonStates,
       pendingPistonTransitions,
@@ -1062,6 +1065,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       Ref.make<TimedCircuitState>(emptyTimedCircuitState),
       Ref.make<ReadonlySet<PositionKey>>(new Set()),
       Ref.make<ReadonlyMap<PositionKey, ObservedLamp>>(new Map()),
+      Ref.make<ReadonlyMap<PositionKey, number>>(new Map()),
       Ref.make<ReadonlyArray<LampTransition>>([]),
       Ref.make<ReadonlyMap<PositionKey, PistonState>>(new Map()),
       Ref.make<ReadonlyArray<PoweredPistonTransition>>([]),
@@ -1090,6 +1094,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       pendingPoweredComponentTransitions,
       pendingTriggerEvents,
       power,
+      scheduledLampOffTicks,
       tickCount,
       timedCircuit,
     }
@@ -1202,44 +1207,104 @@ export const syncRedstoneSnapshot = (
 type LampTransitionResult = {
   readonly changed: ReadonlyArray<LampTransition>
   readonly current: ReadonlyMap<PositionKey, ObservedLamp>
+  readonly offTicks: ReadonlyMap<PositionKey, number>
+}
+
+/** Vanilla schedules a lit lamp's switch-off 4 game ticks, i.e. 2 redstone ticks, after it
+ * loses power; switching on is immediate. */
+const LAMP_TURN_OFF_DELAY_TICKS = 2
+
+type LampSwitch = {
+  readonly lit: boolean
+  readonly offTick: Option.Option<number>
+}
+
+/**
+ * One lamp's switch for this redstone tick, modelled on vanilla's scheduled tick: a lit lamp
+ * that is unpowered schedules a single switch-off, and when it comes due the lamp consults its
+ * power at that moment. Regaining power inside the window therefore does not cancel the
+ * schedule, it only makes the due tick a no-op.
+ */
+const nextLampSwitch = (input: {
+  readonly now: number
+  readonly offTick: Option.Option<number>
+  readonly powered: boolean
+  readonly reportedLit: boolean
+}): LampSwitch => {
+  const { now, offTick, powered, reportedLit } = input
+  if (!reportedLit) {
+    return { lit: powered, offTick: Option.none() }
+  }
+  if (Option.isSome(offTick)) {
+    if (now < offTick.value) {
+      return { lit: true, offTick }
+    }
+    return { lit: powered, offTick: Option.none() }
+  }
+  if (powered) {
+    return { lit: true, offTick: Option.none() }
+  }
+  return { lit: true, offTick: Option.some(now + LAMP_TURN_OFF_DELAY_TICKS) }
+}
+
+type LampReadout = {
+  readonly circuit: CircuitReadout
+  readonly now: number
+  readonly offTicks: ReadonlyMap<PositionKey, number>
+  readonly previous: ReadonlyMap<PositionKey, ObservedLamp>
 }
 
 const lampEntry = (
   entry: SnapshotEntry,
-  circuit: CircuitReadout,
-  previous: ReadonlyMap<PositionKey, ObservedLamp>,
-): { readonly changed: boolean; readonly lamp: LampTransition } => {
+  readout: LampReadout,
+): {
+  readonly changed: boolean
+  readonly lamp: LampTransition
+  readonly offTick: Option.Option<number>
+} => {
   const { component, dimension, nodeId } = entry
+  const { circuit, now, offTicks, previous } = readout
+  const reportedLit = previous.get(nodeId)?.lit ?? false
+  const next = nextLampSwitch({
+    now,
+    offTick: Option.fromNullishOr(offTicks.get(nodeId)),
+    powered: isLit(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId }),
+    reportedLit,
+  })
   const lamp: LampTransition = {
     dimension,
-    lit: isLit(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId }),
+    lit: next.lit,
     position: copyPosition(component.position),
   }
-  const wasLit = previous.get(nodeId)?.lit ?? false
-  return { changed: wasLit !== lamp.lit, lamp }
+  return { changed: reportedLit !== lamp.lit, lamp, offTick: next.offTick }
 }
 
+const lampOffTickEntries = (
+  entry: SnapshotEntry,
+  offTick: Option.Option<number>,
+): ReadonlyArray<readonly [PositionKey, number]> =>
+  Option.match(offTick, {
+    onNone: () => [],
+    onSome: (tick) => [[entry.nodeId, tick]],
+  })
+
 const collectLitLamps = (
-  circuit: CircuitReadout,
   entries: ReadonlyArray<SnapshotEntry>,
-  previous: ReadonlyMap<PositionKey, ObservedLamp>,
+  readout: LampReadout,
 ): LampTransitionResult => {
-  const current = new Map<PositionKey, ObservedLamp>()
-  const changed: Array<LampTransition> = []
-  for (const entry of entries) {
-    if (entry.component.kind === 'lamp') {
-      const result = lampEntry(entry, circuit, previous)
-      current.set(entry.nodeId, result.lamp)
-      if (result.changed) {
-        changed.push(result.lamp)
-      }
-    }
+  const results = entries
+    .filter(({ component }) => component.kind === 'lamp')
+    .map((entry) => ({ entry, ...lampEntry(entry, readout) }))
+  return {
+    changed: results.filter(({ changed }) => changed).map(({ lamp }) => lamp),
+    current: new Map(results.map(({ entry, lamp }): readonly [PositionKey, ObservedLamp] => [entry.nodeId, lamp])),
+    offTicks: new Map(results.flatMap(({ entry, offTick }) => lampOffTickEntries(entry, offTick))),
   }
-  return { changed, current }
 }
 
 /** Lamps present in `previous` but no longer in `current` were removed from the world while
- * still lit, which is itself a lit -> unlit transition the host must be told about. */
+ * still lit, which is itself a lit -> unlit transition the host must be told about. The block
+ * is gone, so no switch-off delay applies and its schedule is dropped with it. */
 const collectRemovedLampTransitions = (
   current: ReadonlyMap<PositionKey, ObservedLamp>,
   previous: ReadonlyMap<PositionKey, ObservedLamp>,
@@ -1256,15 +1321,18 @@ const collectRemovedLampTransitions = (
 /** Computes changed lamps and records them for the host-facing drain. */
 export const collectLampTransitions = (state: RedstoneWorldState): Effect.Effect<void> =>
   Effect.gen(function* collectLampTransitionsGenerator() {
-    const [circuit, dimensions, previous] = yield* Effect.all([
+    const [circuit, dimensions, previous, offTicks, now] = yield* Effect.all([
       circuitReadoutFor(state),
       Ref.get(state.dimensions),
       Ref.get(state.observedLamps),
+      Ref.get(state.scheduledLampOffTicks),
+      Ref.get(state.tickCount),
     ])
     const entries = flattenSnapshotEntries(dimensions)
-    const { changed, current } = collectLitLamps(circuit, entries, previous)
+    const { changed, current, offTicks: nextOffTicks } = collectLitLamps(entries, { circuit, now, offTicks, previous })
     const allChanged = [...changed, ...collectRemovedLampTransitions(current, previous)]
     yield* Ref.set(state.observedLamps, current)
+    yield* Ref.set(state.scheduledLampOffTicks, nextOffTicks)
     if (allChanged.length > NO_ITEMS) {
       yield* Ref.update(state.pendingLampTransitions, (pending) => [...pending, ...allChanged])
     }

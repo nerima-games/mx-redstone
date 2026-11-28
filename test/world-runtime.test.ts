@@ -104,6 +104,27 @@ const runFrame = (
 ): Effect.Effect<void, RuntimeError, FrameServices> =>
   runStagesForTicks(stages, NonNegativeTickCount(2))
 
+const lampEvent = (x: number, lit: boolean, dimension = 'overworld') => ({
+  dimension,
+  position: { x, y: 0, z: 0 },
+  lit,
+})
+
+/** Runs `count` redstone ticks and returns what the host would drain after each one. */
+const drainLampsPerFrame = (
+  runtime: RedstoneWorldRuntimeService,
+  stages: ReadonlyArray<StageRegistration>,
+  count: number,
+) =>
+  Effect.gen(function* () {
+    const drained: Array<ReturnType<typeof lampEvent>[]> = []
+    for (let frame = 0; frame < count; frame += 1) {
+      yield* runFrame(stages)
+      drained.push([...(yield* runtime.drainLampTransitions)])
+    }
+    return drained
+  })
+
 const runtimeProgram = <A>(
   use: (
     runtime: RedstoneWorldRuntimeService,
@@ -283,6 +304,10 @@ describe('RedstoneWorldRuntime', () => {
 
         yield* runtime.syncSnapshot(circuit(false))
         yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+        yield* runFrame(stages)
         expect(yield* runtime.drainLampTransitions).toStrictEqual([
           { dimension: 'overworld', position: { x: 2, y: 0, z: 0 }, lit: false },
         ])
@@ -307,6 +332,9 @@ describe('RedstoneWorldRuntime', () => {
           snapshot('overworld', [component(0, 'lever', true), component(2, 'lamp')]),
         )
         yield* runFrame(stages)
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+        yield* runFrame(stages)
         expect(yield* runtime.drainLampTransitions).toStrictEqual([
           { dimension: 'overworld', position: { x: 2, y: 0, z: 0 }, lit: false },
         ])
@@ -324,6 +352,129 @@ describe('RedstoneWorldRuntime', () => {
       }),
     ),
   )
+
+  describe('lamp switch-off delay (B-P2)', () => {
+    const lampCircuit = (leverActive: boolean) =>
+      snapshot('overworld', [
+        component(0, 'lever', leverActive),
+        component(1, 'wire'),
+        component(2, 'lamp'),
+      ])
+
+    it.effect('lights in the redstone tick power arrives and goes dark exactly two ticks after it is lost', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(lampCircuit(true))
+          expect(yield* drainLampsPerFrame(runtime, stages, 1)).toStrictEqual([[lampEvent(2, true)]])
+
+          yield* runtime.syncSnapshot(lampCircuit(false))
+          expect(yield* drainLampsPerFrame(runtime, stages, 4)).toStrictEqual([
+            [],
+            [],
+            [lampEvent(2, false)],
+            [],
+          ])
+        }),
+      ),
+    )
+
+    it.effect('stays lit and reports nothing when power returns inside the window', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(lampCircuit(true))
+          yield* drainLampsPerFrame(runtime, stages, 1)
+
+          yield* runtime.syncSnapshot(lampCircuit(false))
+          expect(yield* drainLampsPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(lampCircuit(true))
+          expect(yield* drainLampsPerFrame(runtime, stages, 5)).toStrictEqual([[], [], [], [], []])
+        }),
+      ),
+    )
+
+    it.effect('keeps the schedule when power returns and is lost again, as vanilla does not cancel a scheduled tick', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(lampCircuit(true))
+          yield* drainLampsPerFrame(runtime, stages, 1)
+
+          yield* runtime.syncSnapshot(lampCircuit(false))
+          expect(yield* drainLampsPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(lampCircuit(true))
+          expect(yield* drainLampsPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(lampCircuit(false))
+          expect(yield* drainLampsPerFrame(runtime, stages, 2)).toStrictEqual([[lampEvent(2, false)], []])
+        }),
+      ),
+    )
+
+    it.effect('starts a fresh two-tick delay after a due tick found the lamp powered', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(lampCircuit(true))
+          yield* drainLampsPerFrame(runtime, stages, 1)
+
+          yield* runtime.syncSnapshot(lampCircuit(false))
+          expect(yield* drainLampsPerFrame(runtime, stages, 2)).toStrictEqual([[], []])
+          yield* runtime.syncSnapshot(lampCircuit(true))
+          expect(yield* drainLampsPerFrame(runtime, stages, 2)).toStrictEqual([[], []])
+
+          yield* runtime.syncSnapshot(lampCircuit(false))
+          expect(yield* drainLampsPerFrame(runtime, stages, 4)).toStrictEqual([
+            [],
+            [],
+            [lampEvent(2, false)],
+            [],
+          ])
+        }),
+      ),
+    )
+
+    it.effect('turns a removed lamp off at once and does not report it again when the delay would have expired', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(lampCircuit(true))
+          yield* drainLampsPerFrame(runtime, stages, 1)
+
+          yield* runtime.syncSnapshot(lampCircuit(false))
+          expect(yield* drainLampsPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(snapshot('overworld', [component(0, 'lever', false), component(1, 'wire')]))
+          expect(yield* drainLampsPerFrame(runtime, stages, 4)).toStrictEqual([
+            [lampEvent(2, false)],
+            [],
+            [],
+            [],
+          ])
+        }),
+      ),
+    )
+
+    it.effect('times each dimension independently for lamps at identical coordinates', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          const circuit = (dimension: string, active: boolean) =>
+            snapshot(dimension, [
+              component(0, 'lever', active),
+              component(1, 'wire'),
+              component(2, 'lamp'),
+            ])
+
+          yield* runtime.syncSnapshot(circuit('overworld', true))
+          yield* runtime.syncSnapshot(circuit('nether', true))
+          yield* drainLampsPerFrame(runtime, stages, 1)
+
+          yield* runtime.syncSnapshot(circuit('overworld', false))
+          expect(yield* drainLampsPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(circuit('nether', false))
+          expect(yield* drainLampsPerFrame(runtime, stages, 3)).toStrictEqual([
+            [],
+            [lampEvent(2, false, 'overworld')],
+            [lampEvent(2, false, 'nether')],
+          ])
+        }),
+      ),
+    )
+  })
 
   it.effect('keeps identical coordinates isolated between dimensions', () =>
     runtimeProgram((runtime, stages) =>
@@ -378,6 +529,12 @@ describe('RedstoneWorldRuntime', () => {
         expect(yield* runtime.drainLampTransitions).toStrictEqual([
           { dimension: 'overworld', position: { x: 3, y: 0, z: 0 }, lit: true },
         ])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
 
         yield* runFrame(stages)
         expect(yield* runtime.drainLampTransitions).toStrictEqual([])
