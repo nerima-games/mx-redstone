@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { BlockAddressSchema, type BlockAddress } from '@nerima-games/mc-kernel'
+import { BlockAddressSchema, NonNegativeTickCount, type BlockAddress } from '@nerima-games/mc-kernel'
 import type { ContainerKind } from '@nerima-games/mc-sim'
 import { Effect, Result, Schema } from 'effect'
 import {
@@ -240,12 +240,12 @@ describe('finite redstone states', () => {
         {
           inputLevel: 1,
           previous: { burnedOut: false, output: true, recentOffTicks: recentToggles },
-          expected: { burnedOut: true, output: false, recentOffTicks: [...recentToggles.map((age) => age + 1), 0] },
+          expected: { burnedOut: true, cooldownTicks: NonNegativeTickCount(80), output: false, recentOffTicks: [...recentToggles.map((age) => age + 1), 0] },
         },
         {
           inputLevel: 0,
           previous: { burnedOut: true, output: false, recentOffTicks: recentToggles },
-          expected: { burnedOut: true, output: false, recentOffTicks: recentToggles.map((age) => age + 1) },
+          expected: { burnedOut: false, output: true, recentOffTicks: recentToggles.map((age) => age + 1) },
         },
         {
           inputLevel: 0,

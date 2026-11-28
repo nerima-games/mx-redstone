@@ -14,6 +14,7 @@ import {
   propagateTickState,
   propagateTickWithProvenance,
 } from './power-graph.js'
+import { type NonNegativeTickCount, NonNegativeTickCount as nonNegativeTickCount } from '@nerima-games/mc-kernel'
 import { OBSERVER_PULSE_TICKS, type Sightings, observeChanges } from './observer.js'
 import type { PositionKey } from './position-key.js'
 
@@ -28,7 +29,7 @@ const OBSERVER_COMPONENT_KINDS: ReadonlySet<Component['kind']> = new Set(['obser
 export const DEFAULT_BUTTON_PULSE_TICKS = 10
 export const TORCH_BURNOUT_TOGGLE_LIMIT = 8
 export const TORCH_BURNOUT_WINDOW_TICKS = 30
-/** Java's optional 160-game-tick relight attempt; this sampler does not schedule it. */
+/** Delay before a burned-out torch is sampled for relighting. */
 export const TORCH_BURNOUT_COOLDOWN_TICKS = 80
 
 const NO_TICKS = 0
@@ -56,6 +57,7 @@ export type ButtonTimer = {
 
 export type TorchTimer = {
   readonly burnedOut?: boolean
+  readonly cooldownTicks?: NonNegativeTickCount
   readonly output: boolean
   readonly recentOffTicks: ReadonlyArray<number>
 }
@@ -175,6 +177,17 @@ const advanceOrHoldRepeater = (options: {
   return advanceRepeater(previousTimer, requested, repeaterDelay(component))
 }
 
+const holdBurnedOutTorch = (previous: TorchTimer | undefined, recentOffTicks: ReadonlyArray<number>): TorchTimer | null => {
+  if (previous?.burnedOut !== true) {
+    return null
+  }
+  const cooldownTicks = previous.cooldownTicks ?? NO_TICKS
+  if (cooldownTicks > NEXT_TICK) {
+    return { burnedOut: true, cooldownTicks: nonNegativeTickCount(cooldownTicks - NEXT_TICK), output: false, recentOffTicks }
+  }
+  return null
+}
+
 const advanceTorch = (
   options: {
     readonly previous: TorchTimer | undefined
@@ -187,19 +200,16 @@ const advanceTorch = (
     .map((age) => age + NEXT_TICK)
     .filter((age) => age < TORCH_BURNOUT_WINDOW_TICKS)
 
-  if (previous?.burnedOut === true && recentOffTicks.length >= TORCH_BURNOUT_TOGGLE_LIMIT) {
-    return { burnedOut: true, output: false, recentOffTicks }
+  const held = holdBurnedOutTorch(previous, recentOffTicks)
+  if (held) {
+    return held
   }
 
-  // Support is sampled every redstone tick, so the next sample is the relight
-  // Attempt once fewer than eight forced-off transitions remain.
   if (previousOutput && !requestedOutput) {
     recentOffTicks.push(NO_TICKS)
-  }
-
-  const burnedOut = recentOffTicks.length > TORCH_BURNOUT_TOGGLE_LIMIT
-  if (burnedOut) {
-    return { burnedOut, output: false, recentOffTicks }
+    if (recentOffTicks.length > TORCH_BURNOUT_TOGGLE_LIMIT) {
+      return { burnedOut: true, cooldownTicks: nonNegativeTickCount(TORCH_BURNOUT_COOLDOWN_TICKS), output: false, recentOffTicks }
+    }
   }
 
   return { burnedOut: false, output: requestedOutput, recentOffTicks }

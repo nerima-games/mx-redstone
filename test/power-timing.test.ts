@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import { NonNegativeTickCount } from '@nerima-games/mc-kernel'
 import * as fc from 'fast-check'
 import { Effect } from 'effect'
 import type { CircuitBoard, Component, PowerTickContext } from '../src/domain/power-graph'
@@ -524,7 +525,7 @@ describe('timed redstone', () => {
     }),
   )
 
-  it.effect('burns out only on the ninth forced-off transition and resumes once fewer than eight remain', () =>
+  it.effect('burns out on the ninth forced-off transition and relights after 80 redstone ticks', () =>
     Effect.sync(() => {
       const board: CircuitBoard = {
         adjacency: new Map([['torch', []]]),
@@ -552,18 +553,12 @@ describe('timed redstone', () => {
         JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS,
       )
 
-      state = ticks(board, JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS / TORCH_CLOCK_PHASES, state)
-      expect(state.torches?.get('torch')).toMatchObject({ burnedOut: true, output: false })
-      expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(
-        JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT,
-      )
-      expect(state.torches?.get('torch')?.output).toBe(false)
+      state = ticks(board, 79, state)
+      expect(state.torches?.get('torch')).toMatchObject({ burnedOut: true, cooldownTicks: 1, output: false })
+      expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(0)
 
       state = advanceTimedCircuit(board, state)
-      expect(state.torches?.get('torch')).toMatchObject({ burnedOut: false, output: true })
-      expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(
-        JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT - NEXT_TICK,
-      )
+      expect(state.torches?.get('torch')).toStrictEqual({ burnedOut: false, output: true, recentOffTicks: [] })
     }),
   )
 
@@ -576,7 +571,7 @@ describe('timed redstone', () => {
       const edgeState: TimedCircuitState = {
         ...emptyTimedCircuitState,
         torches: new Map([['torch', {
-          burnedOut: true,
+          burnedOut: false,
           output: false,
           recentOffTicks: [
             ...Array.from({ length: JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT - NEXT_TICK }, () => 0),
@@ -587,8 +582,8 @@ describe('timed redstone', () => {
 
       const oneTickBeforeExpiry = advanceTimedCircuit(board, edgeState)
       expect(oneTickBeforeExpiry.torches?.get('torch')).toStrictEqual({
-        burnedOut: true,
-        output: false,
+        burnedOut: false,
+        output: true,
         recentOffTicks: [
           ...Array.from({ length: JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT - NEXT_TICK }, () => NEXT_TICK),
           JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS - NEXT_TICK,
@@ -607,22 +602,69 @@ describe('timed redstone', () => {
     }),
   )
 
-  it.effect('does not schedule the optional 160-game-tick relight attempt', () =>
+  it.effect('treats an absent or expired cooldown as ready to sample the support', () =>
     Effect.sync(() => {
       const board: CircuitBoard = {
         adjacency: new Map([['torch', []]]),
-        components: new Map([['torch', { kind: 'torch' }]]),
+        components: new Map([['torch', { invertedBy: 'support', kind: 'torch' }]]),
       }
-      let state: TimedCircuitState = {
-        ...emptyTimedCircuitState,
-        torches: new Map([['torch', {
-          burnedOut: true,
-          output: false,
-          recentOffTicks: Array.from({ length: JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT }, () => 0),
-        }]]),
+      for (const cooldown of [undefined, 0, 1, 2]) {
+        for (const inputPower of [0, 15]) {
+          const state: TimedCircuitState = {
+            ...emptyTimedCircuitState,
+            power: new Map([['support', inputPower]]),
+            torches: new Map([['torch', {
+              burnedOut: true,
+              output: false,
+              recentOffTicks: Array.from({ length: JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS }, () => 0),
+              ...(cooldown === undefined ? {} : { cooldownTicks: NonNegativeTickCount(cooldown) }),
+            }]]),
+          }
+          const next = advanceTimedCircuit(board, state)
+          const held = cooldown === 2
+          expect(next.torches?.get('torch')).toStrictEqual({
+            burnedOut: held,
+            ...(held ? { cooldownTicks: NonNegativeTickCount(1) } : {}),
+            output: !held && inputPower === 0,
+            recentOffTicks: Array.from({ length: JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS }, () => 1),
+          })
+        }
       }
-      state = ticks(board, JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS, state)
+    }),
+  )
+
+  it.effect('samples the support at cooldown expiry and can burn out again', () =>
+    Effect.sync(() => {
+      const clock: CircuitBoard = {
+        adjacency: new Map([['torch', []], ['other', []]]),
+        components: new Map([
+          ['torch', { invertedBy: 'torch', kind: 'torch' }],
+          ['other', { invertedBy: 'other', kind: 'torch' }],
+        ]),
+      }
+      const inputBoard: CircuitBoard = {
+        adjacency: new Map([['torch', []], ['other', []]]),
+        components: new Map([
+          ['torch', { invertedBy: 'support', kind: 'torch' }],
+          ['other', { invertedBy: 'other-support', kind: 'torch' }],
+        ]),
+      }
+      let state = ticks(clock, JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS * TORCH_CLOCK_PHASES)
+      for (let tick = 1; tick < 80; tick += 1) {
+        state = { ...state, power: new Map([['support', tick % 2 === 0 ? 15 : 0]]) }
+        state = advanceTimedCircuit(inputBoard, state)
+        expect(state.torches?.get('torch')).toMatchObject({ burnedOut: true, output: false, cooldownTicks: 80 - tick })
+        expect(state.torches?.get('other')).toMatchObject({ burnedOut: true, output: false, cooldownTicks: 80 - tick })
+      }
+      state = { ...state, power: new Map([['support', 15]]) }
+      state = advanceTimedCircuit(inputBoard, state)
+      expect(state.torches?.get('torch')).toStrictEqual({ burnedOut: false, output: false, recentOffTicks: [] })
+      expect(state.torches?.get('other')).toStrictEqual({ burnedOut: false, output: true, recentOffTicks: [] })
+
+      state = advanceTimedCircuit(inputBoard, { ...state, power: new Map() })
       expect(state.torches?.get('torch')?.output).toBe(true)
+      state = ticks(clock, JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS * TORCH_CLOCK_PHASES - 1, state)
+      expect(state.torches?.get('torch')).toMatchObject({ burnedOut: true, output: false, cooldownTicks: 80 })
     }),
   )
 

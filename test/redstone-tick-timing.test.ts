@@ -41,8 +41,6 @@ import { FrameServicesLayer } from './frame-services'
 const JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT = 8
 const JAVA_TORCH_BURNOUT_WINDOW_GAME_TICKS = 60
 const GAME_TICKS_PER_REDSTONE_TICK = 2
-const JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS =
-  JAVA_TORCH_BURNOUT_WINDOW_GAME_TICKS / GAME_TICKS_PER_REDSTONE_TICK
 const JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS = JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT + 1
 const TORCH_SELF_CLOCK_REDSTONE_TICKS_PER_OFF_TRANSITION = 2
 
@@ -206,7 +204,7 @@ describe('tick-by-tick component timing', () => {
     }),
   )
 
-  it.effect('burns out after the ninth rapid off transition and resumes when fewer than eight remain', () =>
+  it.effect('burns out after the ninth rapid off transition and relights after 80 redstone ticks', () =>
     Effect.sync(() => {
       // The Java rule uses forced-off transitions in a rolling 60-game-tick window.
       const board = line([['torch', { invertedBy: 'torch', kind: 'torch' }]])
@@ -233,18 +231,10 @@ describe('tick-by-tick component timing', () => {
       expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(
         JAVA_TORCH_BURNOUT_TRIGGER_TRANSITIONS,
       )
-      const redstoneTicksUntilOneMoreOffExpires =
-        JAVA_TORCH_BURNOUT_WINDOW_REDSTONE_TICKS / TORCH_SELF_CLOCK_REDSTONE_TICKS_PER_OFF_TRANSITION
-      for (let tick = 0; tick < redstoneTicksUntilOneMoreOffExpires; tick += 1) {
+      for (let tick = 1; tick < 80; tick += 1) {
         state = advanceTimedCircuit(board, state)
+        expect(state.torches?.get('torch')).toMatchObject({ burnedOut: true, output: false })
       }
-      expect(state.torches?.get('torch')).toMatchObject({
-        burnedOut: true,
-        output: false,
-      })
-      expect(state.torches?.get('torch')?.recentOffTicks).toHaveLength(
-        JAVA_TORCH_FORCED_OFF_CHANGE_LIMIT,
-      )
       state = advanceTimedCircuit(board, state)
       expect(state.torches?.get('torch')).toMatchObject({ burnedOut: false, output: true })
     }),
