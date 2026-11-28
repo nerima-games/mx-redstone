@@ -208,7 +208,7 @@ plan.md §8 のリスク表も同じことを別角度から言っている。
 | 同 `button emits temporary power and decays` | press(2) → 14, 14, 0 | **移植済み。** `pressButton` と `pulseTicks` により押下、再押下、期限切れを検査する |
 | `redstone-service-snapshot.test.ts`（11 例） | tick カウンタ、キャッシュ、`setComponent` の再配置 | **境界**（同上）。`torch inversion (NOT gate)` の往復は下記 |
 | 同 `torch inversion (NOT gate)`:127-158 | 入力が消えるとトーチは**点き直す** | **主張を運ばない。** `propagateTick` は (board, previous) の純関数なので、点き直した後の状態は**一度も通電されなかったトーチと同一**である。両半分は既に別々に固定されている（`:277` と `:308`）。この往復を落とす production の変異は存在しない |
-| 同 `repeater delay: 2-tick` | リピーターの遅延段数 | **移植済み。** `delayTicks` は 1–4 に clamp され、ON/OFF の両遷移を同じ遅延で確定する。境界とキャンセルは `test/power-timing.test.ts` が固定する |
+| 同 `repeater delay: 2-tick` | リピーターの遅延段数 | **移植済み。** `delayTicks` は 1–4 に clamp され、ON/OFF の両遷移を同じ遅延で確定する。遅延の境界と短い入力パルスの扱いは `test/power-timing.test.ts` が固定する |
 | 同 `stacked wires never conduct vertically` | 上下のワイヤは導通しない | **幾何** |
 | `redstone-piston-world-effects.test.ts`（19 例） | 押し出し、facing、腕の描画、エンティティの押し退け | **境界。** facing 付き移動は純粋に計画し、世界更新はホストの atomic commit。腕の描画とエンティティ押し退けはホスト責務 |
 | 同 `refuses trains longer than the 12-block limit` | 13 個で拒否 | **既にある**（`test/piston.test.ts:98`、`PISTON_PUSH_LIMIT`） |
