@@ -45,6 +45,7 @@ import {
 } from '../domain/power-timing.js'
 import type { BlockRef } from '../domain/block-ref.js'
 import type { PositionKey } from '../domain/position-key.js'
+import type { TargetHit } from '../domain/target-block.js'
 
 type DimensionId = BlockAddress['dimension']
 const NO_LOOKUPS = 0
@@ -169,6 +170,7 @@ export type RedstoneWorldState = {
   readonly blockPower: Ref.Ref<ReadonlyMap<PositionKey, PowerTickBlockLevels>>
   readonly timedCircuit: Ref.Ref<TimedCircuitState>
   readonly pendingButtonPresses: Ref.Ref<ReadonlySet<PositionKey>>
+  readonly pendingTargetHits: Ref.Ref<ReadonlyMap<PositionKey, TargetHit>>
   readonly observedLamps: Ref.Ref<ReadonlyMap<PositionKey, ObservedLamp>>
   readonly scheduledLampOffTicks: Ref.Ref<ReadonlyMap<PositionKey, NonNegativeTickCount>>
   readonly pendingLampTransitions: Ref.Ref<ReadonlyArray<LampTransition>>
@@ -287,6 +289,11 @@ export type RedstoneWorldRuntimeService = {
   >
   /** Starts or restarts this button's configured pulse on the next redstone tick. */
   readonly pressButton: (dimension: DimensionId, position: RedstonePosition) => Effect.Effect<void>
+  /**
+   * Reports a projectile hit on a target on the next redstone tick. The first hit of a tick
+   * wins, and a hit while the target is still held powered changes nothing, as in vanilla.
+   */
+  readonly hitTarget: (dimension: DimensionId, position: RedstonePosition, hit: TargetHit) => Effect.Effect<void>
   /** Restores a previously drained event batch after its host commit fails. */
   readonly restoreEvents: (events: RedstoneEventBatch) => Effect.Effect<void>
   /** Atomically returns and clears transitions produced by `redstone:effects`. */
@@ -402,6 +409,9 @@ const copyTimedCircuit = (timedCircuit: TimedCircuitState): TimedCircuitState =>
   )),
   power: new Map(timedCircuit.power),
   repeaters: new Map([...timedCircuit.repeaters].map(([key, timer]) => [key, { ...timer }])),
+  ...withOptionalMapped('targets', timedCircuit.targets, (targets) => new Map(
+    [...targets].map(([key, timer]) => [key, { ...timer }]),
+  )),
   ...withOptionalMapped('torches', timedCircuit.torches, (torches) => new Map(
     [...torches].map(([key, timer]) => [key, { ...timer, recentOffTicks: [...timer.recentOffTicks] }]),
   )),
@@ -1044,6 +1054,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       blockPower,
       timedCircuit,
       pendingButtonPresses,
+      pendingTargetHits,
       observedLamps,
       scheduledLampOffTicks,
       pendingLampTransitions,
@@ -1065,6 +1076,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       Ref.make<ReadonlyMap<PositionKey, PowerTickBlockLevels>>(new Map()),
       Ref.make<TimedCircuitState>(emptyTimedCircuitState),
       Ref.make<ReadonlySet<PositionKey>>(new Set()),
+      Ref.make<ReadonlyMap<PositionKey, TargetHit>>(new Map()),
       Ref.make<ReadonlyMap<PositionKey, ObservedLamp>>(new Map()),
       Ref.make<ReadonlyMap<PositionKey, NonNegativeTickCount>>(new Map()),
       Ref.make<ReadonlyArray<LampTransition>>([]),
@@ -1094,6 +1106,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       pendingLampTransitions,
       pendingPistonTransitions,
       pendingPoweredComponentTransitions,
+      pendingTargetHits,
       pendingTriggerEvents,
       power,
       scheduledLampOffTicks,
@@ -1746,6 +1759,14 @@ export const makeRedstoneWorldRuntime: Effect.Effect<RedstoneWorldRuntimeService
       drainPistonTransitions: Ref.getAndSet(state.pendingPistonTransitions, []),
       drainPoweredComponentTransitions: Ref.getAndSet(state.pendingPoweredComponentTransitions, []),
       drainTriggerEvents: Ref.getAndSet(state.pendingTriggerEvents, []),
+      hitTarget: (dimension, position, hit) =>
+        Ref.update(state.pendingTargetHits, (pending) => {
+          const key = redstoneNodeId(dimension, position)
+          if (pending.has(key)) {
+            return pending
+          }
+          return new Map(pending).set(key, { ...hit })
+        }),
       pressButton: (dimension, position) =>
         Ref.update(state.pendingButtonPresses, (pending) => {
           const next = new Set(pending)

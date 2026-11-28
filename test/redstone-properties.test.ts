@@ -86,6 +86,7 @@ const makeUnregisteredRuntime = (calls: { count: number }): RedstoneWorldRuntime
   return {
     syncSnapshot: mark,
     pressButton: mark,
+    hitTarget: mark,
     restoreEvents: mark,
     drainLampTransitions: markDrain(),
     drainPistonTransitions: markDrain(),

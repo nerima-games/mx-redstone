@@ -92,6 +92,7 @@ export {
   advanceTimedCircuit,
   type RepeaterTimer,
   type ButtonTimer,
+  type TargetTimer,
   type TorchTimer,
   type TimedCircuitState,
 } from './domain/power-timing.js'

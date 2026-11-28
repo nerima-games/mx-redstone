@@ -13,7 +13,9 @@ import {
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
   redstoneNodeId,
+  redstoneTickObservationsFor,
   redstoneWorldStateFor,
+  setRedstoneObservationEnabled,
   type RedstoneComponentSnapshot,
   type RedstoneWorldRuntimeService,
   type RedstoneWorldSnapshotDuplicatePositionError,
@@ -109,6 +111,7 @@ const runtimeStateValues = (state: RedstoneWorldState) =>
     pendingLampTransitions: Ref.get(state.pendingLampTransitions),
     pendingPistonTransitions: Ref.get(state.pendingPistonTransitions),
     pendingPoweredComponentTransitions: Ref.get(state.pendingPoweredComponentTransitions),
+    pendingTargetHits: Ref.get(state.pendingTargetHits),
     pendingTriggerEvents: Ref.get(state.pendingTriggerEvents),
     power: Ref.get(state.power),
     scheduledLampOffTicks: Ref.get(state.scheduledLampOffTicks),
@@ -220,6 +223,38 @@ describe('observeRedstoneFrame', () => {
           pendingButtonPresses: new Set(),
           tick: 1,
         })
+      }),
+    ),
+  )
+
+  it.effect('reports the hold of a hit target and records a copy of it with each observed tick', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        // BUG: a held target is invisible to the debug view, or the recorded tick aliases live timer state.
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'target'),
+          component(1, 'wire'),
+        ]))
+        yield* setRedstoneObservationEnabled(runtime, true)
+        yield* runtime.hitTarget(dimensionId('overworld'), blockPosition(0), {
+          horizontal: 0.5,
+          projectile: 'arrow',
+          vertical: 0.5,
+        })
+        yield* runPowerTick(stages)
+
+        const observation = yield* observeRedstoneFrame(runtime)
+        expect(observation.dimensions[0]?.cells[0]?.dynamicState.timers).toStrictEqual({
+          target: { level: 15, remainingTicks: 9 },
+        })
+
+        const state = yield* redstoneWorldStateFor(runtime)
+        const targetNode = redstoneNodeId(dimensionId('overworld'), blockPosition(0))
+        const live = (yield* Ref.get(state.timedCircuit)).targets?.get(targetNode)
+        const [recorded] = yield* redstoneTickObservationsFor(runtime)
+        const copy = recorded?.timedCircuit.targets?.get(targetNode)
+        expect(copy).toStrictEqual({ level: 15, remainingTicks: 9 })
+        expect(copy).not.toBe(live)
       }),
     ),
   )
@@ -392,6 +427,7 @@ describe('observeRedstoneFrame', () => {
           state.pendingLampTransitions,
           state.pendingPistonTransitions,
           state.pendingPoweredComponentTransitions,
+          state.pendingTargetHits,
           state.pendingTriggerEvents,
           state.power,
           state.scheduledLampOffTicks,

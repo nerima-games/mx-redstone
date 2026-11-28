@@ -4,9 +4,11 @@ import * as fc from 'fast-check'
 import { Effect } from 'effect'
 import type { CircuitBoard, Component, PowerTickContext } from '../src/domain/power-graph'
 import { powerAt } from '../src/domain/power-graph'
+import type { TargetHit } from '../src/domain/target-block'
 import {
   advanceTimedCircuit,
   advanceTimedCircuitWithContext,
+  advanceTimedCircuitWithInputs,
   advanceTimedCircuitWithProvenanceContext,
   emptyTimedCircuitState,
   type TimedCircuitState,
@@ -755,6 +757,144 @@ describe('timed redstone', () => {
         state = advanceTimedCircuit(boardWithLockedTail, state)
         expect(state).toStrictEqual(settled)
       }
+    }),
+  )
+})
+
+describe('target hold', () => {
+  const targetBoard = line([
+    ['target', { kind: 'target' }],
+    ['wire', { kind: 'wire' }],
+  ])
+  const centreHit: TargetHit = { horizontal: 0.5, vertical: 0.5 }
+  // Hit at 0.25 from the centre line: signal 8, against 15 at the centre.
+  const offCentreHit: TargetHit = { horizontal: 0.25, vertical: 0.5 }
+
+  /** Power on the wire after each of `count` ticks; `hits` maps a tick number to that tick's hit. */
+  const wirePowerPerTick = (
+    count: number,
+    hits: ReadonlyMap<number, TargetHit>,
+    board: CircuitBoard = targetBoard,
+  ): ReadonlyArray<number> => {
+    let state: TimedCircuitState = emptyTimedCircuitState
+    const readings: Array<number> = []
+    for (let tick = 0; tick < count; tick += 1) {
+      const hit = hits.get(tick)
+      state = advanceTimedCircuitWithInputs(board, state, {
+        ...(hit === undefined ? {} : { targetHits: new Map([['target', hit]]) }),
+      })
+      readings.push(powerAt(state.power, 'wire'))
+    }
+    return readings
+  }
+
+  const poweredTicks = (readings: ReadonlyArray<number>): number => readings.filter((level) => level > 0).length
+
+  it.effect('powers a target from the tick of the hit for exactly the projectile hold time', () =>
+    Effect.sync(() => {
+      const holdTicks = [
+        ['arrow', 10],
+        ['trident', 10],
+        ['other', 4],
+      ] as const
+      for (const [projectile, hold] of holdTicks) {
+        const readings = wirePowerPerTick(14, new Map([[0, { ...centreHit, projectile }]]))
+        expect(readings.slice(0, hold).every((level) => level > 0), projectile).toBe(true)
+        expect(poweredTicks(readings), projectile).toBe(hold)
+      }
+      expect(poweredTicks(wirePowerPerTick(14, new Map([[0, centreHit]])))).toBe(4)
+    }),
+  )
+
+  it.effect('emits the signal of the hit for the whole hold', () =>
+    Effect.sync(() => {
+      const readings = wirePowerPerTick(6, new Map([[0, offCentreHit]]))
+      expect(readings.slice(0, 4)).toStrictEqual([8, 8, 8, 8])
+      expect(readings.slice(4)).toStrictEqual([0, 0])
+    }),
+  )
+
+  it.effect('ignores a hit while the target is still held, keeping its signal and its release', () =>
+    Effect.sync(() => {
+      const readings = wirePowerPerTick(8, new Map([
+        [0, { ...offCentreHit, projectile: 'arrow' }],
+        [3, { ...centreHit, projectile: 'arrow' }],
+        [9, centreHit],
+      ]))
+      expect(readings.slice(0, 10)).toStrictEqual([8, 8, 8, 8, 8, 8, 8, 8])
+    }),
+  )
+
+  it.effect('a hit on the tick the hold ends powers the target afresh with its own signal and time', () =>
+    Effect.sync(() => {
+      const readings = wirePowerPerTick(12, new Map([
+        [0, offCentreHit],
+        [4, { ...centreHit, projectile: 'arrow' }],
+      ]))
+      expect(readings.slice(0, 4)).toStrictEqual([8, 8, 8, 8])
+      expect(readings.slice(4, 12)).toStrictEqual([15, 15, 15, 15, 15, 15, 15, 15])
+    }),
+  )
+
+  it.effect('takes the first hit of a tick as given', () =>
+    Effect.sync(() => {
+      const first: TargetHit = { ...offCentreHit, projectile: 'other' }
+      const readings = wirePowerPerTick(6, new Map([[0, first]]))
+      expect(readings.slice(0, 4)).toStrictEqual([8, 8, 8, 8])
+    }),
+  )
+
+  it.effect('keeps whatever the world declares for a target nothing has hit', () =>
+    Effect.sync(() => {
+      const declared = line([
+        ['target', { kind: 'target', active: true, emits: 6 }],
+        ['wire', { kind: 'wire' }],
+      ])
+      expect(wirePowerPerTick(3, new Map(), declared)).toStrictEqual([6, 6, 6])
+      expect(wirePowerPerTick(3, new Map(), targetBoard)).toStrictEqual([0, 0, 0])
+    }),
+  )
+
+  it.effect('a hit overrides a declared target while it holds and gives the declaration back after', () =>
+    Effect.sync(() => {
+      const declared = line([
+        ['target', { kind: 'target', active: true, emits: 6 }],
+        ['wire', { kind: 'wire' }],
+      ])
+      expect(wirePowerPerTick(6, new Map([[1, centreHit]]), declared)).toStrictEqual([6, 15, 15, 15, 15, 6])
+    }),
+  )
+
+  it.effect('ignores a hit on a component that is not a target', () =>
+    Effect.sync(() => {
+      const board = line([
+        ['lever', { kind: 'lever', active: false }],
+        ['wire', { kind: 'wire' }],
+      ])
+      const state = advanceTimedCircuitWithInputs(board, emptyTimedCircuitState, {
+        targetHits: new Map([['lever', centreHit]]),
+      })
+      expect(powerAt(state.power, 'wire')).toBe(0)
+      expect(state.targets?.size).toBe(0)
+    }),
+  )
+
+  it.effect('records the hold in the timed state and the context-aware advance agrees with the map-only one', () =>
+    Effect.sync(() => {
+      const targetHits = new Map([['target', { ...centreHit, projectile: 'arrow' as const }]])
+      const plain = advanceTimedCircuitWithInputs(targetBoard, emptyTimedCircuitState, { targetHits })
+      const withContext = advanceTimedCircuitWithContext({ board: targetBoard, previous: emptyTimedCircuitState, targetHits })
+      const withProvenance = advanceTimedCircuitWithProvenanceContext({
+        board: targetBoard,
+        previous: emptyTimedCircuitState,
+        targetHits,
+      })
+
+      expect(plain.targets?.get('target')).toStrictEqual({ level: 15, remainingTicks: 9 })
+      expect(withContext.targets.get('target')).toStrictEqual({ level: 15, remainingTicks: 9 })
+      expect(withProvenance.targets.get('target')).toStrictEqual({ level: 15, remainingTicks: 9 })
+      expect(withContext.power).toStrictEqual(plain.power)
+      expect(withProvenance.power).toStrictEqual(plain.power)
     }),
   )
 })

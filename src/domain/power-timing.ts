@@ -16,12 +16,15 @@ import {
 } from './power-graph.js'
 import { type NonNegativeTickCount, NonNegativeTickCount as nonNegativeTickCount } from '@nerima-games/mc-kernel'
 import { OBSERVER_PULSE_TICKS, type Sightings, observeChanges } from './observer.js'
+import { type TargetHit, targetHoldTicks, targetSignal } from './target-block.js'
 import type { PositionKey } from './position-key.js'
+import type { PowerLevel } from './signal-level.js'
 
 const TIMED_COMPONENT_KINDS: ReadonlySet<Component['kind']> = new Set([
   'repeater',
   'button',
   'observer',
+  'target',
   'torch',
 ])
 const OBSERVER_COMPONENT_KINDS: ReadonlySet<Component['kind']> = new Set(['observer'])
@@ -67,6 +70,12 @@ export type ObserverTimer = {
   readonly remainingTicks: number
 }
 
+/** A target kept powered by a hit: `remainingTicks` more powered ticks follow the current one. */
+export type TargetTimer = {
+  readonly level: PowerLevel
+  readonly remainingTicks: NonNegativeTickCount
+}
+
 export type TimedCircuitState = {
   readonly power: PowerMap
   readonly repeaters: ReadonlyMap<PositionKey, RepeaterTimer>
@@ -75,6 +84,7 @@ export type TimedCircuitState = {
   readonly torches?: ReadonlyMap<PositionKey, TorchTimer>
   readonly observers?: ReadonlyMap<PositionKey, ObserverTimer>
   readonly observerSeen?: Sightings
+  readonly targets?: ReadonlyMap<PositionKey, TargetTimer>
 }
 
 type TimedCircuitInput = TimedCircuitState & {
@@ -85,13 +95,15 @@ type TimedCircuitAdvanceInput = {
   readonly board: CircuitBoard
   readonly previous: TimedCircuitInput
   readonly pressedButtons?: ReadonlySet<PositionKey>
+  readonly targetHits?: ReadonlyMap<PositionKey, TargetHit>
   readonly context?: PowerTickContext
 }
 
-export type TimedCircuitWithBlockPower = Omit<TimedCircuitState, 'observers' | 'observerSeen' | 'torches'> & {
+export type TimedCircuitWithBlockPower = Omit<TimedCircuitState, 'observers' | 'observerSeen' | 'targets' | 'torches'> & {
   readonly blockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>
   readonly observerSeen: Sightings
   readonly observers: ReadonlyMap<PositionKey, ObserverTimer>
+  readonly targets: ReadonlyMap<PositionKey, TargetTimer>
   readonly torches: ReadonlyMap<PositionKey, TorchTimer>
 }
 
@@ -105,6 +117,7 @@ export const emptyTimedCircuitState: TimedCircuitState = {
   observers: new Map(),
   power: emptyPowerMap,
   repeaters: new Map(),
+  targets: new Map(),
   torches: new Map(),
 }
 
@@ -317,6 +330,39 @@ const applyButtonEntry = (params: {
   components.set(key, { ...component, active })
 }
 
+/**
+ * Vanilla's target schedules one reset per powering and ignores a hit while that reset is still
+ * pending, so a hit neither re-reads the signal strength nor restarts the hold. A hit on the tick
+ * the hold ends powers the target afresh.
+ */
+const advanceTarget = (prior: TargetTimer | null, hit: TargetHit | null): TargetTimer | null => {
+  if (prior !== null && prior.remainingTicks > NO_TICKS) {
+    return { level: prior.level, remainingTicks: nonNegativeTickCount(prior.remainingTicks - NEXT_TICK) }
+  }
+  if (hit === null) {
+    return null
+  }
+  return { level: targetSignal(hit), remainingTicks: nonNegativeTickCount(targetHoldTicks(hit) - NEXT_TICK) }
+}
+
+/** A target with no hold in progress keeps whatever the owner of the world declared for it. */
+const applyTargetEntry = (params: {
+  readonly key: PositionKey
+  readonly component: Component
+  readonly previous: TimedCircuitState
+  readonly targetHits: ReadonlyMap<PositionKey, TargetHit>
+  readonly targets: Map<PositionKey, TargetTimer>
+  readonly components: Map<PositionKey, Component>
+}): void => {
+  const { component, components, key, previous, targetHits, targets } = params
+  const timer = advanceTarget(previous.targets?.get(key) ?? null, targetHits.get(key) ?? null)
+  if (timer === null) {
+    return
+  }
+  targets.set(key, timer)
+  components.set(key, { ...component, active: true, emits: timer.level })
+}
+
 const applyTorchEntry = (params: {
   readonly key: PositionKey
   readonly component: Component
@@ -363,25 +409,30 @@ type ApplyTimedEntryParameters = {
   readonly previous: TimedCircuitState
   readonly previousBlockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>
   readonly pressedButtons: ReadonlySet<PositionKey>
+  readonly targetHits: ReadonlyMap<PositionKey, TargetHit>
   readonly repeaters: Map<PositionKey, RepeaterTimer>
   readonly buttons: Map<PositionKey, ButtonTimer>
+  readonly targets: Map<PositionKey, TargetTimer>
   readonly torches: Map<PositionKey, TorchTimer>
   readonly observers: Map<PositionKey, ObserverTimer>
   readonly changedObservers: ReadonlySet<PositionKey>
   readonly components: Map<PositionKey, Component>
 }
 
+const NON_TORCH_APPLIERS: ReadonlyMap<Component['kind'], (params: ApplyTimedEntryParameters) => void> = new Map<
+  Component['kind'],
+  (params: ApplyTimedEntryParameters) => void
+>([
+  ['button', applyButtonEntry],
+  ['observer', applyObserverEntry],
+  ['repeater', applyRepeaterEntry],
+  ['target', applyTargetEntry],
+])
+
 const applyNonTorchTimedEntry = (params: ApplyTimedEntryParameters): boolean => {
-  if (params.component.kind === 'repeater') {
-    applyRepeaterEntry(params)
-    return true
-  }
-  if (params.component.kind === 'button') {
-    applyButtonEntry(params)
-    return true
-  }
-  if (params.component.kind === 'observer') {
-    applyObserverEntry(params)
+  const apply = NON_TORCH_APPLIERS.get(params.component.kind)
+  if (apply) {
+    apply(params)
     return true
   }
   return false
@@ -395,7 +446,7 @@ const applyTimedEntry = (params: ApplyTimedEntryParameters): void => {
   /**
    * `advanceTimedCircuit` only ever calls this for `TIMED_COMPONENT_KINDS`
    * members (`componentEntriesForKinds` filters upstream), so having ruled out
-   * 'repeater' and 'button', `component.kind` is provably 'torch' here. A
+   * 'repeater', 'button', 'observer' and 'target', `component.kind` is provably 'torch' here. A
    * trailing `else if ('torch')` would leave a branch no test can reach
    * (DN-RS-11), so this is an unconditional call instead of a third guard.
    */
@@ -408,6 +459,7 @@ type ResolvedTimedCircuitTick = {
   readonly observerSeen: Sightings
   readonly observers: ReadonlyMap<PositionKey, ObserverTimer>
   readonly repeaters: ReadonlyMap<PositionKey, RepeaterTimer>
+  readonly targets: ReadonlyMap<PositionKey, TargetTimer>
   readonly tickContext: PowerTickContext
   readonly torches: ReadonlyMap<PositionKey, TorchTimer>
 }
@@ -423,6 +475,7 @@ const timedCircuitWithProvenance = (
   power: tickState.power,
   provenance: tickState.provenance,
   repeaters: resolved.repeaters,
+  targets: resolved.targets,
   torches: resolved.torches,
 })
 
@@ -431,6 +484,7 @@ type TimedComponentMaps = {
   readonly components: Map<PositionKey, Component>
   readonly observers: Map<PositionKey, ObserverTimer>
   readonly repeaters: Map<PositionKey, RepeaterTimer>
+  readonly targets: Map<PositionKey, TargetTimer>
   readonly torches: Map<PositionKey, TorchTimer>
 }
 
@@ -439,6 +493,7 @@ const emptyTimedComponentMaps = (): TimedComponentMaps => ({
   components: new Map(),
   observers: new Map(),
   repeaters: new Map(),
+  targets: new Map(),
   torches: new Map(),
 })
 
@@ -455,32 +510,39 @@ const observerSweepFor = (board: CircuitBoard, previous: TimedCircuitState): Ret
   return observeChanges(current, previous.observerSeen ?? new Map())
 }
 
-const resolveTimedCircuitTick = (input: TimedCircuitAdvanceInput): ResolvedTimedCircuitTick => {
-  const { board, previous, context } = input
-  const pressedButtons = input.pressedButtons ?? new Set<PositionKey>()
-  const { buttons, components, observers, repeaters, torches } = emptyTimedComponentMaps()
-  const previousBlockPower = previousBlockPowerFor(input)
+type TimedInputs = {
+  readonly pressedButtons: ReadonlySet<PositionKey>
+  readonly targetHits: ReadonlyMap<PositionKey, TargetHit>
+}
+
+const timedInputsOf = (input: Pick<TimedCircuitAdvanceInput, 'pressedButtons' | 'targetHits'>): TimedInputs => ({
+  pressedButtons: input.pressedButtons ?? new Set<PositionKey>(),
+  targetHits: input.targetHits ?? new Map<PositionKey, TargetHit>(),
+})
+
+const advanceTimedEntries = (input: {
+  readonly board: CircuitBoard
+  readonly inputs: TimedInputs
+  readonly previous: TimedCircuitState
+  readonly previousBlockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>
+}): { readonly maps: TimedComponentMaps; readonly sweep: ReturnType<typeof observeChanges> } => {
+  const { board, inputs, previous, previousBlockPower } = input
+  const maps = emptyTimedComponentMaps()
   const sweep = observerSweepFor(board, previous)
   const changedObservers = new Set(sweep.fired)
 
   for (const [key, component] of componentEntriesForKinds(board, TIMED_COMPONENT_KINDS)) {
-    applyTimedEntry({
-      buttons,
-      changedObservers,
-      component,
-      components,
-      key,
-      observers,
-      pressedButtons,
-      previous,
-      previousBlockPower,
-      repeaters,
-      torches,
-    })
+    applyTimedEntry({ ...maps, ...inputs, changedObservers, component, key, previous, previousBlockPower })
   }
+  return { maps, sweep }
+}
 
+const resolveTimedCircuitTick = (input: TimedCircuitAdvanceInput): ResolvedTimedCircuitTick => {
+  const { board, previous, context } = input
+  const previousBlockPower = previousBlockPowerFor(input)
+  const { maps, sweep } = advanceTimedEntries({ board, inputs: timedInputsOf(input), previous, previousBlockPower })
   const tickContext: PowerTickContext = { ...context, previousBlockPower }
-  return { buttons, components, observerSeen: sweep.seen, observers, repeaters, tickContext, torches }
+  return { ...maps, observerSeen: sweep.seen, tickContext }
 }
 
 /** Advances all timers once, then computes this tick's state without provenance. */
@@ -500,6 +562,7 @@ export const advanceTimedCircuitWithContext = (
     observers: resolved.observers,
     power: tickState.power,
     repeaters: resolved.repeaters,
+    targets: resolved.targets,
     torches: resolved.torches,
   }
 }
@@ -517,39 +580,34 @@ export const advanceTimedCircuitWithProvenanceContext = (
   return timedCircuitWithProvenance(tickState, resolved)
 }
 
+/** The external events one redstone tick consumes. Both are optional and default to none. */
+export type TimedCircuitInputs = {
+  readonly pressedButtons?: ReadonlySet<PositionKey>
+  readonly targetHits?: ReadonlyMap<PositionKey, TargetHit>
+}
+
+export const advanceTimedCircuitWithInputs = (
+  board: CircuitBoard,
+  previous: TimedCircuitState,
+  inputs: TimedCircuitInputs = {},
+): TimedCircuitState => {
+  const previousBlockPower = previousBlockPowerFor({ board, previous })
+  const { maps, sweep } = advanceTimedEntries({ board, inputs: timedInputsOf(inputs), previous, previousBlockPower })
+
+  // The map-only API avoids constructing block-power contexts and result wrappers on every tick.
+  return {
+    buttons: maps.buttons,
+    observerSeen: sweep.seen,
+    observers: maps.observers,
+    power: propagateTick(board, previous.power, maps.components),
+    repeaters: maps.repeaters,
+    targets: maps.targets,
+    torches: maps.torches,
+  }
+}
+
 export const advanceTimedCircuit = (
   board: CircuitBoard,
   previous: TimedCircuitState,
   pressedButtons: ReadonlySet<PositionKey> = new Set(),
-): TimedCircuitState => {
-  const { buttons, components, observers, repeaters, torches } = emptyTimedComponentMaps()
-  const previousBlockPower = previousBlockPowerFor({ board, pressedButtons, previous })
-  const sweep = observerSweepFor(board, previous)
-  const changedObservers = new Set(sweep.fired)
-
-  for (const [key, component] of componentEntriesForKinds(board, TIMED_COMPONENT_KINDS)) {
-    applyTimedEntry({
-      buttons,
-      changedObservers,
-      component,
-      components,
-      key,
-      observers,
-      pressedButtons,
-      previous,
-      previousBlockPower,
-      repeaters,
-      torches,
-    })
-  }
-
-  // The map-only API avoids constructing block-power contexts and result wrappers on every tick.
-  return {
-    buttons,
-    observerSeen: sweep.seen,
-    observers,
-    power: propagateTick(board, previous.power, components),
-    repeaters,
-    torches,
-  }
-}
+): TimedCircuitState => advanceTimedCircuitWithInputs(board, previous, { pressedButtons })
