@@ -1031,11 +1031,20 @@ host が packed state を渡したドアは、下半分なら 1 つ上、上半�
 runtime は `otherHalf` の電力も見て、どちらかが給電されていれば両方の半分に同じ遷移を出す。
 `otherHalf` のセルが snapshot に無ければ、自分の電力だけで決める。packed state を渡さないドアは、これまでどおり半分を持たない。
 
+### トーチは真上のブロックを強く給電する
+
+点灯したトーチは真上のブロックを強く給電し、そのブロックの隣のダストを動かす。床のトーチも壁のトーチも同じである。
+host の経路では `redstone_torch` と `redstone_wall_torch` を `torch` の component にするだけで、runtime が真上を強い給電先にする
+（`world-runtime.ts` の `strongPowerTargetFor`）。真上が導体かどうかは `isRedstoneConductiveAt` が答える。
+この挙動は実装済みで、`test/redstone-host-runtime-path.test.ts` が host の経路で固定している。真上が導体でなければ、隣のダストは動かない。
+
 ### 出典
 
 Java Edition 1.16.5 の `ComparatorBlock.calculateInputStrength` と、1.21.1 の `ComparatorBlock.getInputSignal` のソースで確かめた。
 どちらも直後ろが比較器の入力を上書きするブロックならそれを使い、そうでなければ電力が 15 未満で固体の導体のときに
 1 ブロック先を読む。
+トーチは 1.16.5 の `RedstoneTorchBlock.getStrongPower` と 1.21.1 の `getDirectSignal` で確かめた。どちらも下向きの問い合わせにだけ弱い給電の値（点灯中は 15）を返し、
+壁のトーチも同じメソッドを継ぐ。
 ドアは 1.16.5 の `DoorBlock.neighborChanged` と 1.21.1 の同名のメソッドで確かめた。どちらも自分のセルと、下半分なら上、
 上半分なら下のセルのどちらかに給電されていれば通電として、`powered` と `open` を設定する。
 
