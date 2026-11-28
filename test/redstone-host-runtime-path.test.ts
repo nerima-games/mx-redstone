@@ -489,6 +489,47 @@ describe('raw host block to host request', () => {
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
+  it.effect('reads a container through a conductive block into the comparator output', () =>
+    Effect.gen(function* () {
+      // Fails if the through-block read stops at the snapshot and never reaches the comparator's output.
+      const slot = Schema.decodeUnknownSync(ContainerSlotSchema)({ count: 32, maxStack: 64 })
+      const comparatorPosition = blockPosition(30, 0, 0)
+      const outputWirePosition = blockPosition(30, 0, -1)
+      const lookup: RedstoneHostLookup = {
+        isLeverActive: () => false,
+        isPoweredRailPowered: () => false,
+        isRedstoneConductiveAt: (position) => position.x === 30 && position.y === 0 && position.z === 1,
+        readContainerSlots: (position) => {
+          if (position.x === 30 && position.y === 0 && position.z === 2) {
+            return [slot]
+          }
+          return undefined
+        },
+        readHopperBlockId: () => HOPPER_BLOCK_ID,
+        readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
+        readPistonCell: () => ({ kind: 'empty' }),
+      }
+      const { realm } = recordingRealm(lookup)
+      const snapshot = successValue(redstoneSnapshotFromRealm(realm, [
+        blockWithState('comparator', comparatorPosition.x, comparatorPosition.y, comparatorPosition.z, {
+          facing: 'north',
+          mode: 'compare',
+          powered: false,
+        }),
+        block('redstone_wire', outputWirePosition.x, outputWirePosition.y, outputWirePosition.z),
+      ]))
+
+      const runtime = yield* RedstoneWorldRuntime
+      const stages = yield* makeRuntimeRedstoneStages
+      yield* runtime.syncSnapshot(snapshot)
+      yield* setRedstoneObservationEnabled(runtime, true)
+      yield* runFrame(stages)
+
+      const observations = yield* redstoneTickObservationsFor(runtime)
+      expect(observations[0]?.power.get(redstoneNodeId(dimensionId('overworld'), comparatorPosition))).toBe(8)
+    }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+  )
+
   it.effect('passes a raw comparator reading into its numeric output and ordered lamp request', () =>
     Effect.gen(function* () {
       // Fails if raw container slots stop before the comparator emits their level and powers the output.
