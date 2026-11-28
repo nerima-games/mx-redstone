@@ -175,6 +175,7 @@ export type RedstoneWorldState = {
   readonly observedPistonStates: Ref.Ref<ReadonlyMap<PositionKey, PistonState>>
   readonly pendingPistonTransitions: Ref.Ref<ReadonlyArray<PoweredPistonTransition>>
   readonly observedTriggerPower: Ref.Ref<ReadonlyMap<PositionKey, boolean>>
+  readonly scheduledTriggerTicks: Ref.Ref<ReadonlyMap<PositionKey, NonNegativeTickCount>>
   readonly pendingTriggerEvents: Ref.Ref<ReadonlyArray<RedstoneTriggerEvent>>
   readonly pendingHopperTransferEvents: Ref.Ref<ReadonlyArray<HopperTransferEvent>>
   readonly observedPoweredComponents: Ref.Ref<ReadonlyMap<PositionKey, boolean>>
@@ -1049,6 +1050,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       observedPistonStates,
       pendingPistonTransitions,
       observedTriggerPower,
+      scheduledTriggerTicks,
       pendingTriggerEvents,
       pendingHopperTransferEvents,
       observedPoweredComponents,
@@ -1069,6 +1071,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       Ref.make<ReadonlyMap<PositionKey, PistonState>>(new Map()),
       Ref.make<ReadonlyArray<PoweredPistonTransition>>([]),
       Ref.make<ReadonlyMap<PositionKey, boolean>>(new Map()),
+      Ref.make<ReadonlyMap<PositionKey, NonNegativeTickCount>>(new Map()),
       Ref.make<ReadonlyArray<RedstoneTriggerEvent>>([]),
       Ref.make<ReadonlyArray<HopperTransferEvent>>([]),
       Ref.make<ReadonlyMap<PositionKey, boolean>>(new Map()),
@@ -1094,6 +1097,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       pendingTriggerEvents,
       power,
       scheduledLampOffTicks,
+      scheduledTriggerTicks,
       tickCount,
       timedCircuit,
     }
@@ -1424,8 +1428,21 @@ const isPoweredComponentKind = (kind: ComponentKind): kind is PoweredComponentKi
 
 type TriggerEventResult = {
   readonly current: ReadonlyMap<PositionKey, boolean>
-  readonly triggered: ReadonlyArray<readonly [PositionKey, RedstoneTriggerEvent]>
+  readonly dueTicks: ReadonlyMap<PositionKey, NonNegativeTickCount>
+  readonly triggered: ReadonlyArray<RedstoneTriggerEvent>
 }
+
+type TriggerReadout = {
+  readonly circuit: CircuitReadout
+  readonly dueTicks: ReadonlyMap<PositionKey, NonNegativeTickCount>
+  readonly now: NonNegativeTickCount
+  readonly previous: ReadonlyMap<PositionKey, boolean>
+}
+
+/** Vanilla schedules a dispenser's or dropper's action four game ticks, i.e. two redstone
+ * ticks, after its rising edge. A note block plays in the tick power arrives. */
+const DELAYED_TRIGGER_KINDS = new Set<ComponentKind>(['dispenser', 'dropper'])
+const TRIGGER_DELAY_TICKS = 2
 
 const triggerEventFacing = (
   component: Pick<RedstoneComponentSnapshot, 'kind' | 'facing'>,
@@ -1436,61 +1453,96 @@ const triggerEventFacing = (
   return withOptional('facing', component.facing)
 }
 
+const triggerEventsWhen = (enabled: boolean, entry: SnapshotEntry): ReadonlyArray<RedstoneTriggerEvent> => {
+  const { component, dimension } = entry
+  if (!enabled || !isTriggeredComponentKind(component.kind)) {
+    return []
+  }
+  return [{
+    dimension,
+    kind: component.kind,
+    position: copyPosition(component.position),
+    ...triggerEventFacing(component),
+  }]
+}
+
+/**
+ * The scheduled-tick step for one dispenser or dropper. A rising edge schedules one action two
+ * ticks ahead, and the action fires when due whatever the power is by then. Edges are at least
+ * two ticks apart, so an edge never finds an action still pending: it either follows the firing
+ * one or comes later. The action reads the snapshot of the tick it fires in, so a removed block
+ * drops its schedule and a turned block acts along its current facing.
+ */
+const delayedTriggerStep = (input: {
+  readonly due: Option.Option<NonNegativeTickCount>
+  readonly now: NonNegativeTickCount
+  readonly rising: boolean
+}): { readonly dueTick: Option.Option<NonNegativeTickCount>; readonly fires: boolean } => {
+  const { due, now, rising } = input
+  const fires = Option.isSome(due) && now >= due.value
+  if (rising) {
+    return {
+      dueTick: Option.some(Schema.decodeUnknownSync(nonNegativeTickCountSchema)(now + TRIGGER_DELAY_TICKS)),
+      fires,
+    }
+  }
+  return { dueTick: Option.filter(due, (tick) => now < tick), fires }
+}
+
 const triggerEventEntry = (
   entry: SnapshotEntry,
-  circuit: CircuitReadout,
-  previous: ReadonlyMap<PositionKey, boolean>,
-): { readonly events: ReadonlyArray<readonly [PositionKey, RedstoneTriggerEvent]>; readonly powered: boolean } => {
-  const { component, dimension, nodeId } = entry
-  const powerInput = isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId })
+  readout: TriggerReadout,
+): {
+  readonly dueTick: Option.Option<NonNegativeTickCount>
+  readonly events: ReadonlyArray<RedstoneTriggerEvent>
+  readonly powered: boolean
+} => {
+  const { component, nodeId } = entry
+  const { circuit, dueTicks, now, previous } = readout
+  const powered = isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId })
   const wasTriggered = previous.get(nodeId) ?? component.triggered ?? false
-  if (wasTriggered || !powerInput || !isTriggeredComponentKind(component.kind)) {
-    return { events: [], powered: powerInput }
+  const rising = !wasTriggered && powered
+  if (!DELAYED_TRIGGER_KINDS.has(component.kind)) {
+    return { dueTick: Option.none(), events: triggerEventsWhen(rising, entry), powered }
   }
-  return {
-    events: [[nodeId, {
-      dimension,
-      kind: component.kind,
-      position: copyPosition(component.position),
-      ...triggerEventFacing(component),
-    }]],
-    powered: powerInput,
-  }
+  const step = delayedTriggerStep({ due: Option.fromNullishOr(dueTicks.get(nodeId)), now, rising })
+  return { dueTick: step.dueTick, events: triggerEventsWhen(step.fires, entry), powered }
 }
 
 const computeTriggerEvents = (
-  circuit: CircuitReadout,
   entries: ReadonlyArray<SnapshotEntry>,
-  previous: ReadonlyMap<PositionKey, boolean>,
+  readout: TriggerReadout,
 ): TriggerEventResult => {
   const current = new Map<PositionKey, boolean>()
-  const triggered: Array<readonly [PositionKey, RedstoneTriggerEvent]> = []
-  for (const entry of entries) {
-    if (TRIGGERED_KINDS.has(entry.component.kind)) {
-      const { events, powered } = triggerEventEntry(entry, circuit, previous)
-      current.set(entry.nodeId, powered)
-      triggered.push(...events)
+  const dueTicks = new Map<PositionKey, NonNegativeTickCount>()
+  const triggered: Array<RedstoneTriggerEvent> = []
+  for (const entry of entries.filter(({ component }) => TRIGGERED_KINDS.has(component.kind))) {
+    const { dueTick, events, powered } = triggerEventEntry(entry, readout)
+    current.set(entry.nodeId, powered)
+    if (Option.isSome(dueTick)) {
+      dueTicks.set(entry.nodeId, dueTick.value)
     }
+    triggered.push(...events)
   }
-  return { current, triggered }
+  return { current, dueTicks, triggered }
 }
 
-/** Emits deterministic rising-edge actions for one-shot powered components. */
+/** Emits deterministic actions for one-shot powered components. */
 export const collectTriggerEvents = (state: RedstoneWorldState): Effect.Effect<void> =>
   Effect.gen(function* collectTriggerEventsGenerator() {
-    const [circuit, dimensions, previous] = yield* Effect.all([
+    const [circuit, dimensions, previous, dueTicks, now] = yield* Effect.all([
       circuitReadoutFor(state),
       Ref.get(state.dimensions),
       Ref.get(state.observedTriggerPower),
+      Ref.get(state.scheduledTriggerTicks),
+      Ref.get(state.tickCount),
     ])
     const entries = flattenSnapshotEntries(dimensions)
-    const { current, triggered } = computeTriggerEvents(circuit, entries, previous)
-    yield* Ref.set(state.observedTriggerPower, current)
-    if (triggered.length > NO_ITEMS) {
-      yield* Ref.update(state.pendingTriggerEvents, (pending) => [
-        ...pending,
-        ...triggered.map(([, event]) => event),
-      ])
+    const result = computeTriggerEvents(entries, { circuit, dueTicks, now, previous })
+    yield* Ref.set(state.observedTriggerPower, result.current)
+    yield* Ref.set(state.scheduledTriggerTicks, result.dueTicks)
+    if (result.triggered.length > NO_ITEMS) {
+      yield* Ref.update(state.pendingTriggerEvents, (pending) => [...pending, ...result.triggered])
     }
   })
 

@@ -433,9 +433,8 @@ describe('raw host block to host request', () => {
           { dimension: dimensionId('overworld'), kind: 'trapdoor', powered: true, position: blockPosition(9, 0, 0) },
           { dimension: dimensionId('overworld'), kind: 'powered-rail', powered: true, position: blockPosition(10, 1, 0) },
         ],
+        // The note block plays in the tick power arrives; the dispenser and dropper act two ticks later.
         trigger: [
-          { dimension: dimensionId('overworld'), facing: 'north', kind: 'dispenser', position: blockPosition(-1, 0, 0) },
-          { dimension: dimensionId('overworld'), facing: 'north', kind: 'dropper', position: blockPosition(0, 1, 0) },
           { dimension: dimensionId('overworld'), kind: 'note-block', position: blockPosition(10, 0, -1) },
         ],
       }
@@ -461,6 +460,16 @@ describe('raw host block to host request', () => {
       const callsAfterCommit = calls.length
       yield* applyRedstoneHostEvents(runtime, [realm], port)
       expect(calls).toHaveLength(callsAfterCommit)
+
+      yield* runFrame(stages)
+      yield* runFrame(stages)
+      yield* applyRedstoneHostEvents(runtime, [realm], port)
+      const [, delayedBuild] = callsOf(calls, 'build')
+      expect(callsOf(calls, 'build')).toHaveLength(2)
+      expect(delayedBuild?.events.trigger).toStrictEqual([
+        { dimension: dimensionId('overworld'), facing: 'north', kind: 'dispenser', position: blockPosition(-1, 0, 0) },
+        { dimension: dimensionId('overworld'), facing: 'north', kind: 'dropper', position: blockPosition(0, 1, 0) },
+      ])
 
       const inventory = makeDispenser('dispenser', true)
       const inventoryBefore = { ...inventory, slots: inventory.slots.map((stack) => stack === null ? null : { ...stack }) }

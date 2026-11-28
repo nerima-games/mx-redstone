@@ -208,6 +208,9 @@ describe('mc-sim fixed-tick redstone integration', () => {
       })
 
       yield* runGameTicks(tickService, stages, 2)
+      // The dispenser acts two redstone ticks (four game ticks) after power arrives.
+      expect(yield* Ref.get(state.pendingTriggerEvents)).toStrictEqual([])
+      yield* runGameTicks(tickService, stages, 4)
       expect(yield* Ref.get(state.pendingTriggerEvents)).toStrictEqual([{
         dimension,
         facing: 'east',

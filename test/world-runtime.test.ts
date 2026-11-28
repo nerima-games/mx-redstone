@@ -9,6 +9,7 @@ import {
   type HopperTransferEvent,
   type RedstoneComponentSnapshot,
   type RedstoneEventBatch,
+  type RedstoneTriggerEvent,
   type RedstoneWorldRuntimeService,
   type RedstoneWorldSnapshotDuplicatePositionError,
   type RedstoneWorldRuntimeStateError,
@@ -121,6 +122,32 @@ const drainLampsPerFrame = (
     for (let frame = 0; frame < count; frame += 1) {
       yield* runFrame(stages)
       drained.push([...(yield* runtime.drainLampTransitions)])
+    }
+    return drained
+  })
+
+const triggerEvent = (
+  x: number,
+  kind: 'dispenser' | 'dropper' | 'note-block',
+  options: { readonly dimension?: string; readonly facing?: 'east' | 'up'; readonly y?: number } = {},
+) => ({
+  dimension: options.dimension ?? 'overworld',
+  ...(options.facing === undefined ? {} : { facing: options.facing }),
+  kind,
+  position: { x, y: options.y ?? 0, z: 0 },
+})
+
+/** Runs `count` redstone ticks and returns what the host would drain after each one. */
+const drainTriggersPerFrame = (
+  runtime: RedstoneWorldRuntimeService,
+  stages: ReadonlyArray<StageRegistration>,
+  count: number,
+) =>
+  Effect.gen(function* () {
+    const drained: Array<Array<RedstoneTriggerEvent>> = []
+    for (let frame = 0; frame < count; frame += 1) {
+      yield* runFrame(stages)
+      drained.push([...(yield* runtime.drainTriggerEvents)])
     }
     return drained
   })
@@ -476,6 +503,136 @@ describe('RedstoneWorldRuntime', () => {
     )
   })
 
+  describe('dispenser and dropper action delay', () => {
+    const actuatorCircuit = (leverActive: boolean) =>
+      snapshot('overworld', [
+        component(0, 'lever', leverActive),
+        component(1, 'dispenser'),
+        component(0, 'dropper', undefined, 1, 0),
+      ])
+
+    it.effect('fires a dispenser and a dropper two redstone ticks after the rising edge', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(actuatorCircuit(true))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 6)).toStrictEqual([
+            [],
+            [],
+            [triggerEvent(0, 'dropper', { y: 1 }), triggerEvent(1, 'dispenser')],
+            [],
+            [],
+            [],
+          ])
+        }),
+      ),
+    )
+
+    it.effect('plays a note block in the tick power arrives', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(snapshot('overworld', [
+            component(0, 'lever', true),
+            component(1, 'note-block'),
+          ]))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 3)).toStrictEqual([
+            [triggerEvent(1, 'note-block')],
+            [],
+            [],
+          ])
+        }),
+      ),
+    )
+
+    it.effect('still fires when power is lost before the action is due', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(actuatorCircuit(true))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(actuatorCircuit(false))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 3)).toStrictEqual([
+            [],
+            [triggerEvent(0, 'dropper', { y: 1 }), triggerEvent(1, 'dispenser')],
+            [],
+          ])
+        }),
+      ),
+    )
+
+    it.effect('schedules a fresh action for an edge that arrives on the due tick', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(actuatorCircuit(true))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(actuatorCircuit(false))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(actuatorCircuit(true))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 3)).toStrictEqual([
+            [triggerEvent(0, 'dropper', { y: 1 }), triggerEvent(1, 'dispenser')],
+            [],
+            [triggerEvent(0, 'dropper', { y: 1 }), triggerEvent(1, 'dispenser')],
+          ])
+        }),
+      ),
+    )
+
+    it.effect('acts along the facing the block has when the action comes due', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          const facing = (value: 'east' | 'up') => snapshot('overworld', [
+            component(0, 'lever', true),
+            { ...component(1, 'dispenser'), facing: value },
+          ])
+
+          yield* runtime.syncSnapshot(facing('east'))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(facing('up'))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 2)).toStrictEqual([
+            [],
+            [triggerEvent(1, 'dispenser', { facing: 'up' })],
+          ])
+        }),
+      ),
+    )
+
+    it.effect('drops the action of a block removed before it is due and starts over when it returns', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(actuatorCircuit(true))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(snapshot('overworld', [component(0, 'lever', true)]))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 3)).toStrictEqual([[], [], []])
+
+          yield* runtime.syncSnapshot(actuatorCircuit(true))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 3)).toStrictEqual([
+            [],
+            [],
+            [triggerEvent(0, 'dropper', { y: 1 }), triggerEvent(1, 'dispenser')],
+          ])
+        }),
+      ),
+    )
+
+    it.effect('times each dimension independently for actuators at identical coordinates', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          const circuit = (dimension: string) => snapshot(dimension, [
+            component(0, 'lever', true),
+            component(1, 'dispenser'),
+          ])
+
+          yield* runtime.syncSnapshot(circuit('overworld'))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 1)).toStrictEqual([[]])
+          yield* runtime.syncSnapshot(circuit('nether'))
+          expect(yield* drainTriggersPerFrame(runtime, stages, 3)).toStrictEqual([
+            [],
+            [triggerEvent(1, 'dispenser', { dimension: 'overworld' })],
+            [triggerEvent(1, 'dispenser', { dimension: 'nether' })],
+          ])
+        }),
+      ),
+    )
+  })
+
   it.effect('keeps identical coordinates isolated between dimensions', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {
@@ -666,8 +823,6 @@ describe('RedstoneWorldRuntime', () => {
         yield* runFrame(stages)
         expect(yield* runtime.drainTriggerEvents).toStrictEqual([
           { dimension: 'overworld', position: { x: 0, y: 0, z: 1 }, kind: 'note-block' },
-          { dimension: 'overworld', position: { x: 0, y: 1, z: 0 }, kind: 'dropper' },
-          { dimension: 'overworld', position: { x: 1, y: 0, z: 0 }, kind: 'dispenser' },
         ])
         expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([
           { dimension: 'overworld', position: { x: -1, y: 0, z: 0 }, kind: 'powered-rail', powered: true },
@@ -679,6 +834,15 @@ describe('RedstoneWorldRuntime', () => {
         expect(yield* runtime.drainTriggerEvents).toStrictEqual([])
         expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([])
 
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toStrictEqual([
+          { dimension: 'overworld', position: { x: 0, y: 1, z: 0 }, kind: 'dropper' },
+          { dimension: 'overworld', position: { x: 1, y: 0, z: 0 }, kind: 'dispenser' },
+        ])
+
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toStrictEqual([])
+
         yield* runtime.syncSnapshot(circuit(false))
         yield* runFrame(stages)
         expect(yield* runtime.drainTriggerEvents).toStrictEqual([])
@@ -686,7 +850,11 @@ describe('RedstoneWorldRuntime', () => {
 
         yield* runtime.syncSnapshot(circuit(true))
         yield* runFrame(stages)
-        expect(yield* runtime.drainTriggerEvents).toHaveLength(3)
+        expect(yield* runtime.drainTriggerEvents).toHaveLength(1)
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toStrictEqual([])
+        yield* runFrame(stages)
+        expect(yield* runtime.drainTriggerEvents).toHaveLength(2)
       }),
     ),
   )
@@ -700,6 +868,8 @@ describe('RedstoneWorldRuntime', () => {
           component(2, 'lamp'),
         ]))
 
+        yield* runFrame(stages)
+        yield* runFrame(stages)
         yield* runFrame(stages)
         expect(yield* runtime.drainTriggerEvents).toHaveLength(1)
         expect(yield* runtime.drainLampTransitions).toStrictEqual([])

@@ -87,13 +87,22 @@ const drainEvents = (
     }
   })
 
+/** Drains every category after the first redstone tick, then keeps running `delayedFrames` more
+ * ticks and adds only the trigger events they release: dispensers and droppers act two ticks late. */
 const runSnapshotBatch = (
   snapshots: ReadonlyArray<RedstoneWorldSnapshot>,
+  delayedFrames = 0,
 ): Effect.Effect<RedstoneEventBatch, RuntimeError> =>
   runtimeProgram((runtime, stages) => Effect.gen(function* () {
     for (const world of snapshots) yield* runtime.syncSnapshot(world)
     yield* runFrame(stages)
-    return yield* drainEvents(runtime)
+    const first = yield* drainEvents(runtime)
+    const trigger = [...first.trigger]
+    for (let frame = 0; frame < delayedFrames; frame += 1) {
+      yield* runFrame(stages)
+      trigger.push(...(yield* runtime.drainTriggerEvents))
+    }
+    return { ...first, trigger }
   }))
 
 const EVENT_COMPONENTS: ReadonlyArray<RedstoneComponentSnapshot> = [
@@ -149,7 +158,7 @@ describe('redstone event ordering', () => {
       const observations: Array<RedstoneEventBatch> = []
 
       for (const components of permutations) {
-        observations.push(yield* runSnapshotBatch([snapshot('overworld', components)]))
+        observations.push(yield* runSnapshotBatch([snapshot('overworld', components)], 2))
       }
 
       expect(observations).toHaveLength(permutations.length)
