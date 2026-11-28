@@ -21,7 +21,7 @@ plan.md が挙げるのは 4 つだが、これは網羅リストではなく代
 | ディスペンサ | `redstone-dispenser-world-effects.ts`（137 LOC） | `domain/dispenser.ts` に**立ち上がりエッジ検出のみ**。中身 / ドロップ / 発射体は境界（[design-notes.md](./design-notes.md) DN-RS-17） |
 | ホッパー | `redstone-hopper-world-effects.ts`（53 LOC） | `domain/hopper.ts` に**ロックの反転と搬送周期のみ**。搬送そのものは境界（DN-RS-16 §16-1、DN-RS-17） |
 | オブザーバ | `redstone-observer-world-effects.ts`（73 LOC） | `domain/observer.ts` に実装済み（変化検出とパルス長。記憶は値であってモジュール変数ではない——DN-RS-15） |
-| 感圧板 | `redstone-simulation.ts:40` | `domain/pressure-plate.ts` に**占有数 → 信号強度のみ**。占有判定は境界（DN-RS-17） |
+| 感圧板 | `redstone-simulation.ts:40` | `domain/pressure-plate.ts` に**板の種類と占有数 → 信号強度、数え直しの周期**。占有判定は境界（DN-RS-17）、残り時間は `power-timing.ts`（DN-RS-20） |
 | コンパレータ | `redstone-simulation.ts:292`（`updateComparators`） | `domain/comparator.ts` に実装済み（2 モード + コンテナ充填率の写像）。**本リポジトリの信号モデルの穴を露出させた部品である——DN-RS-13** |
 
 移植元の実測は [porting.md](./porting.md) を参照。
@@ -136,7 +136,7 @@ domain/
   piston.ts                   # ピストン伸縮の typed plan と atomic apply
   comparator.ts               # コンパレータの算術とコンテナ充填率
   observer.ts                 # ブロック変化検出とパルス長
-  pressure-plate.ts           # 占有数 → 信号強度
+  pressure-plate.ts           # 板の種類と占有数 → 信号強度、数え直しの周期
   hopper.ts                   # ロックの反転と搬送周期
   dispenser.ts                # 立ち上がりエッジ検出
 stages/
