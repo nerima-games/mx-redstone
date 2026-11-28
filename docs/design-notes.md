@@ -180,6 +180,8 @@ Advancing the graph once per render frame makes repeater chains and clocks run f
 
 The power stage toggles its game-tick gate on each invocation. On the second invocation it advances the timed circuit exactly once, using the preceding tick's power and the current button inputs. The effects stage runs after that power advance. `mc-sim` supplies invocations through its tick service; `DeltaTimeSecs` remains part of the stage contract but does not drive redstone timers.
 
+A burned-out torch stays off for 80 redstone ticks, then samples its support again. If the support remains powered, the torch stays off and the existing per-tick sampling can relight it after the support loses power. An absent cooldown is treated as expired.
+
 The 1:2 boundary is covered by `test/redstone-state-tick-stage.test.ts`, which feeds `makeTickService().advanceFrame(...)` counts to `runStagesForTicks(...)` and checks repeater, observer, torch, piston, and dispenser behavior. `test/stage-registration.test.ts` also calls the power stage with different deltas and verifies that its tick count depends only on invocation count.
 
 ---
