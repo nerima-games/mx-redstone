@@ -96,6 +96,8 @@ export type RedstoneComponentSnapshot = {
   readonly plate?: PressurePlateKind
   /** Pressure plates with a kind: who is standing on the plate. Omitted means nobody. */
   readonly occupants?: PlateOccupants
+  /** Doors: the cell of the other half. A door opens when either half is powered. */
+  readonly otherHalf?: RedstonePosition
 }
 
 /** A complete replacement snapshot for one dimension. */
@@ -233,6 +235,7 @@ export const RedstoneComponentSnapshotSchema: Schema.Codec<RedstoneComponentSnap
     living: occupantCountSchema,
     other: occupantCountSchema,
   })),
+  otherHalf: Schema.optionalKey(BlockPositionSchema),
   outputTo: Schema.optionalKey(BlockPositionSchema),
   pistonFacing: Schema.optionalKey(PistonFacingSchema),
   pistonKind: Schema.optionalKey(PistonKindSchema),
@@ -392,6 +395,7 @@ const copyComponentSnapshot = (component: RedstoneComponentSnapshot): RedstoneCo
   ...withOptional('mode', component.mode),
   ...withOptional('observedBlock', component.observedBlock),
   ...withOptionalMapped('occupants', component.occupants, (occupants) => ({ ...occupants })),
+  ...withOptionalMapped('otherHalf', component.otherHalf, copyPosition),
   ...withOptionalMapped('outputTo', component.outputTo, copyPosition),
   ...withOptionalMapped('strongPowerTo', component.strongPowerTo, copyPosition),
   ...withOptional('pistonFacing', component.pistonFacing),
@@ -1646,13 +1650,26 @@ type PoweredComponentResult = {
   readonly current: ReadonlyMap<PositionKey, boolean>
 }
 
+/** A door is powered when either of its two halves is, so a half also answers for its other half. */
+const isPoweredEntry = (entry: SnapshotEntry, circuit: CircuitReadout): boolean => {
+  const { component, dimension, nodeId } = entry
+  const own = isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId })
+  if (own || !component.otherHalf) {
+    return own
+  }
+  return isPowered(circuit.board, circuit.power, {
+    context: circuit.powerReadContext,
+    key: redstoneNodeId(dimension, component.otherHalf),
+  })
+}
+
 const poweredComponentEntry = (
   entry: SnapshotEntry,
   circuit: CircuitReadout,
   previous: ReadonlyMap<PositionKey, boolean>,
 ): { readonly powered: boolean; readonly transitions: ReadonlyArray<readonly [PositionKey, PoweredComponentTransition]> } => {
   const { component, dimension, nodeId } = entry
-  const powered = isPowered(circuit.board, circuit.power, { context: circuit.powerReadContext, key: nodeId })
+  const powered = isPoweredEntry(entry, circuit)
   const observed = previous.get(nodeId) ?? component.powered ?? false
   if (observed === powered || !isPoweredComponentKind(component.kind)) {
     return { powered, transitions: [] }
