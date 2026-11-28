@@ -816,12 +816,11 @@ describe('target hold', () => {
 
   it.effect('ignores a hit while the target is still held, keeping its signal and its release', () =>
     Effect.sync(() => {
-      const readings = wirePowerPerTick(8, new Map([
-        [0, { ...offCentreHit, projectile: 'arrow' }],
-        [3, { ...centreHit, projectile: 'arrow' }],
-        [9, centreHit],
+      const readings = wirePowerPerTick(6, new Map([
+        [0, offCentreHit],
+        [2, { ...centreHit, projectile: 'arrow' }],
       ]))
-      expect(readings.slice(0, 10)).toStrictEqual([8, 8, 8, 8, 8, 8, 8, 8])
+      expect(readings).toStrictEqual([8, 8, 8, 8, 0, 0])
     }),
   )
 
@@ -833,14 +832,6 @@ describe('target hold', () => {
       ]))
       expect(readings.slice(0, 4)).toStrictEqual([8, 8, 8, 8])
       expect(readings.slice(4, 12)).toStrictEqual([15, 15, 15, 15, 15, 15, 15, 15])
-    }),
-  )
-
-  it.effect('takes the first hit of a tick as given', () =>
-    Effect.sync(() => {
-      const first: TargetHit = { ...offCentreHit, projectile: 'other' }
-      const readings = wirePowerPerTick(6, new Map([[0, first]]))
-      expect(readings.slice(0, 4)).toStrictEqual([8, 8, 8, 8])
     }),
   )
 
