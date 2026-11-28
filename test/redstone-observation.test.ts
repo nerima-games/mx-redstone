@@ -111,6 +111,7 @@ const runtimeStateValues = (state: RedstoneWorldState) =>
     pendingPoweredComponentTransitions: Ref.get(state.pendingPoweredComponentTransitions),
     pendingTriggerEvents: Ref.get(state.pendingTriggerEvents),
     power: Ref.get(state.power),
+    scheduledLampOffTicks: Ref.get(state.scheduledLampOffTicks),
     tickCount: Ref.get(state.tickCount),
     timedCircuit: Ref.get(state.timedCircuit),
   }, { concurrency: 1 })
@@ -392,6 +393,7 @@ describe('observeRedstoneFrame', () => {
           state.pendingPoweredComponentTransitions,
           state.pendingTriggerEvents,
           state.power,
+          state.scheduledLampOffTicks,
           state.tickCount,
           state.timedCircuit,
         ])

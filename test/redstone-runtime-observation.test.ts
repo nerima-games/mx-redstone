@@ -235,12 +235,20 @@ describe('runtime tick observation', () => {
         yield* runEffectsStage(stages)
         const secondPower = yield* Ref.get(state.power)
         expect(secondPower.has(lampKey)).toBe(false)
-        expect(yield* runtime.drainLampTransitions).toStrictEqual([
-          { dimension: 'overworld', position: lamp, lit: false },
-        ])
+        // The lamp lost power this tick, but vanilla keeps it lit for two more redstone ticks.
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
         expect(conductivity.mock.calls.filter(([position]) =>
           position.x === lampSupport.x && position.y === lampSupport.y && position.z === lampSupport.z,
         )).toHaveLength(2)
+
+        yield* runPowerTick(stages)
+        yield* runEffectsStage(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([])
+        yield* runPowerTick(stages)
+        yield* runEffectsStage(stages)
+        expect(yield* runtime.drainLampTransitions).toStrictEqual([
+          { dimension: 'overworld', position: lamp, lit: false },
+        ])
       }),
     ),
   )
