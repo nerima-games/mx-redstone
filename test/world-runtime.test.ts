@@ -353,7 +353,7 @@ describe('RedstoneWorldRuntime', () => {
     ),
   )
 
-  describe('lamp switch-off delay (B-P2)', () => {
+  describe('lamp switch-off delay', () => {
     const lampCircuit = (leverActive: boolean) =>
       snapshot('overworld', [
         component(0, 'lever', leverActive),

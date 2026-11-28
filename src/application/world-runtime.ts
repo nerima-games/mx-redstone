@@ -170,7 +170,6 @@ export type RedstoneWorldState = {
   readonly timedCircuit: Ref.Ref<TimedCircuitState>
   readonly pendingButtonPresses: Ref.Ref<ReadonlySet<PositionKey>>
   readonly observedLamps: Ref.Ref<ReadonlyMap<PositionKey, ObservedLamp>>
-  /** Redstone tick at which a lit lamp that lost power is due to switch off. */
   readonly scheduledLampOffTicks: Ref.Ref<ReadonlyMap<PositionKey, number>>
   readonly pendingLampTransitions: Ref.Ref<ReadonlyArray<LampTransition>>
   readonly observedPistonStates: Ref.Ref<ReadonlyMap<PositionKey, PistonState>>
@@ -1304,7 +1303,7 @@ const collectLitLamps = (
 
 /** Lamps present in `previous` but no longer in `current` were removed from the world while
  * still lit, which is itself a lit -> unlit transition the host must be told about. The block
- * is gone, so no switch-off delay applies and its schedule is dropped with it. */
+ * is gone, so no switch-off delay applies. */
 const collectRemovedLampTransitions = (
   current: ReadonlyMap<PositionKey, ObservedLamp>,
   previous: ReadonlyMap<PositionKey, ObservedLamp>,

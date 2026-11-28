@@ -150,7 +150,7 @@ const runFirstTick = (
     }),
   )
 
-const runTwoTickScenario = (
+const runLeverButtonScenario = (
   reverse = false,
 ): Effect.Effect<ReadonlyArray<TickObservation>, RuntimeError> =>
   runtimeProgram((runtime, stages) =>
@@ -239,8 +239,8 @@ describe('redstone component determinism', () => {
   it.effect('replays each tick of a lever and button scenario deterministically', () =>
     Effect.gen(function* () {
       // Fails if a tick replay changes the lamp event or sticky piston pull plan.
-      const first = yield* runTwoTickScenario()
-      const replay = yield* runTwoTickScenario()
+      const first = yield* runLeverButtonScenario()
+      const replay = yield* runLeverButtonScenario()
 
       expect(replay).toStrictEqual(first)
       expect(first).toHaveLength(4)
