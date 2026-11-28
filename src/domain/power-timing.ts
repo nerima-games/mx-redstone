@@ -16,6 +16,7 @@ import {
 } from './power-graph.js'
 import { type NonNegativeTickCount, NonNegativeTickCount as nonNegativeTickCount } from '@nerima-games/mc-kernel'
 import { OBSERVER_PULSE_TICKS, type Sightings, observeChanges } from './observer.js'
+import { type PlateOccupants, type PressurePlateKind, plateCheckTicks, plateOccupantSignal } from './pressure-plate.js'
 import { type TargetHit, targetHoldTicks, targetSignal } from './target-block.js'
 import type { PositionKey } from './position-key.js'
 import type { PowerLevel } from './signal-level.js'
@@ -24,6 +25,7 @@ const TIMED_COMPONENT_KINDS: ReadonlySet<Component['kind']> = new Set([
   'repeater',
   'button',
   'observer',
+  'pressure-plate',
   'target',
   'torch',
 ])
@@ -36,6 +38,7 @@ export const TORCH_BURNOUT_WINDOW_TICKS = 30
 export const TORCH_BURNOUT_COOLDOWN_TICKS = 80
 
 const NO_TICKS = 0
+const NO_OCCUPANTS: PlateOccupants = { living: 0, other: 0 }
 const NEXT_TICK = 1
 /** The power level meaning "unpowered". */
 const NO_POWER_LEVEL = 0
@@ -76,6 +79,12 @@ export type TargetTimer = {
   readonly remainingTicks: NonNegativeTickCount
 }
 
+/** A plate that is powered: its signal holds until `remainingTicks` more ticks have passed. */
+export type PlateTimer = {
+  readonly remainingTicks: NonNegativeTickCount
+  readonly strength: PowerLevel
+}
+
 export type TimedCircuitState = {
   readonly power: PowerMap
   readonly repeaters: ReadonlyMap<PositionKey, RepeaterTimer>
@@ -84,6 +93,7 @@ export type TimedCircuitState = {
   readonly torches?: ReadonlyMap<PositionKey, TorchTimer>
   readonly observers?: ReadonlyMap<PositionKey, ObserverTimer>
   readonly observerSeen?: Sightings
+  readonly plates?: ReadonlyMap<PositionKey, PlateTimer>
   readonly targets?: ReadonlyMap<PositionKey, TargetTimer>
 }
 
@@ -99,10 +109,11 @@ type TimedCircuitAdvanceInput = {
   readonly context?: PowerTickContext
 }
 
-export type TimedCircuitWithBlockPower = Omit<TimedCircuitState, 'observers' | 'observerSeen' | 'targets' | 'torches'> & {
+export type TimedCircuitWithBlockPower = Omit<TimedCircuitState, 'observers' | 'observerSeen' | 'plates' | 'targets' | 'torches'> & {
   readonly blockPower: ReadonlyMap<PositionKey, PowerTickBlockLevels>
   readonly observerSeen: Sightings
   readonly observers: ReadonlyMap<PositionKey, ObserverTimer>
+  readonly plates: ReadonlyMap<PositionKey, PlateTimer>
   readonly targets: ReadonlyMap<PositionKey, TargetTimer>
   readonly torches: ReadonlyMap<PositionKey, TorchTimer>
 }
@@ -115,6 +126,7 @@ export const emptyTimedCircuitState: TimedCircuitState = {
   buttons: new Map(),
   observerSeen: new Map(),
   observers: new Map(),
+  plates: new Map(),
   power: emptyPowerMap,
   repeaters: new Map(),
   targets: new Map(),
@@ -363,6 +375,46 @@ const applyTargetEntry = (params: {
   components.set(key, { ...component, active: true, emits: timer.level })
 }
 
+/**
+ * A powered plate does not look at its occupants until its re-check is due, so an arrival
+ * between checks changes nothing and a departure releases the plate only at the next check
+ * (`pressure-plate.ts`). An idle plate reacts to an occupant at once.
+ */
+const advancePlate = (
+  prior: PlateTimer | null,
+  component: Component & { readonly plate: PressurePlateKind },
+): PlateTimer | null => {
+  if (prior !== null && prior.remainingTicks > NO_TICKS) {
+    return { remainingTicks: nonNegativeTickCount(prior.remainingTicks - NEXT_TICK), strength: prior.strength }
+  }
+  const strength = plateOccupantSignal(component.plate, component.occupants ?? NO_OCCUPANTS)
+  if (strength === NO_POWER_LEVEL) {
+    return null
+  }
+  return { remainingTicks: nonNegativeTickCount(plateCheckTicks(component.plate) - NEXT_TICK), strength }
+}
+
+/** A plate with no kind keeps whatever the owner of the world declared for it. */
+const applyPlateEntry = (params: {
+  readonly key: PositionKey
+  readonly component: Component
+  readonly previous: TimedCircuitState
+  readonly plates: Map<PositionKey, PlateTimer>
+  readonly components: Map<PositionKey, Component>
+}): void => {
+  const { component, components, key, plates, previous } = params
+  if (!component.plate) {
+    return
+  }
+  const timer = advancePlate(previous.plates?.get(key) ?? null, { ...component, plate: component.plate })
+  if (timer === null) {
+    components.set(key, { ...component, active: false })
+    return
+  }
+  plates.set(key, timer)
+  components.set(key, { ...component, active: true, emits: timer.strength })
+}
+
 const applyTorchEntry = (params: {
   readonly key: PositionKey
   readonly component: Component
@@ -412,6 +464,7 @@ type ApplyTimedEntryParameters = {
   readonly targetHits: ReadonlyMap<PositionKey, TargetHit>
   readonly repeaters: Map<PositionKey, RepeaterTimer>
   readonly buttons: Map<PositionKey, ButtonTimer>
+  readonly plates: Map<PositionKey, PlateTimer>
   readonly targets: Map<PositionKey, TargetTimer>
   readonly torches: Map<PositionKey, TorchTimer>
   readonly observers: Map<PositionKey, ObserverTimer>
@@ -425,6 +478,7 @@ const NON_TORCH_APPLIERS: ReadonlyMap<Component['kind'], (params: ApplyTimedEntr
 >([
   ['button', applyButtonEntry],
   ['observer', applyObserverEntry],
+  ['pressure-plate', applyPlateEntry],
   ['repeater', applyRepeaterEntry],
   ['target', applyTargetEntry],
 ])
@@ -458,6 +512,7 @@ type ResolvedTimedCircuitTick = {
   readonly components: ReadonlyMap<PositionKey, Component>
   readonly observerSeen: Sightings
   readonly observers: ReadonlyMap<PositionKey, ObserverTimer>
+  readonly plates: ReadonlyMap<PositionKey, PlateTimer>
   readonly repeaters: ReadonlyMap<PositionKey, RepeaterTimer>
   readonly targets: ReadonlyMap<PositionKey, TargetTimer>
   readonly tickContext: PowerTickContext
@@ -472,6 +527,7 @@ const timedCircuitWithProvenance = (
   buttons: resolved.buttons,
   observerSeen: resolved.observerSeen,
   observers: resolved.observers,
+  plates: resolved.plates,
   power: tickState.power,
   provenance: tickState.provenance,
   repeaters: resolved.repeaters,
@@ -483,6 +539,7 @@ type TimedComponentMaps = {
   readonly buttons: Map<PositionKey, ButtonTimer>
   readonly components: Map<PositionKey, Component>
   readonly observers: Map<PositionKey, ObserverTimer>
+  readonly plates: Map<PositionKey, PlateTimer>
   readonly repeaters: Map<PositionKey, RepeaterTimer>
   readonly targets: Map<PositionKey, TargetTimer>
   readonly torches: Map<PositionKey, TorchTimer>
@@ -492,6 +549,7 @@ const emptyTimedComponentMaps = (): TimedComponentMaps => ({
   buttons: new Map(),
   components: new Map(),
   observers: new Map(),
+  plates: new Map(),
   repeaters: new Map(),
   targets: new Map(),
   torches: new Map(),
@@ -560,6 +618,7 @@ export const advanceTimedCircuitWithContext = (
     buttons: resolved.buttons,
     observerSeen: resolved.observerSeen,
     observers: resolved.observers,
+    plates: resolved.plates,
     power: tickState.power,
     repeaters: resolved.repeaters,
     targets: resolved.targets,
@@ -599,6 +658,7 @@ export const advanceTimedCircuitWithInputs = (
     buttons: maps.buttons,
     observerSeen: sweep.seen,
     observers: maps.observers,
+    plates: maps.plates,
     power: propagateTick(board, previous.power, maps.components),
     repeaters: maps.repeaters,
     targets: maps.targets,

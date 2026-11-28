@@ -12,6 +12,8 @@ import { Effect } from 'effect'
 import {
   HEAVY_PLATE_CAPACITY,
   LIGHT_PLATE_CAPACITY,
+  plateCheckTicks,
+  plateOccupantSignal,
   plateSignal,
   type PlateWeighing,
 } from '../src/domain/pressure-plate'
@@ -106,6 +108,35 @@ describe('pressure plate signal', () => {
       expect(plateSignal(1, { kind: 'weighted', capacity: 0 })).toBe(MAX_POWER_LEVEL)
       expect(plateSignal(1, { kind: 'weighted', capacity: Number.NaN })).toBe(MAX_POWER_LEVEL)
       expect(plateSignal(0, { kind: 'weighted', capacity: 0 })).toBe(0)
+    }),
+  )
+
+  it.effect('a stone plate ignores entities that are not living and a wooden plate counts them', () =>
+    Effect.sync(() => {
+      const itemsOnly = { living: 0, other: 3 }
+      expect(plateOccupantSignal('stone', itemsOnly)).toBe(0)
+      expect(plateOccupantSignal('wooden', itemsOnly)).toBe(MAX_POWER_LEVEL)
+      expect(plateOccupantSignal('stone', { living: 1, other: 3 })).toBe(MAX_POWER_LEVEL)
+    }),
+  )
+
+  it.effect('weighted plates count every entity against their own capacity', () =>
+    Effect.sync(() => {
+      const mixed = { living: 5, other: 10 }
+      expect(plateOccupantSignal('light-weighted', mixed)).toBe(MAX_POWER_LEVEL)
+      expect(plateOccupantSignal('heavy-weighted', mixed)).toBe(plateSignal(15, HEAVY))
+      expect(plateOccupantSignal('heavy-weighted', { living: 0, other: 1 })).toBe(1)
+      expect(plateOccupantSignal('light-weighted', { living: 0, other: 0 })).toBe(0)
+    }),
+  )
+
+  it.effect('re-checks a powered plate every 10 redstone ticks, and a weighted plate every 5', () =>
+    Effect.sync(() => {
+      // Java Edition 1.16.5 and 1.21.1: getPressedTime is 20 game ticks, and 10 for a weighted plate.
+      expect(plateCheckTicks('stone')).toBe(10)
+      expect(plateCheckTicks('wooden')).toBe(10)
+      expect(plateCheckTicks('light-weighted')).toBe(5)
+      expect(plateCheckTicks('heavy-weighted')).toBe(5)
     }),
   )
 })

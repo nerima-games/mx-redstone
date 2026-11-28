@@ -92,6 +92,7 @@ export {
   advanceTimedCircuit,
   type RepeaterTimer,
   type ButtonTimer,
+  type PlateTimer,
   type TargetTimer,
   type TorchTimer,
   type TimedCircuitState,

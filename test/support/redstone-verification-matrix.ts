@@ -162,7 +162,7 @@ export const verificationLedger: VerificationLedger = {
     'finite exhaustive': covered('test/redstone-finite-state.test.ts', 'pressure plates report the values immediately around each kind threshold or capacity'),
     determinism: covered('test/redstone-component-properties.test.ts', 'keeps weighted plate power independent of component insertion order and replay'),
     boundary: covered('test/redstone-boundaries.test.ts', 'maps pressure plate occupant boundaries using explicit sensor fixtures'),
-    'tick timing': excluded('Plate signal is immediate and has no component-owned timer.', 'src/domain/power-timing.ts:13-17'),
+    'tick timing': covered('test/power-timing.test.ts', 'powers a plate on the tick someone steps on and releases it at the first re-check after they leave'),
     'host classification': excluded('Pressure plates have no registered host builder or occupant lookup in this run.', '.reinloom/reports/mx-redstone-w0-inventory.md:102'),
     'host path': excluded('Pressure plates have no registered raw host builder or occupant lookup in this run.', '.reinloom/reports/mx-redstone-w0-inventory.md:102'),
     '3D': covered('test/redstone-3d-circuits.test.ts', 'drives a vertical wire at a pressure plate reported strength'),

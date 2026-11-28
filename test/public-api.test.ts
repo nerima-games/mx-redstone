@@ -214,6 +214,8 @@ describe('public API surface', () => {
         'HopperTransferSelectionOutcomeSchema',
         'selectHopperTransferCandidates',
         'plateSignal',
+        'plateOccupantSignal',
+        'plateCheckTicks',
         'LIGHT_PLATE_CAPACITY',
         'HEAVY_PLATE_CAPACITY',
         'targetSignal',
