@@ -185,6 +185,7 @@ event batchにはnote-block triggerとtrapdoor transitionも含めてrequestへ�
 
 `RedstoneHostLookup.isRedstoneConductiveAt`は、そのrealmのdimension内にある位置のredstone導電性を返す。固体ブロック経由の給電には、hostがこのcallbackを`syncSnapshot`に渡し、対象の`RedstoneHostBlock`に`strongPowerTo`を指定する。どちらかを省略した場合は、従来どおりの結果になる。
 コンパレータの snapshot を作るときは、直後ろのブロックが容器でなく、かつこのcallbackが導体と答えるなら、その後ろのブロックから容器を読む（[DN-RS-21](./design-notes.md#dn-rs-21-host-の読みは-vanilla-の条件を写す)）。callbackを省略すると、直後ろのブロックだけを読む。
+ドアは、packed state を渡すと `otherHalf`（もう一方の半分のセル）を持ち、どちらの半分に給電されても両方の半分に同じ powered 遷移を出す（DN-RS-21）。packed state を渡さないドアは、これまでどおり自分の電力だけで決まる。
 
 ### `stages/stage-ids.ts`
 
