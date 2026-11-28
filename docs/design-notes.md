@@ -1,6 +1,6 @@
 # 設計ノート
 
-plan.md §3.12 has one design note, but the reference implementation contains more observations than fit in one line. This document numbers them `DN-RS-1`–`DN-RS-19`.
+plan.md §3.12 has one design note, but the reference implementation contains more observations than fit in one line. This document numbers them `DN-RS-1`–`DN-RS-20`.
 
 Each note records its evidence and impact and points to a related test or verification method. Not every note has a regression test; some claims require a different verification method, and unreachable branches cannot be exercised by tests.
 
@@ -906,12 +906,12 @@ powered pauseとunpowered countdownを`https://minecraft.wiki/w/Hopper`のfixtur
 （`mc-sim/domain/entity.ts:157`）であり、それは正しい——分類は rules tier のものだからである。
 **呼び出し側がフィルタし、このファイルは数える。**
 
-### 板の解放遅延はここに無い
+### 板の解放遅延は別に持つ
 
 バニラの板は最後の entity が降りたあとしばらく通電したままである。それは**残り時間**であり、
 状態である。本リポジトリは同じ答えを 4 回出した——ボタンのパルス、リピーターの遅延、
 オブザーバのパルス、そしてこれ。電力マップに置く場所は無く、盤面は入力である。
-`stages/registration.ts` の tick カウンタの隣に行く。
+実装は [DN-RS-20](#dn-rs-20-感圧板は通電中だけ周期で数え直す) にある。
 
 ---
 
@@ -980,3 +980,32 @@ host は `hitTarget(dimension, position, hit)` で命中を渡す。`hit.project
 保持を命中のたびに数え直す案がある。1.16.5 のソースでは、予約済みの tick があるあいだの命中は
 信号も時刻も変えないので、本リポジトリは数え直さない。数え直しに変えるなら、
 `advanceTarget`（`domain/power-timing.ts`）の最初の分岐を外す。
+
+---
+
+## DN-RS-20 感圧板は通電中だけ周期で数え直す
+
+### 規則
+
+バニラの板は解除を予約しない。通電した板が数え直しを予約し、その時点の乗っているものを数える。
+誰かいれば通電を続け（重量板はその時点の強さに変わる）、誰もいなければ止まる。
+通電中の板は数え直しの間の乗り降りを見ない。止まっている板は乗った tick にすぐ通電する。
+板が最後の entity の降りた後に止まるのは、その後の最初の数え直しである。
+
+周期は、石と木の板が 10 redstone tick（20 game tick）、重量板が 5 redstone tick（10 game tick）である。
+石の板は生きている entity だけを数え、木の板と重量板はすべての entity を数える。
+重量板の強さは `plateSignal` の写像で、容量は金が 15、鉄が 150 である。
+
+host は snapshot の `plate`（`'wooden'` / `'stone'` / `'light-weighted'` / `'heavy-weighted'`）と、
+`occupants`（`living` と `other` の数）で乗っているものを渡す。観戦者や、板を踏んでも反応しない entity は
+host が数から外す。`plate` を渡さない板はこれまでどおり `active` と `emits` を host が宣言する。
+残り時間は `TimedCircuitState.plates` が持つ。
+
+### 出典
+
+Java Edition 1.16.5 の `AbstractPressurePlateBlock`、`PressurePlateBlock`、`WeightedPressurePlateBlock` のソース
+（`getPoweredDuration` が 20 と、重量板の 10。`entityInside` は強さが 0 のときだけ状態を更新し、
+`tick` は強さが正のときに再計算して、まだ正なら再び予約する）で確かめた。
+1.21.1 のソース（`getPressedTime` が 20 と、重量板の 10。石の板は `MOBS`、木の板は `EVERYTHING`）でも同じである。
+資料によって周期の記述が異なるので、本リポジトリはこの 2 つのソースに合わせた。
+

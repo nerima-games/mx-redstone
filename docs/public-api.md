@@ -110,6 +110,7 @@ plan、merge、commit が失敗または中断した場合、古い fragment を
 ボタンは `pressButton(dimension, position)` で次tickのパルスを予約する。`pulseTicks` の既定値は
 10で、パルス中の再入力は残り時間を設定値へ戻す。リピーターの `delayTicks` は1–4に丸められ、
 入力のONとOFFの双方へ同じtick遅延を適用する。
+感圧板は snapshot の `plate`（`'wooden'` / `'stone'` / `'light-weighted'` / `'heavy-weighted'`）と `occupants`（`living` と `other` の数）で乗っているものを渡す。`plate` を渡した板は、乗った tick に通電し、通電中は 10 redstone tick（重量板は 5）ごとにだけ数え直し、数え直しで誰もいなければ止まる。石の板は生きている entity だけ、木と重量板は全部の entity を数える（DN-RS-20）。`plate` を渡さない板は、これまでどおり `active` と `emits` を host が宣言する。
 ターゲットは `hitTarget(dimension, position, hit)` で命中を次tickへ予約する。`hit.projectile` は host が決める区分（`'arrow'`、`'trident'`、`'other'`）で、省略時は `'other'` である。保持は矢とトライデントが10 redstone tick、それ以外が4 redstone tickで、保持中の命中は信号の強さも解除の時刻も変えない（vanilla の `TargetBlock` と同じ）。
 
 ## 5. `index.ts` の全エクスポート
@@ -204,7 +205,7 @@ event batchにはnote-block triggerとtrapdoor transitionも含めてrequestへ�
 ### `domain/power-timing.ts`（すべて内部で可視）
 
 `DEFAULT_BUTTON_PULSE_TICKS` / `TORCH_BURNOUT_TOGGLE_LIMIT` / `TORCH_BURNOUT_WINDOW_TICKS` /
-`TORCH_BURNOUT_COOLDOWN_TICKS` / `RepeaterTimer` / `ButtonTimer` / `TargetTimer` / `TorchTimer` / `TimedCircuitState` /
+`TORCH_BURNOUT_COOLDOWN_TICKS` / `RepeaterTimer` / `ButtonTimer` / `PlateTimer` / `TargetTimer` / `TorchTimer` / `TimedCircuitState` /
 `emptyTimedCircuitState` / `advanceTimedCircuit`
 
 ### `domain/target-block.ts`（すべて内部で可視）
@@ -358,6 +359,7 @@ host adapter は登録済み block 名を kernel の `BlockId` に解決して `
 | `TORCH_BURNOUT_COOLDOWN_TICKS` | `domain/power-timing.ts` | 内部（可視） |
 | `RepeaterTimer` | `domain/power-timing.ts` | 内部（可視） |
 | `ButtonTimer` | `domain/power-timing.ts` | 内部（可視） |
+| `PlateTimer` | `domain/power-timing.ts` | 内部（可視） |
 | `TargetTimer` | `domain/power-timing.ts` | 内部（可視） |
 | `TorchTimer` | `domain/power-timing.ts` | 内部（可視） |
 | `TimedCircuitState` | `domain/power-timing.ts` | 内部（可視） |
@@ -367,6 +369,11 @@ host adapter は登録済み block 名を kernel の `BlockId` に解決して `
 | `LIGHT_PLATE_CAPACITY` | `domain/pressure-plate.ts` | 内部（可視） |
 | `HEAVY_PLATE_CAPACITY` | `domain/pressure-plate.ts` | 内部（可視） |
 | `plateSignal` | `domain/pressure-plate.ts` | 内部（可視） |
+| `PressurePlateKind` | `domain/pressure-plate.ts` | 内部（可視） |
+| `PlateOccupants` | `domain/pressure-plate.ts` | 内部（可視） |
+| `OccupantCount` | `domain/pressure-plate.ts` | 内部（可視） |
+| `plateOccupantSignal` | `domain/pressure-plate.ts` | 内部（可視） |
+| `plateCheckTicks` | `domain/pressure-plate.ts` | 内部（可視） |
 | `TargetProjectile` | `domain/target-block.ts` | 内部（可視） |
 | `TargetHit` | `domain/target-block.ts` | 内部（可視） |
 | `targetSignal` | `domain/target-block.ts` | 内部（可視） |

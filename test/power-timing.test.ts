@@ -4,6 +4,7 @@ import * as fc from 'fast-check'
 import { Effect } from 'effect'
 import type { CircuitBoard, Component, PowerTickContext } from '../src/domain/power-graph'
 import { powerAt } from '../src/domain/power-graph'
+import type { PlateOccupants, PressurePlateKind } from '../src/domain/pressure-plate'
 import type { TargetHit } from '../src/domain/target-block'
 import {
   advanceTimedCircuit,
@@ -886,6 +887,132 @@ describe('target hold', () => {
       expect(withProvenance.targets.get('target')).toStrictEqual({ level: 15, remainingTicks: 9 })
       expect(withContext.power).toStrictEqual(plain.power)
       expect(withProvenance.power).toStrictEqual(plain.power)
+    }),
+  )
+})
+
+describe('pressure plate timing', () => {
+  const plateBoard = (kind: PressurePlateKind) => line([
+    ['plate', { kind: 'pressure-plate', plate: kind }],
+    ['wire', { kind: 'wire' }],
+  ])
+  const withOccupants = (kind: PressurePlateKind, occupants: PlateOccupants): CircuitBoard => line([
+    ['plate', { kind: 'pressure-plate', occupants, plate: kind }],
+    ['wire', { kind: 'wire' }],
+  ])
+
+  /** Wire power after each tick; `occupantsAt` gives who stands on the plate during a tick. */
+  const wirePowerPerTick = (
+    kind: PressurePlateKind,
+    count: number,
+    occupantsAt: (tick: number) => PlateOccupants,
+  ): ReadonlyArray<number> => {
+    let state: TimedCircuitState = emptyTimedCircuitState
+    const readings: Array<number> = []
+    for (let tick = 0; tick < count; tick += 1) {
+      state = advanceTimedCircuit(withOccupants(kind, occupantsAt(tick)), state)
+      readings.push(powerAt(state.power, 'wire'))
+    }
+    return readings
+  }
+  const nobody: PlateOccupants = { living: 0, other: 0 }
+  const one: PlateOccupants = { living: 1, other: 0 }
+
+  it.effect('powers a plate on the tick someone steps on and releases it at the first re-check after they leave', () =>
+    Effect.sync(() => {
+      for (const [kind, period] of [['stone', 10], ['wooden', 10], ['light-weighted', 5], ['heavy-weighted', 5]] as const) {
+        const readings = wirePowerPerTick(kind, period + 3, (tick) => {
+          if (tick === 0) {
+            return one
+          }
+          return nobody
+        })
+        expect(readings.slice(0, period).every((level) => level > 0), kind).toBe(true)
+        expect(readings.slice(period), kind).toStrictEqual([0, 0, 0])
+      }
+    }),
+  )
+
+  it.effect('keeps a plate powered across a re-check while someone is still on it', () =>
+    Effect.sync(() => {
+      const readings = wirePowerPerTick('stone', 24, (tick) => {
+        if (tick < 12) {
+          return one
+        }
+        return nobody
+      })
+      // On at tick 0, re-checked at ticks 10 (still occupied) and 20 (empty): off from tick 20.
+      expect(readings.slice(0, 20).every((level) => level > 0)).toBe(true)
+      expect(readings.slice(20)).toStrictEqual([0, 0, 0, 0])
+    }),
+  )
+
+  it.effect('does not release a plate that is left and re-entered between checks', () =>
+    Effect.sync(() => {
+      const readings = wirePowerPerTick('wooden', 12, (tick) => {
+        if (tick === 0 || tick >= 4) {
+          return one
+        }
+        return nobody
+      })
+      expect(readings.every((level) => level > 0)).toBe(true)
+    }),
+  )
+
+  it.effect('a weighted plate takes a new strength only at a re-check, and an arrival between checks changes nothing', () =>
+    Effect.sync(() => {
+      const readings = wirePowerPerTick('heavy-weighted', 12, (tick) => {
+        if (tick < 2) {
+          return { living: 15, other: 0 }
+        }
+        return { living: 150, other: 0 }
+      })
+      // 15 on a 150-capacity plate reads 2, and 150 reads 15. The plate keeps the 2 until the
+      // check at tick 5, which sees the full load and sets 15.
+      expect(readings.slice(0, 5)).toStrictEqual([2, 2, 2, 2, 2])
+      expect(readings.slice(5, 10)).toStrictEqual([15, 15, 15, 15, 15])
+    }),
+  )
+
+  it.effect('an idle stone plate ignores items that an idle wooden plate counts', () =>
+    Effect.sync(() => {
+      const items: PlateOccupants = { living: 0, other: 2 }
+      expect(wirePowerPerTick('stone', 3, () => items)).toStrictEqual([0, 0, 0])
+      expect(wirePowerPerTick('wooden', 3, () => items).every((level) => level > 0)).toBe(true)
+    }),
+  )
+
+  it.effect('treats a plate that reports no occupants as empty', () =>
+    Effect.sync(() => {
+      const state = advanceTimedCircuit(plateBoard('wooden'), emptyTimedCircuitState)
+      expect(powerAt(state.power, 'wire')).toBe(0)
+      expect(state.plates?.size).toBe(0)
+    }),
+  )
+
+  it.effect('keeps what the world declares for a plate with no kind', () =>
+    Effect.sync(() => {
+      const declared = line([
+        ['plate', { kind: 'pressure-plate', active: true, emits: 9 }],
+        ['wire', { kind: 'wire' }],
+      ])
+      const state = advanceTimedCircuit(declared, emptyTimedCircuitState)
+      expect(powerAt(state.power, 'wire')).toBe(9)
+      expect(state.plates?.size).toBe(0)
+    }),
+  )
+
+  it.effect('records the plate timer, and both context-aware advances agree with the map-only one', () =>
+    Effect.sync(() => {
+      const board = withOccupants('light-weighted', { living: 3, other: 0 })
+      const plain = advanceTimedCircuit(board, emptyTimedCircuitState)
+      const withContext = advanceTimedCircuitWithContext({ board, previous: emptyTimedCircuitState })
+      const withProvenance = advanceTimedCircuitWithProvenanceContext({ board, previous: emptyTimedCircuitState })
+
+      expect(plain.plates?.get('plate')).toStrictEqual({ remainingTicks: 4, strength: 3 })
+      expect(withContext.plates.get('plate')).toStrictEqual({ remainingTicks: 4, strength: 3 })
+      expect(withProvenance.plates.get('plate')).toStrictEqual({ remainingTicks: 4, strength: 3 })
+      expect(withContext.power).toStrictEqual(plain.power)
     }),
   )
 })

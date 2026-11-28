@@ -254,7 +254,7 @@ porting.md §3-0 に旧値と新値の両方を残した——**§2-1 が plan.m
 | オブザーバ | 全部。変化検出、armed 規則、パルス長、ダイオードとしてのグラフ統合 | 無し（サンプリングの根拠は DN-RS-15 §15-2） |
 | ホッパー | ロックの反転、搬送周期と候補選択。host adapter は `HopperService` の transfer plan を batch commit に含める | host が隣接 container、hopper block ID、block write builder を渡す |
 | ディスペンサ | 立ち上がりエッジ検出と trigger event（記憶は値。参照実装はモジュール変数） | アイテムの取り出しと drop / projectile の生成は host / gameplay 層 |
-| 感圧板 | 占有数 → 信号強度（スイッチ板と重量板）、ソースとしてのグラフ統合 | production builder / lookup は未接続。host が entity の位置と寸法から占有数を渡す（幾何 + 空間クエリ） |
+| 感圧板 | 占有数 → 信号強度（スイッチ板と重量板）、数え直しの周期と解除、ソースとしてのグラフ統合 | production builder / lookup は未接続。host が entity の位置と寸法から占有数を渡す（幾何 + 空間クエリ） |
 
 **コンパレータは、本リポジトリの信号モデルの穴を実際に露出させた。**
 穴は「表現できない」ではなく「既に記録済みの乖離のコストが、この部品でだけ質的に違う」であり、

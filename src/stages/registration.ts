@@ -109,6 +109,7 @@ const timedCircuitWithoutBlockPower = (timedCircuit: TimedCircuitWithBlockPower)
   buttons: timedCircuit.buttons,
   observerSeen: timedCircuit.observerSeen,
   observers: timedCircuit.observers,
+  plates: timedCircuit.plates,
   power: timedCircuit.power,
   repeaters: timedCircuit.repeaters,
   targets: timedCircuit.targets,

@@ -259,6 +259,33 @@ describe('observeRedstoneFrame', () => {
     ),
   )
 
+  it.effect('reports the timer of a plate with occupants and records a copy of it with each observed tick', () =>
+    runtimeProgram((runtime, stages) =>
+      Effect.gen(function* () {
+        // BUG: a powered plate's remaining check time is invisible to the debug view, or aliases live timer state.
+        yield* runtime.syncSnapshot(snapshot('overworld', [
+          component(0, 'pressure-plate', { occupants: { living: 1, other: 0 }, plate: 'stone' }),
+          component(1, 'wire'),
+        ]))
+        yield* setRedstoneObservationEnabled(runtime, true)
+        yield* runPowerTick(stages)
+
+        const observation = yield* observeRedstoneFrame(runtime)
+        expect(observation.dimensions[0]?.cells[0]?.dynamicState.timers).toStrictEqual({
+          plate: { remainingTicks: 9, strength: 15 },
+        })
+
+        const state = yield* redstoneWorldStateFor(runtime)
+        const plateNode = redstoneNodeId(dimensionId('overworld'), blockPosition(0))
+        const live = (yield* Ref.get(state.timedCircuit)).plates?.get(plateNode)
+        const [recorded] = yield* redstoneTickObservationsFor(runtime)
+        const copy = recorded?.timedCircuit.plates?.get(plateNode)
+        expect(copy).toStrictEqual({ remainingTicks: 9, strength: 15 })
+        expect(copy).not.toBe(live)
+      }),
+    ),
+  )
+
   it.effect('projects observer output and one-tick pulse from each stage tick', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {

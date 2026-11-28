@@ -61,16 +61,20 @@
  * (`mc-sim/domain/entity.ts:157`). The caller filters; this file counts.
  *
  * ---------------------------------------------------------------------------
- * What is deliberately NOT here: the release delay
+ * The release delay is not a separate timer
  * ---------------------------------------------------------------------------
  *
- * Vanilla keeps a plate powered for a moment after the last entity steps off.
- * That is REMAINING TIME, which is state, and this repository has now given the
- * same answer four times — the button's pulse, the repeater's delay, the
- * observer's pulse and this. The power map has no cell for it and the board is
- * an input. It goes with the tick counter in `stages/registration.ts`.
+ * Vanilla does not schedule a release. A powered plate schedules a RE-CHECK
+ * (`getPressedTime`: 20 game ticks for a stone or wooden plate, 10 for a weighted
+ * one), and at each check it counts the occupants again: someone still there
+ * keeps it powered and, for a weighted plate, sets the new strength; nobody
+ * there turns it off. A plate therefore releases at the first check after the
+ * last occupant leaves. While powered it ignores arrivals between checks.
+ * The kinds, their counting rule and their check period are in this file; the
+ * remaining time is state, so `power-timing.ts` carries it beside the other timers.
  */
 import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level.js'
+import { type NonNegativeTickCount, NonNegativeTickCount as nonNegativeTickCount } from '@nerima-games/mc-kernel'
 
 /**
  * How a plate turns a count into a level.
@@ -128,3 +132,69 @@ export const plateSignal = (occupants: number, weighing: PlateWeighing): PowerLe
 
   return Math.min(MAX_POWER_LEVEL, Math.ceil((occupants / capacity) * MAX_POWER_LEVEL))
 }
+
+/** Vanilla's four plates: wooden and stone are switches, gold and iron are weighted. */
+export type PressurePlateKind = 'heavy-weighted' | 'light-weighted' | 'stone' | 'wooden'
+
+/** A count of entities on a plate. */
+export type OccupantCount = number
+
+/**
+ * Who is standing on a plate, as the host counts them. `living` is the living entities and
+ * `other` is everything else that can trigger a plate, such as dropped items and minecarts.
+ * The host leaves out spectators and entities that ignore block triggers.
+ */
+export type PlateOccupants = {
+  readonly living: OccupantCount
+  readonly other: OccupantCount
+}
+
+type PlateRules = {
+  readonly checkTicks: NonNegativeTickCount
+  /** Whether entities that are not living count towards the signal. */
+  readonly countsOther: boolean
+  readonly weighing: PlateWeighing
+}
+
+/**
+ * Java Edition 1.16.5 and 1.21.1: `getPressedTime` is 20 game ticks (10 redstone ticks), and 10
+ * game ticks (5 redstone ticks) for a weighted plate. Stone counts `LivingEntity` only; wood and
+ * the weighted plates count every entity.
+ */
+const SWITCH_CHECK_TICKS = 10
+const WEIGHTED_CHECK_TICKS = 5
+
+const PLATE_RULES: Readonly<Record<PressurePlateKind, PlateRules>> = {
+  'heavy-weighted': {
+    checkTicks: nonNegativeTickCount(WEIGHTED_CHECK_TICKS),
+    countsOther: true,
+    weighing: { capacity: HEAVY_PLATE_CAPACITY, kind: 'weighted' },
+  },
+  'light-weighted': {
+    checkTicks: nonNegativeTickCount(WEIGHTED_CHECK_TICKS),
+    countsOther: true,
+    weighing: { capacity: LIGHT_PLATE_CAPACITY, kind: 'weighted' },
+  },
+  stone: {
+    checkTicks: nonNegativeTickCount(SWITCH_CHECK_TICKS),
+    countsOther: false,
+    weighing: { kind: 'binary' },
+  },
+  wooden: {
+    checkTicks: nonNegativeTickCount(SWITCH_CHECK_TICKS),
+    countsOther: true,
+    weighing: { kind: 'binary' },
+  },
+}
+
+/** What a plate of this kind emits for these occupants, counting only what the kind counts. */
+export const plateOccupantSignal = (kind: PressurePlateKind, occupants: PlateOccupants): PowerLevel => {
+  const rules = PLATE_RULES[kind]
+  if (!rules.countsOther) {
+    return plateSignal(occupants.living, rules.weighing)
+  }
+  return plateSignal(occupants.living + occupants.other, rules.weighing)
+}
+
+/** Redstone ticks between the re-checks of a powered plate of this kind. */
+export const plateCheckTicks = (kind: PressurePlateKind): NonNegativeTickCount => PLATE_RULES[kind].checkTicks

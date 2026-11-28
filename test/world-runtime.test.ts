@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref, Result, Schema } from 'effect'
 import {
+  RedstoneComponentSnapshotSchema,
   RedstoneEventBatchSchema,
   RedstoneWorldRuntime,
   RedstoneWorldRuntimeLayer,
@@ -724,6 +725,74 @@ describe('RedstoneWorldRuntime', () => {
           expect(powerAt(power, redstoneNodeId('overworld', { x: 1, y: 0, z: 0 }))).toBe(0)
         }),
       ),
+    )
+  })
+
+  describe('pressure plates', () => {
+    const plateCircuit = (
+      kind: 'heavy-weighted' | 'light-weighted' | 'stone' | 'wooden',
+      occupants: { readonly living: number; readonly other: number },
+    ) => snapshot('overworld', [
+      { ...component(0, 'pressure-plate'), occupants, plate: kind },
+      component(1, 'wire'),
+    ])
+    const one = { living: 1, other: 0 }
+    const nobody = { living: 0, other: 0 }
+
+    it.effect('powers a plate while the host reports occupants and releases it at the first re-check after they leave', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(plateCircuit('wooden', one))
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 1 })).toStrictEqual([15])
+
+          yield* runtime.syncSnapshot(plateCircuit('wooden', nobody))
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 11 })).toStrictEqual(
+            [15, 15, 15, 15, 15, 15, 15, 15, 15, 0, 0],
+          )
+        }),
+      ),
+    )
+
+    it.effect('re-checks a weighted plate twice as often as a switch plate', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(plateCircuit('light-weighted', { living: 3, other: 0 }))
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 1 })).toStrictEqual([3])
+
+          yield* runtime.syncSnapshot(plateCircuit('light-weighted', nobody))
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 6 })).toStrictEqual([3, 3, 3, 3, 0, 0])
+        }),
+      ),
+    )
+
+    it.effect('keeps a plate with no kind as the host declares it', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(snapshot('overworld', [
+            { ...component(0, 'pressure-plate', true), emits: 7 },
+            component(1, 'wire'),
+          ]))
+          expect(yield* wirePowerPerFrame(runtime, stages, { count: 3 })).toStrictEqual([7, 7, 7])
+        }),
+      ),
+    )
+
+    it.effect('rejects an occupant count that is negative or fractional and an unknown plate kind', () =>
+      Effect.gen(function* () {
+        const invalid = [
+          { ...component(0, 'pressure-plate'), occupants: { living: -1, other: 0 }, plate: 'stone' },
+          { ...component(0, 'pressure-plate'), occupants: { living: 1.5, other: 0 }, plate: 'stone' },
+          { ...component(0, 'pressure-plate'), occupants: { living: 1, other: 0 }, plate: 'copper' },
+        ]
+        for (const bad of invalid) {
+          const result = yield* Effect.result(Schema.decodeUnknownEffect(RedstoneComponentSnapshotSchema)(bad))
+          expect(Result.isFailure(result)).toBe(true)
+        }
+        const valid = yield* Effect.result(Schema.decodeUnknownEffect(RedstoneComponentSnapshotSchema)(
+          { ...component(0, 'pressure-plate'), occupants: { living: 1, other: 2 }, plate: 'stone' },
+        ))
+        expect(Result.isSuccess(valid)).toBe(true)
+      }),
     )
   })
 

@@ -82,6 +82,7 @@
  */
 import { type ComparatorMode, comparatorOutput } from './comparator.js'
 import { MAX_POWER_LEVEL, type PowerLevel } from './signal-level.js'
+import type { PlateOccupants, PressurePlateKind } from './pressure-plate.js'
 import type { BlockRef } from './block-ref.js'
 import type { BlockStateFacing } from '@nerima-games/mc-kernel'
 import type { PositionKey } from './position-key.js'
@@ -183,6 +184,14 @@ export type Component = {
    * value beside the thing it is cached from.
    */
   readonly emits?: PowerLevel
+  /**
+   * Pressure plates: the kind, when the world reports occupants instead of declaring `active`.
+   * A plate with a kind is timed by `power-timing.ts`; a plate without one keeps whatever
+   * `active` and `emits` the world declares.
+   */
+  readonly plate?: PressurePlateKind
+  /** Pressure plates with a kind: who is standing on the plate this tick. Omitted means nobody. */
+  readonly occupants?: PlateOccupants
   /** Repeaters: transition delay in redstone ticks, clamped to 1–4. */
   readonly delayTicks?: number
   /** Buttons: pulse duration in redstone ticks. Omitted means a stone button's 10 ticks. */

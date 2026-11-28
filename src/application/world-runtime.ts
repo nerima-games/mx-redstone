@@ -39,6 +39,7 @@ import {
   PistonStateSchema,
   type PistonTransitionRequest,
 } from '../domain/piston.js'
+import type { PlateOccupants, PressurePlateKind } from '../domain/pressure-plate.js'
 import {
   type TimedCircuitState,
   emptyTimedCircuitState,
@@ -91,6 +92,10 @@ export type RedstoneComponentSnapshot = {
   readonly pistonKind?: PistonKind
   readonly pistonState?: PistonState
   readonly powered?: boolean
+  /** Pressure plates: the kind, when the host reports occupants rather than declaring `active`. */
+  readonly plate?: PressurePlateKind
+  /** Pressure plates with a kind: who is standing on the plate. Omitted means nobody. */
+  readonly occupants?: PlateOccupants
 }
 
 /** A complete replacement snapshot for one dimension. */
@@ -198,6 +203,7 @@ const ZERO_TICK_COUNT = 0
 const ONE_TICK = 1
 const nonNegativeTickCountSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(ZERO_TICK_COUNT))
   .pipe(Schema.fromBrand('NonNegativeTickCount', NonNegativeTickCount))
+const occupantCountSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(ZERO_TICK_COUNT))
 const powerLevelSchema = Schema.Int.check(Schema.isBetween({ maximum: 15, minimum: 0 }))
 const arraySchema = Schema.Array
 const blockAxis = BlockAxis
@@ -223,10 +229,15 @@ export const RedstoneComponentSnapshotSchema: Schema.Codec<RedstoneComponentSnap
   locked: Schema.optionalKey(Schema.Boolean),
   mode: Schema.optionalKey(literalsSchema(['compare', 'subtract'])),
   observedBlock: Schema.optionalKey(Schema.String),
+  occupants: Schema.optionalKey(structSchema({
+    living: occupantCountSchema,
+    other: occupantCountSchema,
+  })),
   outputTo: Schema.optionalKey(BlockPositionSchema),
   pistonFacing: Schema.optionalKey(PistonFacingSchema),
   pistonKind: Schema.optionalKey(PistonKindSchema),
   pistonState: Schema.optionalKey(PistonStateSchema),
+  plate: Schema.optionalKey(literalsSchema(['heavy-weighted', 'light-weighted', 'stone', 'wooden'])),
   position: BlockPositionSchema,
   powered: Schema.optionalKey(Schema.Boolean),
   pulseTicks: Schema.optionalKey(nonNegativeTickCountSchema),
@@ -380,11 +391,13 @@ const copyComponentSnapshot = (component: RedstoneComponentSnapshot): RedstoneCo
   ...withOptional('locked', component.locked),
   ...withOptional('mode', component.mode),
   ...withOptional('observedBlock', component.observedBlock),
+  ...withOptionalMapped('occupants', component.occupants, (occupants) => ({ ...occupants })),
   ...withOptionalMapped('outputTo', component.outputTo, copyPosition),
   ...withOptionalMapped('strongPowerTo', component.strongPowerTo, copyPosition),
   ...withOptional('pistonFacing', component.pistonFacing),
   ...withOptional('pistonKind', component.pistonKind),
   ...withOptional('pistonState', component.pistonState),
+  ...withOptional('plate', component.plate),
   position: copyPosition(component.position),
   ...withOptional('powered', component.powered),
   ...withOptional('pulseTicks', component.pulseTicks),
@@ -406,6 +419,9 @@ const copyTimedCircuit = (timedCircuit: TimedCircuitState): TimedCircuitState =>
   ...withOptionalMapped('observerSeen', timedCircuit.observerSeen, (seen) => new Map(seen)),
   ...withOptionalMapped('observers', timedCircuit.observers, (observers) => new Map(
     [...observers].map(([key, timer]) => [key, { ...timer }]),
+  )),
+  ...withOptionalMapped('plates', timedCircuit.plates, (plates) => new Map(
+    [...plates].map(([key, timer]) => [key, { ...timer }]),
   )),
   power: new Map(timedCircuit.power),
   repeaters: new Map([...timedCircuit.repeaters].map(([key, timer]) => [key, { ...timer }])),
@@ -492,6 +508,8 @@ const componentAt = (
     ...withOptional('locked', component.locked),
     ...withOptional('triggered', component.triggered),
     ...withOptional('observedBlock', component.observedBlock),
+    ...withOptionalMapped('occupants', component.occupants, (occupants) => ({ ...occupants })),
+    ...withOptional('plate', component.plate),
     ...withOptional('pulseTicks', component.pulseTicks),
     ...withOptionalMapped('invertedBy', component.invertedBy, positionToNodeId),
     ...withOptionalMapped('inputFrom', component.inputFrom, positionToNodeId),
