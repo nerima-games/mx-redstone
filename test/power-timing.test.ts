@@ -276,21 +276,53 @@ describe('timed redstone', () => {
     }),
   )
 
-  it.effect('cancels a pending repeater transition when its input stops', () =>
+  it.effect('extends short repeater pulses to the configured delay', () =>
     Effect.sync(() => {
-      const on = line([
-        ['lever', { kind: 'lever', active: true }],
-        ['rear', { kind: 'wire' }],
-        ['repeater', { kind: 'repeater', inputFrom: 'rear', outputTo: 'out', delayTicks: 4 }],
-        ['out', { kind: 'wire' }],
-      ])
-      let state = ticks(on, 3)
-      const off: CircuitBoard = {
-        ...on,
-        components: new Map(on.components).set('lever', { kind: 'lever', active: false }),
+      for (const delayTicks of [1, 2, 3, 4]) {
+        for (let pulseTicks = 1; pulseTicks <= delayTicks + 1; pulseTicks += 1) {
+          const board = line([
+            ['lever', { kind: 'lever', active: true }],
+            ['rear', { kind: 'wire' }],
+            ['repeater', { kind: 'repeater', inputFrom: 'rear', outputTo: 'out', delayTicks }],
+            ['out', { kind: 'wire' }],
+          ])
+          const off: CircuitBoard = {
+            ...board,
+            components: new Map(board.components).set('lever', { kind: 'lever', active: false }),
+          }
+          let state = emptyTimedCircuitState
+          for (let frame = 1; frame <= delayTicks + Math.max(delayTicks, pulseTicks) + 1; frame += 1) {
+            state = advanceTimedCircuit(frame <= pulseTicks ? board : off, state)
+            const on = frame >= delayTicks + 1 && frame < delayTicks + Math.max(delayTicks, pulseTicks) + 1
+            expect(powerAt(state.power, 'out')).toBe(on ? 15 : 0)
+          }
+        }
       }
-      state = ticks(off, 5, state)
-      expect(powerAt(state.power, 'repeater')).toBe(0)
+    }),
+  )
+
+  it.effect('ignores short input interruptions and delays longer interruptions', () =>
+    Effect.sync(() => {
+      for (const delayTicks of [1, 2, 3, 4]) {
+        for (let offTicks = 1; offTicks <= delayTicks + 1; offTicks += 1) {
+          const on = line([
+            ['lever', { kind: 'lever', active: true }],
+            ['rear', { kind: 'wire' }],
+            ['repeater', { kind: 'repeater', inputFrom: 'rear', outputTo: 'out', delayTicks }],
+            ['out', { kind: 'wire' }],
+          ])
+          const off: CircuitBoard = {
+            ...on,
+            components: new Map(on.components).set('lever', { kind: 'lever', active: false }),
+          }
+          let state = ticks(on, delayTicks + 1)
+          for (let frame = 1; frame <= offTicks + delayTicks + 1; frame += 1) {
+            state = advanceTimedCircuit(frame <= offTicks ? off : on, state)
+            const outputOff = offTicks >= delayTicks && frame >= delayTicks + 1 && frame < offTicks + delayTicks + 1
+            expect(powerAt(state.power, 'out')).toBe(outputOff ? 0 : 15)
+          }
+        }
+      }
     }),
   )
 

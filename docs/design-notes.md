@@ -621,6 +621,7 @@ readonly outputTo?: PositionKey    // リピーター: 駆動する唯一のセ�
 `Component.delayTicks` と `Component.pulseTicks` は盤面に規則を宣言するが、残り時間は
 `TimedCircuitState` が持つ。`advanceTimedCircuit(board, state, pressedButtons)` はリピーターの
 1–4 tick 遅延とボタンのパルスを進め、その tick で有効な盤面を `propagateTick` に渡す。
+リピーターは遅延より短い ON 入力を遅延と同じ長さの出力に延長し、短い OFF 入力を無視する。
 したがって `propagateTick(board, previous)` の 1 tick 伝播契約は互換性のため変わらない。
 
 runtime では `stages/registration.ts` が dimension ごとの `TimedCircuitState` を保持し、
@@ -639,7 +640,7 @@ runtime では `stages/registration.ts` が dimension ごとの `TimedCircuitSta
 | `a named output that is not a declared edge drives nothing — adjacency is still the graph` | 隣接に無いセルを名指しても何も駆動しない |
 | `REGRESSION: a torch does not power the cell it inverts, so an inverter is steady rather than a 2-tick blinker` | レバー OFF で 20 tick、トーチは 15 のまま、支持セルは 0 のまま |
 | `legacy propagation keeps its one-tick repeater contract when delay metadata is present` | 旧 API は `delayTicks` を解釈せず、従来どおり各リピーターを 1 tick で伝播する |
-| `test/power-timing.test.ts` の repeater / button 節 | 1–4 tick の境界、遷移キャンセル、パルス停止、再押下、挿入順非依存を固定する |
+| `test/power-timing.test.ts` の repeater / button 節 | 1–4 tick の境界、短い ON パルスの延長、短い OFF 入力の無視、ボタンのパルス停止、再押下、挿入順非依存を固定する |
 
 ---
 

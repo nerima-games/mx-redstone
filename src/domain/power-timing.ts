@@ -133,15 +133,20 @@ const advanceRepeater = (
   delayTicks: number,
 ): RepeaterTimer => {
   const output = previous?.output ?? false
-  if (requestedOutput === output) {
+  // A scheduled rising edge survives an input pulse shorter than the delay.
+  const pendingOutput = previous?.pendingOutput === true || requestedOutput
+  if (pendingOutput === output) {
     return { output, remainingTicks: NO_TICKS }
   }
 
-  const remaining = nextRemainingTicks(previous, requestedOutput, delayTicks)
+  const remaining = nextRemainingTicks(previous, pendingOutput, delayTicks)
   if (remaining <= NO_TICKS) {
-    return { output: requestedOutput, remainingTicks: NO_TICKS }
+    if (pendingOutput && !requestedOutput) {
+      return { output: true, pendingOutput: false, remainingTicks: delayTicks }
+    }
+    return { output: pendingOutput, remainingTicks: NO_TICKS }
   }
-  return { output, pendingOutput: requestedOutput, remainingTicks: remaining }
+  return { output, pendingOutput, remainingTicks: remaining }
 }
 
 const repeaterIsLocked = (component: Component, previous: PowerMap): boolean => {
