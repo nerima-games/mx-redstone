@@ -767,6 +767,77 @@ describe('raw host block to host request', () => {
     }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
   )
 
+  describe('a lit torch strongly powers the block above it (B-T2)', () => {
+    const torchPosition = blockPosition(0, 0, 0)
+    const blockAbove = blockPosition(0, 1, 0)
+    const wirePosition = blockPosition(1, 1, 0)
+
+    /** Wire power after the first tick, with the block above the torch conductive or not. */
+    const wirePowerBesideBlockAbove = (
+      torch: RedstoneHostBlock,
+      aboveConducts: boolean,
+    ) =>
+      Effect.gen(function* () {
+        const isRedstoneConductiveAt = (position: BlockPosition): boolean =>
+          aboveConducts && position.x === blockAbove.x && position.y === blockAbove.y && position.z === blockAbove.z
+        const lookup: RedstoneHostLookup = {
+          isLeverActive: () => false,
+          isPoweredRailPowered: () => false,
+          isRedstoneConductiveAt,
+          readContainerSlots: () => undefined,
+          readHopperBlockId: () => HOPPER_BLOCK_ID,
+          readHopperTransferContext: () => ({ powered: false, sourceAbove: null, destinationFacing: null }),
+          readPistonCell: () => ({ kind: 'empty' }),
+        }
+        const { realm } = recordingRealm(lookup)
+        const snapshot = successValue(redstoneSnapshotFromRealm(realm, [
+          torch,
+          block('redstone_wire', wirePosition.x, wirePosition.y, wirePosition.z),
+        ]))
+        const runtime = yield* RedstoneWorldRuntime
+        const stages = yield* makeRuntimeRedstoneStages
+        yield* runtime.syncSnapshot(snapshot, { isRedstoneConductiveAt })
+        yield* setRedstoneObservationEnabled(runtime, true)
+        yield* runFrame(stages)
+        const [observation] = yield* redstoneTickObservationsFor(runtime)
+        return observation?.power.get(redstoneNodeId(dimensionId('overworld'), wirePosition)) ?? 0
+      })
+
+    it.effect('powers the dust beside a conductive block above a floor torch', () =>
+      Effect.gen(function* () {
+        const torch = blockWithState('redstone_torch', torchPosition.x, torchPosition.y, torchPosition.z, { lit: true })
+        expect(yield* wirePowerBesideBlockAbove(torch, true)).toBe(15)
+      }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+    )
+
+    it.effect('powers the dust beside a conductive block above a wall torch', () =>
+      Effect.gen(function* () {
+        const torch = blockWithState('redstone_wall_torch', torchPosition.x, torchPosition.y, torchPosition.z, {
+          facing: 'east',
+          lit: true,
+        })
+        expect(yield* wirePowerBesideBlockAbove(torch, true)).toBe(15)
+      }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+    )
+
+    it.effect('does not power the dust when the block above a floor torch does not conduct', () =>
+      Effect.gen(function* () {
+        const torch = blockWithState('redstone_torch', torchPosition.x, torchPosition.y, torchPosition.z, { lit: true })
+        expect(yield* wirePowerBesideBlockAbove(torch, false)).toBe(0)
+      }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+    )
+
+    it.effect('does not power the dust when the block above a wall torch does not conduct', () =>
+      Effect.gen(function* () {
+        const torch = blockWithState('redstone_wall_torch', torchPosition.x, torchPosition.y, torchPosition.z, {
+          facing: 'east',
+          lit: true,
+        })
+        expect(yield* wirePowerBesideBlockAbove(torch, false)).toBe(0)
+      }).pipe(Effect.provide(RedstoneWorldRuntimeLayer)),
+    )
+  })
+
   it.effect('inverts an encoded floor torch from power at its supporting block', () =>
     Effect.gen(function* () {
       const torchPosition = blockPosition(0, 0, 0)
