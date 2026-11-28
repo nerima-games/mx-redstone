@@ -1002,7 +1002,7 @@ describe('pressure plate timing', () => {
     }),
   )
 
-  it.effect('records the timer and the context-aware advances agree with the map-only one', () =>
+  it.effect('records the plate timer, and both context-aware advances agree with the map-only one', () =>
     Effect.sync(() => {
       const board = withOccupants('light-weighted', { living: 3, other: 0 })
       const plain = advanceTimedCircuit(board, emptyTimedCircuitState)
