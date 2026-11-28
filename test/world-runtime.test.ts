@@ -796,6 +796,77 @@ describe('RedstoneWorldRuntime', () => {
     )
   })
 
+  describe('doors with two halves', () => {
+    const lower = { ...component(1, 'door'), otherHalf: blockPosition(1, 1, 0) }
+    const upper = { ...component(1, 'door', undefined, 1, 0), otherHalf: blockPosition(1, 0, 0) }
+    const doorCircuit = (leverAt: { readonly x: number; readonly y: number }, active: boolean) => snapshot('overworld', [
+      component(leverAt.x, 'lever', active, leverAt.y, 0),
+      lower,
+      upper,
+    ])
+    const doorEvents = (powered: boolean) => [
+      { dimension: 'overworld', kind: 'door', position: { x: 1, y: 0, z: 0 }, powered },
+      { dimension: 'overworld', kind: 'door', position: { x: 1, y: 1, z: 0 }, powered },
+    ]
+
+    it.effect('opens both halves when only the upper half is powered, and closes both when it loses power', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(doorCircuit({ x: 0, y: 1 }, true))
+          yield* runFrame(stages)
+          expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual(doorEvents(true))
+
+          yield* runtime.syncSnapshot(doorCircuit({ x: 0, y: 1 }, false))
+          yield* runFrame(stages)
+          expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual(doorEvents(false))
+        }),
+      ),
+    )
+
+    it.effect('opens both halves when only the lower half is powered', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(doorCircuit({ x: 0, y: 0 }, true))
+          yield* runFrame(stages)
+          expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual(doorEvents(true))
+        }),
+      ),
+    )
+
+    it.effect('leaves both halves closed when neither is powered', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(doorCircuit({ x: 0, y: 1 }, false))
+          yield* runFrame(stages)
+          expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([])
+        }),
+      ),
+    )
+
+    it.effect('follows its own power when the named other half is not in the snapshot', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(snapshot('overworld', [component(0, 'lever', true, 1, 0), upper]))
+          yield* runFrame(stages)
+          expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([doorEvents(true)[1]])
+        }),
+      ),
+    )
+
+    it.effect('does not let a door borrow the power of a half in another dimension', () =>
+      runtimeProgram((runtime, stages) =>
+        Effect.gen(function* () {
+          yield* runtime.syncSnapshot(snapshot('overworld', [lower, upper]))
+          yield* runtime.syncSnapshot(snapshot('nether', [component(0, 'lever', true, 1, 0), { ...upper }]))
+          yield* runFrame(stages)
+          expect(yield* runtime.drainPoweredComponentTransitions).toStrictEqual([
+            { dimension: 'nether', kind: 'door', position: { x: 1, y: 1, z: 0 }, powered: true },
+          ])
+        }),
+      ),
+    )
+  })
+
   it.effect('keeps identical coordinates isolated between dimensions', () =>
     runtimeProgram((runtime, stages) =>
       Effect.gen(function* () {

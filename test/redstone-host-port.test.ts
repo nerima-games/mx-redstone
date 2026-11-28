@@ -632,6 +632,51 @@ describe('componentForBlock', () => {
     )
   })
 
+  describe('a door names its other half', () => {
+    const position = blockPosition(4, 5, 6)
+
+    it.effect('points a lower half at the cell above and an upper half at the cell below, for both door blocks', () =>
+      Effect.sync(() => {
+        for (const name of ['door', 'door_open'] as const) {
+          expect(componentWithState(missingLookup, name, position, { half: 'lower' })).toStrictEqual({
+            kind: 'door',
+            otherHalf: blockPosition(4, 6, 6),
+            position,
+          })
+          expect(componentWithState(missingLookup, name, position, { half: 'upper' })).toStrictEqual({
+            kind: 'door',
+            otherHalf: blockPosition(4, 4, 6),
+            position,
+          })
+        }
+      }),
+    )
+
+    it.effect('keeps a door with no packed state as a plain door component', () =>
+      Effect.sync(() => {
+        const component = componentForBlock(missingLookup, 'door', { position })
+        expect(component).toStrictEqual(Result.succeed({ kind: 'door', position }))
+      }),
+    )
+
+    it.effect('returns the typed range failure when the other half is unrepresentable', () =>
+      Effect.sync(() => {
+        const edge = blockPosition(0, Number.MAX_SAFE_INTEGER, 0)
+        expect(componentForBlock(missingLookup, 'door', {
+          encodedState: encodedStateFor('door', { half: 'lower' }),
+          position: edge,
+        })).toStrictEqual(Result.fail({ _tag: 'RedstoneHostPositionOutOfRange' }))
+      }),
+    )
+
+    it.effect('rejects a packed state that does not decode as a door', () =>
+      Effect.sync(() => {
+        expect(Result.isFailure(componentForBlock(missingLookup, 'door', { encodedState: 0x7fffffff, position })))
+          .toBe(true)
+      }),
+    )
+  })
+
   it.effect('a comparator omits containerSlots entirely when the host has no reading, rather than an empty array', () =>
     Effect.sync(() => {
       const component = componentValue(missingLookup, 'comparator', blockPosition(0, 0, 0))

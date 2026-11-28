@@ -36,6 +36,8 @@ import {
   type BlockStateCodecFailure,
   type BlockStateFacing,
   BlockStateFacingSchema,
+  type BlockStateHalf,
+  BlockStateHalfSchema,
   type BlockStateValues,
   type BlockType,
   type Dimension,
@@ -177,6 +179,8 @@ export const RedstoneHostBlockTypeSchema: Schema.Codec<RedstoneHostBlockType, Re
 
 type BlockStateRequiredFields = Readonly<{
   comparator: readonly ['facing', 'mode', 'powered']
+  door: readonly ['half']
+  door_open: readonly ['half']
   dispenser: readonly ['facing', 'triggered']
   dropper: readonly ['facing', 'triggered']
   hopper: readonly ['facing', 'enabled']
@@ -205,6 +209,8 @@ const REPEATER_DELAY_VALUES = [ONE_TICK_DELAY, TWO_TICK_DELAY, THREE_TICK_DELAY,
 const repeaterDelaySchema = schemaLiterals(REPEATER_DELAY_VALUES)
 const comparatorBlockStateSchema: Schema.Codec<RequiredBlockState['comparator'], BlockStateValues> =
   structSchema({ facing: horizontalFacingSchema, mode: comparatorModeSchema, powered: Schema.Boolean })
+const doorBlockStateSchema: Schema.Codec<RequiredBlockState['door'], BlockStateValues> =
+  structSchema({ half: BlockStateHalfSchema })
 const dispenserBlockStateSchema: Schema.Codec<RequiredBlockState['dispenser'], BlockStateValues> =
   structSchema({ facing: BlockStateFacingSchema, triggered: Schema.Boolean })
 const hopperBlockStateSchema: Schema.Codec<RequiredBlockState['hopper'], BlockStateValues> =
@@ -584,6 +590,33 @@ const dispenserComponent = (kind: 'dispenser' | 'dropper'): ComponentBuilder => 
     triggered: state.triggered,
   }))
 
+/** The other half of a door sits one block above a lower half and one block below an upper one. */
+const DOOR_OTHER_HALF_Y_OFFSET: Readonly<Record<BlockStateHalf, number>> = {
+  bottom: 1,
+  lower: 1,
+  top: -1,
+  upper: -1,
+}
+
+/**
+ * A door with no packed state is a plain door component, as before. With state, each half also
+ * names the other half so the runtime can treat power on either one as power on the door.
+ */
+const doorComponentFor = (block: 'door' | 'door_open'): ComponentBuilder => (input) => {
+  if (typeof input.encodedState === 'undefined') {
+    return Result.succeed({ kind: 'door', position: input.position })
+  }
+  return Result.gen(function* doorComponentGenerator() {
+    const state = yield* decodeRequiredBlockState(block, input.encodedState, doorBlockStateSchema)
+    const otherHalf = yield* blockPositionAt(
+      input.position.x,
+      input.position.y + DOOR_OTHER_HALF_Y_OFFSET[state.half],
+      input.position.z,
+    )
+    return { kind: 'door', otherHalf, position: input.position }
+  })
+}
+
 const torchComponentFor = (block: 'redstone_torch' | 'redstone_wall_torch'): ComponentBuilder => (input) =>
   Result.gen(function* torchComponentGenerator() {
     if (block === 'redstone_torch') {
@@ -679,8 +712,8 @@ const buttonComponent: ComponentBuilder = ({ lookup, position, strongPowerTo }) 
 const COMPONENT_BUILDERS: Readonly<Partial<Record<RedstoneHostBlockType, ComponentBuilder>>> = {
   comparator: comparatorComponent,
   dispenser: dispenserComponent('dispenser'),
-  door: fixedKindComponent('door'),
-  door_open: fixedKindComponent('door'),
+  door: doorComponentFor('door'),
+  door_open: doorComponentFor('door_open'),
   dropper: dispenserComponent('dropper'),
   hopper: hopperComponent,
   lever: leverComponent,
