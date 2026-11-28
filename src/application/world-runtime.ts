@@ -170,7 +170,7 @@ export type RedstoneWorldState = {
   readonly timedCircuit: Ref.Ref<TimedCircuitState>
   readonly pendingButtonPresses: Ref.Ref<ReadonlySet<PositionKey>>
   readonly observedLamps: Ref.Ref<ReadonlyMap<PositionKey, ObservedLamp>>
-  readonly scheduledLampOffTicks: Ref.Ref<ReadonlyMap<PositionKey, number>>
+  readonly scheduledLampOffTicks: Ref.Ref<ReadonlyMap<PositionKey, NonNegativeTickCount>>
   readonly pendingLampTransitions: Ref.Ref<ReadonlyArray<LampTransition>>
   readonly observedPistonStates: Ref.Ref<ReadonlyMap<PositionKey, PistonState>>
   readonly pendingPistonTransitions: Ref.Ref<ReadonlyArray<PoweredPistonTransition>>
@@ -1064,7 +1064,7 @@ export const makeRedstoneWorldState: Effect.Effect<RedstoneWorldState> = Effect.
       Ref.make<TimedCircuitState>(emptyTimedCircuitState),
       Ref.make<ReadonlySet<PositionKey>>(new Set()),
       Ref.make<ReadonlyMap<PositionKey, ObservedLamp>>(new Map()),
-      Ref.make<ReadonlyMap<PositionKey, number>>(new Map()),
+      Ref.make<ReadonlyMap<PositionKey, NonNegativeTickCount>>(new Map()),
       Ref.make<ReadonlyArray<LampTransition>>([]),
       Ref.make<ReadonlyMap<PositionKey, PistonState>>(new Map()),
       Ref.make<ReadonlyArray<PoweredPistonTransition>>([]),
@@ -1206,7 +1206,7 @@ export const syncRedstoneSnapshot = (
 type LampTransitionResult = {
   readonly changed: ReadonlyArray<LampTransition>
   readonly current: ReadonlyMap<PositionKey, ObservedLamp>
-  readonly offTicks: ReadonlyMap<PositionKey, number>
+  readonly offTicks: ReadonlyMap<PositionKey, NonNegativeTickCount>
 }
 
 /** Vanilla schedules a lit lamp's switch-off 4 game ticks, i.e. 2 redstone ticks, after it
@@ -1215,7 +1215,7 @@ const LAMP_TURN_OFF_DELAY_TICKS = 2
 
 type LampSwitch = {
   readonly lit: boolean
-  readonly offTick: Option.Option<number>
+  readonly offTick: Option.Option<NonNegativeTickCount>
 }
 
 /**
@@ -1225,8 +1225,8 @@ type LampSwitch = {
  * schedule, it only makes the due tick a no-op.
  */
 const nextLampSwitch = (input: {
-  readonly now: number
-  readonly offTick: Option.Option<number>
+  readonly now: NonNegativeTickCount
+  readonly offTick: Option.Option<NonNegativeTickCount>
   readonly powered: boolean
   readonly reportedLit: boolean
 }): LampSwitch => {
@@ -1243,13 +1243,13 @@ const nextLampSwitch = (input: {
   if (powered) {
     return { lit: true, offTick: Option.none() }
   }
-  return { lit: true, offTick: Option.some(now + LAMP_TURN_OFF_DELAY_TICKS) }
+  return { lit: true, offTick: Option.some(Schema.decodeUnknownSync(nonNegativeTickCountSchema)(now + LAMP_TURN_OFF_DELAY_TICKS)) }
 }
 
 type LampReadout = {
   readonly circuit: CircuitReadout
-  readonly now: number
-  readonly offTicks: ReadonlyMap<PositionKey, number>
+  readonly now: NonNegativeTickCount
+  readonly offTicks: ReadonlyMap<PositionKey, NonNegativeTickCount>
   readonly previous: ReadonlyMap<PositionKey, ObservedLamp>
 }
 
@@ -1259,7 +1259,7 @@ const lampEntry = (
 ): {
   readonly changed: boolean
   readonly lamp: LampTransition
-  readonly offTick: Option.Option<number>
+  readonly offTick: Option.Option<NonNegativeTickCount>
 } => {
   const { component, dimension, nodeId } = entry
   const { circuit, now, offTicks, previous } = readout
@@ -1280,8 +1280,8 @@ const lampEntry = (
 
 const lampOffTickEntries = (
   entry: SnapshotEntry,
-  offTick: Option.Option<number>,
-): ReadonlyArray<readonly [PositionKey, number]> =>
+  offTick: Option.Option<NonNegativeTickCount>,
+): ReadonlyArray<readonly [PositionKey, NonNegativeTickCount]> =>
   Option.match(offTick, {
     onNone: () => [],
     onSome: (tick) => [[entry.nodeId, tick]],
